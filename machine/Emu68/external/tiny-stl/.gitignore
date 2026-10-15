@@ -1,0 +1,6 @@
+/build/
+/buildtest/
+/VERSIONINFO
+/VERSIONINFO.OLD
+/version.h
+.vscode/.browse*

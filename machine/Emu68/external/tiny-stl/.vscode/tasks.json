@@ -1,0 +1,67 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "Build",
+            "group": "build",
+            "command": "make",
+            "options": {
+                "cwd": "${workspaceFolder}/build",
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+        },
+        {
+            "type": "shell",
+            "label": "Build library",
+            "group": "build",
+            "command": "make",
+            "args": [
+                "tinystl"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/build"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "type": "shell",
+            "label": "Run test",
+            "group": "test",
+            "command": "make",
+            "args": [
+                "test"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/build",
+                "env": {
+                    "CTEST_OUTPUT_ON_FAILURE": "1"
+                }
+            }
+        },
+        {
+            "type": "shell",
+            "label": "Run",
+            "group": "test",
+            "command": "./build/example/example",
+        },
+        {
+            "type": "shell",
+            "label": "Configure",
+            "group": "none",
+            "command": "sh",
+            "args": [
+                "mkdir build; cd build; cmake .."
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        }
+    ]
+}

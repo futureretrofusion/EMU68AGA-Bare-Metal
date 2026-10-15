@@ -1,0 +1,21 @@
+FRF AGA-PiStorm 1.1.0 merge provenance
+=====================================
+
+Upstream feature donor:
+  AGA-Pistorm_universal_v1.114.7z
+  SHA256 c8a6cc4d96b4c49b661b912995b5c12e8c08b5d74431f4fc43c28869da50092d
+
+FRF hardware-proven donor:
+  FRF-AGA-PiStorm-1.0.0-FULL-SOURCE.zip
+  SHA256 36d488178e4ca00acbacf71bcdcc7a83b91dc541e7da98f5f4d59a37b76a79eb
+
+Three-way comparison base:
+  AGA-PISTORM-1.113-src.zip
+  SHA256 1c82bacc6a82820ba8dc9b2881db8ff3c5ff837fcc9e4b85f46acd01ba0f500f
+
+Policy:
+  Upstream 1.114 owns the core/audio/HDMI/image feature baseline.
+  FRF 1.0.0 owns physical HAM6/RGBPORT allocation, SINGLE/DOUBLE buffering,
+  PROGRAM child-Copper handoff and P96/ASL HDMI-only ownership semantics.
+  1.114 Exact/Smooth colour quantisation is ported into the FRF renderer.
+  1.114 RGBPORT allocation/lifecycle is deliberately not adopted.

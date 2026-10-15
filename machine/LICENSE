@@ -1,0 +1,19 @@
+AGA-PISTORM is licensed under the GNU General Public License, version 2 only
+(GPL-2.0-only). The full text is in COPYING.
+
+Rationale: the chipset core contains code from UAE and WinUAE, both GPL (Bernd
+Schmidt, Alessandro Bissacco, Toni Wilen and the other UAE authors) - some of
+it copied, more of it translated into C, much of it the older UAE code kept in
+E-UAE. The header of each file in core/src says what it took and carries the
+copyright lines of the files it came from; package/UAE-WinUAE-notice.txt
+collects them. The kernel combines it with Emu68 (MPL-2.0, Michal Schulz):
+MPL-2.0 section 3.3 allows that combination, the kernel as a whole is
+distributed under the GPL-2.0, and Emu68's own files keep their MPL-2.0
+notices.
+
+Under the MPL-2.0 instead (full text in MPL-2.0.txt):
+  arm/emu68-aga.patch     our changes to Emu68's files - MPL-2.0, like the
+                          files they change
+  package/videocore-src/  our changes to Emu68-tools' VideoCore.card: the
+                          diff, overlay.c and version_gen.h.in
+  package/overlays-src/   logo.dts, Emu68's logo-colour overlay (Michal Schulz)

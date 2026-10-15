@@ -1,0 +1,613 @@
+/*  -*- C++ -*-
+
+    Copyright © 2020 Michal Schulz <michal.schulz@gmx.de>
+    https://github.com/michalsc
+
+    This Source Code Form is subject to the terms of the
+    Mozilla Public License, v. 2.0. If a copy of the MPL was not distributed
+    with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
+
+#ifndef _TINYSTD_LIST
+#define _TINYSTD_LIST
+
+#include <stdio.h>
+#include <iterator>
+#include <tinystl/bits/support.h>
+#include <tinystl/allocator>
+
+namespace tinystd {
+
+namespace {
+
+    template <class T>
+    struct node {
+        node    *succ;
+        node    *pred;
+        T       value;
+
+        explicit node() : succ(nullptr), pred(nullptr) {}
+        explicit node(const T& val) : succ(nullptr), pred(nullptr), value(val) {}
+        void remove() { this->pred->succ = this->succ; this->succ->pred = this->pred; pred = nullptr; succ = nullptr; }
+        node<T> *getSucc() { if (succ && succ->succ) return succ; else return nullptr; }
+        node<T> *getPred() { if (pred && pred->pred) return pred; else return nullptr; }
+    };
+
+    template <class T>
+    class node_allocator {
+    public:
+        typedef node<T>             value_type;
+        typedef value_type*         pointer;
+        typedef value_type&         reference;
+        typedef const value_type&   const_reference;
+        typedef const value_type*   const_pointer;
+        typedef uintptr_t           size_type;
+        typedef ptrdiff_t           difference_type;
+
+        node_allocator() : alloc() {}
+        node_allocator(const node_allocator&) : node_allocator() {}
+        ~node_allocator() {}
+        pointer address(reference x) { return &x; }
+        const_pointer address(const_reference x) { return &x; }
+        pointer allocate(size_type n) { pointer p = alloc.allocate(n); return p; }
+        void deallocate(pointer p, size_type n) { alloc.deallocate(p, n); }
+        size_type max_size() { return alloc.max_size(); }
+        void construct(pointer p, const T& val) { new((void*)p) value_type(val); }
+        void destroy(pointer p) { p->~value_type(); }
+
+    private:
+        allocator<node<T> >     alloc;
+    };
+
+    template <class T>
+    struct minlist {
+        node<T> listHead;
+        node<T> listTail;
+
+        minlist() { reset(); }
+        void reset() { listHead.succ = &listTail; listHead.pred = nullptr; listTail.pred = &listHead; listTail.succ = nullptr;  }
+        bool isEmpty() { return listHead.succ == &listTail; }
+        void addHead(node<T> *n) { n->succ = listHead.succ; n->pred = &listHead; listHead.succ->pred = n; listHead.succ = n; }
+        void addTail(node<T> *n) { n->succ = &listTail; n->pred = listTail.pred; listTail.pred->succ = n; listTail.pred = n; }
+        node<T> *getHead() const { return listHead.succ == &listTail ? nullptr : listHead.succ; }
+        node<T> *getTail() const { return listTail.pred == &listHead ? nullptr : listTail.pred; }
+        node<T> *remHead() { node<T> *n = getHead(); if (n) n->remove(); return n; }
+        node<T> *remTail() { node<T> *n = getTail(); if (n) n->remove(); return n; }
+    };
+}
+
+template < class T, class Alloc = allocator<T> >
+class list {
+public:
+    typedef T                       value_type;
+    typedef value_type&             reference;
+    typedef const value_type&       const_reference;
+    typedef value_type*             pointer;
+    typedef const value_type*       const_pointer;
+    typedef uintptr_t               size_type;
+    typedef node_allocator<T>       allocator_type;
+
+    class const_iterator;
+    // Bidirectional iterator for list
+    class iterator : public std::iterator<std::bidirectional_iterator_tag, value_type>
+    {
+        node<value_type> *n;
+
+    public:
+        iterator() : n(nullptr){};
+        iterator(node<value_type> *node) : n(node){};
+        iterator(const iterator &it) : n(it.n){};
+        value_type& operator*() const { return n->value; }
+
+        iterator &operator++()
+        {
+            if (n->succ)
+                n = n->succ;
+
+            return *this;
+        }
+        iterator &operator--()
+        {
+            if (n->pred)
+                n = n->pred;
+            return *this;
+        }
+        iterator operator++(int)
+        {
+            iterator tmp(*this);
+            operator++();
+            return tmp;
+        }
+        iterator operator--(int)
+        {
+            iterator tmp(*this);
+            operator--();
+            return tmp;
+        }
+
+        bool operator==(const iterator &rhs) const { return n == rhs.n; }
+        bool operator!=(const iterator &rhs) const { return n != rhs.n; }
+
+        friend class list::const_iterator;
+        friend class list;
+    };
+
+    class const_iterator : public std::iterator<std::bidirectional_iterator_tag, value_type>
+    {
+        const node<value_type> *n;
+
+      public:
+        const_iterator() : n(nullptr){};
+        const_iterator(node<value_type> *node) : n(node){};
+        const_iterator(const const_iterator &it) : n(it.n){};
+        const_iterator(const typename list<value_type>::iterator &it) : n(it.n) {};
+        value_type &operator*() const { return n->value; }
+
+        const_iterator &operator++()
+        {
+            if (n->succ)
+                n = n->succ;
+            return *this;
+        }
+        const_iterator &operator--()
+        {
+            if (n->pred)
+                n = n->pred;
+            return *this;
+        }
+        const_iterator operator++(int)
+        {
+            const_iterator tmp(*this);
+            operator++();
+            return tmp;
+        }
+        const_iterator operator--(int)
+        {
+            const_iterator tmp(*this);
+            operator--();
+            return tmp;
+        }
+
+        bool operator==(const const_iterator &rhs) const { return n == rhs.n; }
+        bool operator!=(const const_iterator &rhs) const { return n != rhs.n; }
+
+        friend class list;
+    };
+
+    class reverse_iterator : public std::iterator<std::bidirectional_iterator_tag, value_type>
+    {
+        node<value_type> *n;
+
+      public:
+        reverse_iterator() : n(nullptr){};
+        reverse_iterator(node<value_type> *node) : n(node){};
+        reverse_iterator(const reverse_iterator &it) : n(it.n){};
+        value_type &operator*() const { return n->value; }
+
+        reverse_iterator &operator++()
+        {
+            if (n->pred)
+                n = n->pred;
+            return *this;
+        }
+        reverse_iterator &operator--()
+        {
+            if (n->succ)
+                n = n->succ;
+            return *this;
+        }
+        reverse_iterator operator++(int)
+        {
+            reverse_iterator tmp(*this);
+            operator++();
+            return tmp;
+        }
+        reverse_iterator operator--(int)
+        {
+            reverse_iterator tmp(*this);
+            operator--();
+            return tmp;
+        }
+
+        bool operator==(const reverse_iterator &rhs) const { return n == rhs.n; }
+        bool operator!=(const reverse_iterator &rhs) const { return n != rhs.n; }
+
+        friend class list;
+    };
+
+    // Constructors
+    explicit list(const allocator_type& alloc = allocator_type()) : count(0), alloc(alloc) { }
+    explicit list(size_type n, const value_type& val = value_type(), const allocator_type& alloc = allocator_type()) : list(alloc) { while(n--) push_front(val); }
+    explicit list(int n, const value_type& val = value_type(), const allocator_type& alloc = allocator_type()) : list((size_type)n, val, alloc) {}
+    template <class InputIterator>
+    list(InputIterator first, InputIterator last, const allocator_type& alloc = allocator_type()) : list(alloc) { for (auto it=first; it != last; ++it) push_back(*it); }
+    ~list() { clear(); }
+    list(const list& x) : count(0) { alloc = allocator_type(x.alloc); node<value_type> *n = x._list.getHead(); while(n) { push_back(n->value); n = n->getSucc(); } }
+    list& operator= (const list& x) { clear(); node<value_type> *n = x._list.getHead(); while(n) { push_back(n->value); n = n->getSucc(); } return *this; }
+
+    // Iterators
+    iterator begin() { return iterator(_list.listHead.succ); }
+    iterator end() { return iterator(&_list.listTail); }
+    reverse_iterator rbegin() { return reverse_iterator(_list.listTail.pred); }
+    reverse_iterator rend() { return reverse_iterator(&_list.listHead); }
+
+    // Capacity
+    size_type size() { return count; }
+    bool empty() { return 0 == count; }
+    size_type max_size() { return (uintptr_t)-1 / sizeof(node<value_type>); }
+
+    // Element access
+    reference front() { return _list.getHead()->value; }
+    const_reference front() const { return _list.getHead()->value; }
+    reference back() { return _list.getTail()->value; }
+    const_reference back() const { return _list.getTail()->value; }
+
+    // Modifiers
+    template <class InputIterator>
+    void assign(InputIterator first, InputIterator last) {
+        clear(); for (auto it=first; it != last; ++it) {
+            push_back(*it);
+        }
+    }
+    void assign(size_type n, const value_type &val) { clear(); while(n--) push_front(val); }
+    void push_front(const value_type& val) {
+        node<value_type> *n = alloc.allocate(1);
+        alloc.construct(n, val);
+        _list.addHead(n); count++;
+    }
+    void pop_front() {
+        if (count > 0) {
+            node<value_type> *n = _list.remHead();
+            if (n)
+            {
+                alloc.destroy(n);
+                alloc.deallocate(n, 1);
+                count--;
+            }
+        }
+    }
+    void push_back(const value_type& val) {
+        node<value_type> *n = alloc.allocate(1);
+        alloc.construct(n, val);
+        _list.addTail(n); count++;
+    }
+    void pop_back() {
+        if (count > 0) {
+            node<value_type> *n = _list.remTail();
+            if (n)
+            {
+                alloc.destroy(n);
+                alloc.deallocate(n, 1);
+                count--;
+            }
+        }
+    }
+    iterator insert(iterator position, const value_type& val) {
+        node<value_type> *n = alloc.allocate(1);
+        alloc.construct(n, val);
+
+        n->succ = position.n->succ;
+        n->pred = position.n;
+
+        n->succ->pred = n;
+        n->pred->succ = n;
+
+        count++;
+
+        return iterator(n);
+    }
+    void insert(iterator position, int n, const value_type& val) {
+        insert(position, (size_type)n, val);
+    }
+    void insert(iterator position, size_type n, const value_type& val) {
+        if (n > 0)
+        {
+            minlist<value_type> l;
+
+            count += n;
+
+            while(n--)
+            {
+                node<value_type> *no = alloc.allocate(1);
+                alloc.construct(no, val);
+                l.addTail(no);
+            }
+
+            node<value_type> *first = l.getHead();
+            node<value_type> *last = l.getTail();
+
+            first->pred = position.n;
+            last->succ = position.n->succ;
+
+            first->pred->succ = first;
+            last->succ->pred = last;
+        }
+    }
+    template <class InputIterator>
+    void insert (iterator position, InputIterator first, InputIterator last) {
+        minlist<value_type> l;
+
+        for (auto it=first; it != last; ++it)
+        {
+            node<value_type> *no = alloc.allocate(1);
+            alloc.construct(no, *it);
+            l.addTail(no);
+            count++;
+        }
+
+        node<value_type> *fi = l.getHead();
+        node<value_type> *la = l.getTail();
+        if (fi)
+        {
+            fi->pred = position.n;
+            la->succ = position.n->succ;
+
+            fi->pred->succ = fi;
+            la->succ->pred = la;
+        }
+    }
+    iterator erase(iterator position) {
+        node<value_type> *n = position.n;
+        if (n->succ)
+        {
+            iterator it(n->succ);
+            n->remove();
+            alloc.destroy(n);
+            alloc.deallocate(n, 1);
+            count--;
+            return it;
+        }
+        else return position;
+    }
+    iterator erase(iterator first, iterator last) {
+        iterator it(first);
+        while(it != last) {
+            node<value_type> *n = it.n;
+            ++it;
+            n->remove();
+            alloc.destroy(n);
+            alloc.deallocate(n, 1);
+            count--;
+        }
+        return last;
+    }
+    void swap(list& x) { size_type sz = count; count = x.count; x.count = sz; minlist<value_type> ml = _list; _list = x._list; x._list = ml; }
+    void resize(size_type n, value_type val = value_type()) {
+        if (count < n) {
+            int cnt = n - count;
+            while(cnt--)
+                push_back(val);
+        } else {
+            int cnt = count - n;
+            while(cnt--)
+                pop_back();
+        }
+    }
+    void clear() { node<value_type> *n; while((n = _list.remHead()) != nullptr) { alloc.destroy(n); alloc.deallocate(n, 1); }; count = 0; }
+
+    // Operations
+    void splice(iterator position, list& x) {
+        node<value_type> *first = x._list.getHead();
+        node<value_type> *last = x._list.getTail();
+        if (first)
+        {
+            {
+                first->pred = position.n->pred;
+                last->succ = position.n;
+
+                first->pred->succ = first;
+                last->succ->pred = last;
+            }
+            x._list.reset();
+            count += x.count;
+            x.count = 0;
+        }
+    }
+    void splice (iterator position, list& x, iterator i) {
+        if (i != x.end())
+        {
+            node<value_type> *n = i.n;
+            n->remove();
+            x.count--;
+            {
+                n->pred = position.n->pred;
+                n->succ = position.n;
+
+                n->succ->pred = n;
+                n->pred->succ = n;
+            }
+
+            count++;
+        }
+    }
+    void splice (iterator position, list& x, iterator first, iterator last) {
+        minlist<value_type> l;
+        iterator it(first);
+        while (it != last)
+        {
+            node<value_type> *no = it.n;
+            ++it;
+            no->remove();
+            x.count--;
+            l.addTail(no);
+            count++;
+        }
+
+        node<value_type> *fi = l.getHead();
+        node<value_type> *la = l.getTail();
+
+        if (fi)
+        {
+            {
+                fi->pred = position.n->pred;
+                la->succ = position.n;
+
+                fi->pred->succ = fi;
+                la->succ->pred = la;
+            }
+        }
+    }
+    void remove(const value_type& val) {
+        node<value_type> *n = _list.getHead(), *next;
+        while(n) {
+            next = n->getSucc();
+            if (n->value == val) {
+                n->remove();
+                alloc.destroy(n);
+                alloc.deallocate(n, 1);
+                count--;
+            }
+            n = next;
+        }
+    }
+    template <class Predicate>
+    void remove_if(Predicate pred) {
+        node<value_type> *n = _list.getHead(), *next;
+        while(n) {
+            next = n->getSucc();
+            if (pred(n->value)) {
+                n->remove();
+                alloc.destroy(n);
+                alloc.deallocate(n, 1);
+                count--;
+            }
+            n = next;
+        }
+    }
+    void unique() {
+        node<value_type> *n;
+        for(n = _list.getHead(); n; n = n->getSucc()) {
+            node<value_type> *n1, *next;
+            n1 = n->getSucc();
+            while(n1) {
+                next = n1->getSucc();
+                if (n1->value == n->value) {
+                    n1->remove();
+                    count--;
+                    alloc.destroy(n1);
+                    alloc.deallocate(n1, 1);
+                }
+                n1 = next;
+            }
+        }
+    }
+    void merge(list &x) {
+        node<value_type> *n;
+        while ((n = x._list.remHead()) != nullptr) {
+            node<value_type> *no = _list.getHead();
+            if (n->value < no->value) {
+                n->pred = &_list.listHead;
+                n->succ = _list.listHead.succ;
+
+                _list.listHead.succ->pred = n;
+                _list.listHead.succ = n;
+            } else {
+                while (no && !(n->value < n->value)) no = no->getSucc();
+                if (no) {
+                    n->succ = no;
+                    n->pred = no->pred;
+                    n->pred->succ = n;
+                    n->succ->pred = n;
+                } else _list.addTail(n);
+            }
+            count++;
+        }
+        x.count = 0;
+    }
+    template <class Compare>
+    void merge(list& x, Compare comp) {
+        node<value_type> *n;
+        while ((n = x._list.remHead()) != nullptr) {
+            node<value_type> *no = _list.getHead();
+            if (comp(n->value, no->value)) {
+                n->pred = &_list.listHead;
+                n->succ = _list.listHead.succ;
+
+                _list.listHead.succ->pred = n;
+                _list.listHead.succ = n;
+            } else {
+                while (no && !comp(n->value, no->value)) no = no->getSucc();
+                if (no) {
+                    n->succ = no;
+                    n->pred = no->pred;
+                    n->pred->succ = n;
+                    n->succ->pred = n;
+                } else _list.addTail(n);
+            }
+            count++;
+        }
+        x.count = 0;
+    }
+
+    void sort() {
+        node<value_type> *n;
+        minlist<value_type> l;
+        if (count > 1) {
+            n = _list.remHead();
+            l.addHead(n);
+            while((n = _list.remHead())) {
+                node<value_type> *no = l.getHead();
+                if (n->value < no->value) {
+                    n->pred = &l.listHead;
+                    n->succ = l.listHead.succ;
+
+                    l.listHead.succ->pred = n;
+                    l.listHead.succ = n;
+                } else {
+                    while (no && no->value < n->value) no = no->getSucc();
+                    if (no) {
+                        n->succ = no;
+                        n->pred = no->pred;
+                        n->pred->succ = n;
+                        n->succ->pred = n;
+                    } else l.addTail(n);
+                }
+            }
+            while ((n = l.remHead())) _list.addTail(n);
+        }
+    }
+    template <class Compare>
+    void sort (Compare comp) {
+        node<value_type> *n;
+        minlist<value_type> l;
+        if (count > 1) {
+            n = _list.remHead();
+            l.addHead(n);
+            while((n = _list.remHead())) {
+                node<value_type> *no = l.getHead();
+                if (comp(n->value, no->value)) {
+                    n->pred = &l.listHead;
+                    n->succ = l.listHead.succ;
+
+                    l.listHead.succ->pred = n;
+                    l.listHead.succ = n;
+                } else {
+                    while (no && comp(no->value, n->value)) no = no->getSucc();
+                    if (no) {
+                        n->succ = no;
+                        n->pred = no->pred;
+                        n->pred->succ = n;
+                        n->succ->pred = n;
+                    } else l.addTail(n);
+                }
+            }
+
+            while((n = l.remHead())) _list.addTail(n);
+        }
+    }
+    void reverse() {
+        minlist<value_type> l;
+        node<value_type> *n;
+
+        while((n = _list.remHead())) l.addHead(n);
+        while((n = l.remHead())) _list.addTail(n);
+    }
+private:
+    minlist<T>          _list;
+    size_type           count;
+    allocator_type      alloc;
+};
+
+}
+
+#endif // _TINYSTD_LIST

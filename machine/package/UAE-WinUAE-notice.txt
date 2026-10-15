@@ -1,0 +1,92 @@
+UAE and WinUAE
+==============
+
+The AGA chipset core of AGA-PISTORM (core/ in the source, and the HDMI sound
+filters in arm/aga_hdmi_filter.h) contains code from
+UAE and WinUAE, the Amiga emulator - some copied, more translated into C - and
+elsewhere follows their way of doing things:
+
+  blitter     the fill step (copied); normal blits and the line mode
+              (translated); the fill table; the cycles per word
+  copper      the classic UAE copper (translated); the WAIT/SKIP compare
+  playfield   the fetch tables, fetch modes, display window, delay offset,
+              BSCAN2 modulos and dual playfield split (copied); colour
+              writes, register handlers and HAM (translated); UAE's fetch
+              and line model
+  sprites     start/stop and the DMA cycle steps (copied); SPRES and
+              VSTART/VSTOP (translated)
+  collisions  the CLXDAT read (copied); the CLXCON masks (translated)
+  custom      setclr and a few short lines
+  disk        the DD track length and gap; the DSKBYTR bits
+  audio       four interrupt and timing rules, rewritten; no code copied
+              for those. The A500/A1200 filters for sound over HDMI are
+              WinUAE's filter() and rc_calculate_a0(), translated into
+              fixed point (arm/aga_hdmi_filter.h)
+
+Each file's header says what it takes, and says that it was changed from the
+UAE/WinUAE code for AGA-PISTORM in 2026. The timing was also checked against
+WinUAE's DMA records. Much of it is the older UAE/WinUAE code as kept in
+E-UAE, from before WinUAE's 2024-2025 rewrite of custom.cpp and drawing.cpp.
+
+The sources carry these notices:
+
+  UAE - The Un*x Amiga Emulator
+
+  WinUAE
+
+  Custom chip emulation (custom.cpp)
+    Copyright 1995-2002 Bernd Schmidt
+    Copyright 1995 Alessandro Bissacco
+    Copyright 2000-2025 Toni Wilen
+
+  Blitter (blitter.cpp)
+    (c) 1995 Bernd Schmidt, Alessandro Bissacco
+    (c) 2002 - 2025 Toni Wilen
+
+  Screen drawing functions (drawing.cpp)
+    Copyright 1995-2000 Bernd Schmidt
+    Copyright 1995 Alessandro Bissacco
+    Copyright 2000-2025 Toni Wilen
+
+  Paula audio emulation (audio.cpp)
+    Copyright 1995, 1996, 1997 Bernd Schmidt
+    Copyright 1996 Marcus Sundberg
+    Copyright 1996 Manfred Thole
+    Copyright 2006 Toni Wilen
+    new filter algorithm and anti&sinc interpolators by Antti S. Lankila
+
+  Floppy disk emulation (disk.cpp)
+    Copyright 1995 Hannu Rummukainen
+    Copyright 1995-2001 Bernd Schmidt
+    Copyright 2000-2021 Toni Wilen
+
+  include/custom.h
+    (c) 1995 Bernd Schmidt
+
+  The older UAE/WinUAE code, as kept in E-UAE 0.8.29 (Richard Drummond)
+
+  Custom chip emulation (custom.c)
+    Copyright 1995-2002 Bernd Schmidt
+    Copyright 1995 Alessandro Bissacco
+    Copyright 2000-2004 Toni Wilen
+
+  Screen drawing functions (drawing.c)
+    Copyright 1995-2000 Bernd Schmidt
+    Copyright 1995 Alessandro Bissacco
+    Copyright 2000,2001 Toni Wilen
+
+  Blitter (blitter.c)
+    (c) 1995 Bernd Schmidt, Alessandro Bissacco
+    (c) 2002 - 2005 Toni Wilen
+
+  include/custom.h
+    (c) 1995 Bernd Schmidt
+
+  include/drawing.h
+    Copyright 1996-1998 Bernd Schmidt
+
+UAE is free software under the GNU General Public License. AGA-PISTORM, and
+the chipset core in it, are under the GNU General Public License, version 2
+only (GPL-2.0.txt next to this file in the release, COPYING in the source).
+
+WinUAE: https://www.winuae.net - source: https://github.com/tonioni/WinUAE

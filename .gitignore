@@ -1,0 +1,17 @@
+build*/
+out/
+*.log
+*.img
+*.img.gz
+*.rom
+*.adf
+*.hdf
+*.iso
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.o
+*.a
+*.elf
+.DS_Store

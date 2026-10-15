@@ -1,0 +1,51 @@
+/*  -*- C++ -*-
+
+    Copyright © 2020 Michal Schulz <michal.schulz@gmx.de>
+    https://github.com/michalsc
+
+    This Source Code Form is subject to the terms of the
+    Mozilla Public License, v. 2.0. If a copy of the MPL was not distributed
+    with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+*/
+
+#ifndef _T_ALLOCATOR_H
+#define _T_ALLOCATOR_H
+
+#include <stdio.h>
+#include <typeinfo>
+#include <tinystl/bits/support.h>
+
+namespace tinystd {
+
+template <class T>
+class allocator {
+
+public:
+    typedef T                   value_type;
+    typedef value_type*         pointer;
+    typedef value_type&         reference;
+    typedef const value_type&   const_reference;
+    typedef const value_type*   const_pointer;
+    typedef uintptr_t           size_type;
+    typedef ptrdiff_t           difference_type;
+
+    allocator() {};
+    allocator(const allocator&) : allocator() {};
+    ~allocator() {};
+    pointer address(reference x) { return &x; }
+    const_pointer address(const_reference x) { return &x; }
+    pointer allocate(size_type n) { pointer p = (pointer)mungwall_malloc(n * sizeof(value_type)); return p; }
+    void deallocate(pointer p, size_type n) { if (n>0 && p!=nullptr) mungwall_free((void*)p, n * sizeof(T)); }
+    size_type max_size() { return (size_type)-1 / sizeof(value_type); }
+    void construct(pointer p, const_reference val) { new((void*)p) value_type(val); }
+    void destroy(pointer p) { p->~value_type(); }
+};
+
+template <class T1, class T2>
+bool operator==(const allocator<T1>& lhs, const allocator<T2>& rhs) noexcept { (void)lhs; (void)rhs; return true; }
+template <class T1, class T2>
+bool operator!=(const allocator<T1>& lhs, const allocator<T2>& rhs) noexcept { (void)lhs; (void)rhs; return false; }
+
+}
+
+#endif // _T_ALLOCATOR_H
