@@ -6,13 +6,11 @@
 
 ## What we are doing
 
-**We are taking the ARM-based Amiga emulation already demonstrated by PiStorm and AGA-PiStorm and making it run without an Amiga motherboard.**
+PiStorm and AGA-PiStorm have already shown how much of an Amiga can run in software on a Raspberry Pi. In the PiStorm setup, the original Amiga can still be used for native RGB/HAM6 video output and audio playback through Paula.
 
-With AGA-PiStorm's virtual AGA active on a physical PiStorm, the Raspberry Pi runs the emulated 68k CPU and most of the Amiga chipset in software. Communication with the real Amiga is then relatively limited: some hardware coordination remains, and optional outputs can use physical Paula audio or the RGB port through the original chipset. It is **minimal, not necessarily zero**.
+**EMU68AGA Bare Metal builds on that work to run without an Amiga motherboard or PiStorm adapter.** The Raspberry Pi provides the standalone system, with HDMI for video and sound, USB for input and SD card storage.
 
-**EMU68AGA Bare Metal removes that remaining physical-Amiga dependency.** The Raspberry Pi runs Emu68 and the virtual AGA chipset, with virtual Chip RAM, registers, interrupts and hardware interfaces; HDMI provides video and audio, USB provides input, and SD storage supplies the drives. No Amiga motherboard, PiStorm adapter or original Amiga chips are needed.
-
-Our contribution is the **standalone integration, replacement of Amiga-bus dependencies, hardware-interface emulation and compatibility work**. The 68k emulator and virtual AGA foundation come from **Emu68, AGA-PiStorm and their contributors**, with UAE/WinUAE heritage as credited below. This remains an experimental system, not a claim of complete Amiga compatibility.
+Our role is to adapt and integrate the existing emulation for standalone use, and improve compatibility as development continues. Credit for the underlying work belongs to **Emu68, AGA-PiStorm and their contributors**, with further acknowledgements below.
 
 **Current status: experimental alpha.** A local hardware test has now confirmed the **v0.10.25 USB-enabled kernel boots with the unmodified v0.10.22 boot support files**. This exact pairing matters: later repackaged boot folders did not work for the tester. The USB-enabled kernel is not part of the public download while the upstream GPL licence conflict remains unresolved. This is not a turnkey operating-system image.
 
