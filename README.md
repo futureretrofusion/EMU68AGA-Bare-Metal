@@ -1,66 +1,31 @@
 # FRF Emu68 Standalone AGA
 
-Experimental bare-metal Amiga/A1200-class system for Raspberry Pi 3, built from **Emu68** and **AGA-PiStorm** virtual AGA work.
+**Future Retro Fusion** — standalone, bare-metal Amiga/AGA system for Raspberry Pi 3A+, integrating Emu68 and AGA-PiStorm virtual chipset work. No physical Amiga or PiStorm adapter required.
 
-FRF turns that stack into a standalone machine instead of requiring a physical Amiga/PiStorm bus.
+**Current status: experimental alpha.** Our local v0.10.21 configuration has booted AGS Classic and run WHDLoad games, including return to AGS. The experimental v0.10.23 kernel needs hardware confirmation. It is not a turnkey operating-system image.
 
-## Compiled public boot alpha
+## Start here
 
-Download the [v0.10.23 EMU68AGA BCM boot-test archive](distribution/FRF_EMU68AGA_BCM_PUBLIC_BOOT_ALPHA_v0.10.23.zip).
+- [Installation and AGS 3.1 Classic SD-card guide](docs/INSTALL_AGS31_CLASSIC.md) — complete partition layout, boot files, Kickstart, AGS and troubleshooting.
+- [Public ROM-free boot diagnostic ZIP](distribution/FRF_EMU68AGA_BCM_PUBLIC_BOOT_ALPHA_v0.10.23.zip) — **USB input is disabled in this specific public package**. Do not mistake it for the fully usable local test build.
+- [v0.10.23 build notes](RELEASE_NOTES_v0.10.23.md)
+- [USB redistribution status](USB-LICENSING.md)
 
-Extract the archive, copy the contents of `boot/` to the FAT32 Raspberry Pi boot partition, and add your **own legally obtained Kickstart 3.1 ROM** as `boot/kick31.rom` (the actual filename expected by `floppy.txt`). An AmigaOS/AGS hard-disk image or Emu68-compatible `0x76` partition is also needed and **not** included.
+A practical public alpha must include working keyboard/mouse input. The local development kernel has USB functionality, but the present public boot diagnostic does not. We are working to distribute the complete USB-enabled configuration with appropriate upstream notices and source compliance.
 
-**Important alpha limitations:** This public build uses `FRF_USB_HOST=OFF` pending USB component licensing review, so USB keyboard, mouse and gamepad are not available. The build is compiled but has not been validated on a physical Pi 3A+. This is a boot evaluation package, not a complete plug-and-play system. Keep a backup of any working SD card.
+## Features exercised in local development
 
-## Current development state
+- Emu68 68k JIT, virtual AGA graphics (Alice/Lisa/Paula), Copper, blitter and CIA emulation.
+- HDMI video and Paula audio, 2 MiB Chip RAM, 512 KiB Ranger memory and Zorro III Fast RAM.
+- SD-hosted Amiga hard-disk partitions using MBR type \`0x76\` and an Emu68 ROM-board/autoconfig path.
+- USB keyboard/mouse in the local build, with experimental joypad-to-Amiga-port-2 mapping.
+- Amiga soft-reset/autoconfig fixes in v0.10.21; WHDLoad game compatibility still varies by title/demo.
+- Built-in EMU68AGA BCM splash artwork, with Future Retro Fusion branding.
 
-Hardware-tested work includes:
+## Project credits and licensing
 
-- Emu68 68k JIT on Raspberry Pi 3
-- virtual AGA/Alice/Lisa/Paula chipset
-- 2 MiB Chip RAM
-- 512 KiB slow/Ranger RAM support at `$C00000-$C7FFFF`
-- 128 MiB Zorro III Fast RAM
-- HDMI AGA video
-- HDMI Paula audio
-- FAT32 boot partition plus Emu68 `0x76` Amiga hard-disk partition
-- restored Emu68 virtual Zorro autoconfig/ROM-board path
-- `brcm-sdhc.device` / `devicetree.resource` SD boot support
-- virtual CIA and floppy/ADF work
-- optional diagnostics HUD, off by default
+This is a hobby project, **but non-commercial use does not remove redistribution licence obligations**. FRF credits its own standalone integration to **Future Retro Fusion**, and preserves upstream credits and source-file licences.
 
-The local development branch also contains experimental USB HID work. That USB implementation is intentionally not distributed in this public tree yet; see `USB-LICENSING.md`.
+Emu68: Michal Schulz and contributors; AGA-PiStorm: Astair86 and contributors; PiStorm: Claude Schwarz and contributors; UAE/WinUAE: their respective contributors. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [LICENSE-FRF.md](LICENSE-FRF.md), and source headers.
 
-## SD-card layout
-
-Partition 1 is FAT32 for Raspberry Pi firmware, the FRF/Emu68 kernel, config files and a user-supplied Kickstart ROM. Partition 2 is MBR type `0x76` and holds Emu68/AmigaOS/CaffeineOS hard-disk content.
-
-No Kickstart ROMs, ADFs, HDFs, CaffeineOS images, game files, or other copyrighted media are distributed here.
-
-## Credits and project lineage
-
-FRF is a derivative integration project. It would not exist without:
-
-- **Emu68**, by Michal Schulz and contributors — https://github.com/michalsc/Emu68
-- **AGA-PiStorm**, by Astair86 and contributors — https://astair86.itch.io/aga-pistorm-10-experimental-prototype
-- **PiStorm**, originally by Claude Schwarz (`captain-amygdala`) and contributors
-- **UAE / WinUAE** chipset work and contributors, including Bernd Schmidt, Alessandro Bissacco, Toni Wilen, and others credited by the donor source
-
-FRF-specific bugs should not be reported upstream unless they reproduce on the unmodified upstream projects.
-
-See `THIRD_PARTY_NOTICES.md` and the license files retained throughout the source tree.
-
-## Licensing
-
-This is a **multi-license derivative source tree**. FRF does not claim or attempt to relicense third-party work.
-
-- Emu68 files retain **MPL-2.0**.
-- AGA-PiStorm / UAE-derived portions retain their existing upstream license terms and notices.
-- FRF changes made inside third-party files remain subject to the license applicable to those files.
-- Only files that are original FRF work and explicitly identified as such are covered by `LICENSE-FRF.md`.
-
-No upstream copyright or license notice is intentionally removed.
-
-## Status
-
-Experimental. Physical Raspberry Pi 3 behavior is considered authoritative.
+No Kickstart ROM, AmigaOS/AGS software, WHDLoad games or third-party disk images are distributed here.
