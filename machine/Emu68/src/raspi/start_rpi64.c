@@ -632,6 +632,10 @@ void platform_init()
     map_pcie_mmio_window(&start_map);
 }
 
+#if defined(FRF_WIFI_HW_PROBE)
+extern void frf_wifi_hw_probe(void);
+#endif
+
 void platform_post_init()
 {
     void *base_vcmem;
@@ -658,6 +662,10 @@ void platform_post_init()
     display_logo();
 #if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
     frf_boot_stage(1);
+#endif
+#if defined(FRF_WIFI_HW_PROBE)
+    /* Keep the Wi-Fi discovery text visible over the splash for photos. */
+    frf_wifi_hw_probe();
 #endif
 
 #ifdef PISTORM_ANY_MODEL

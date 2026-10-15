@@ -15,6 +15,20 @@ It can reassign interfaces and break microSD access. Keep
 
 ## What exists on this branch
 
+### Pi 3A+ hardware readout (optional)
+
+A second module `src/frf_wifi/frf_wifi_hw_probe.c` checks the
+Raspberry Pi 3A+ device-tree model and enabled SD1 controller before
+sampling **read-only** SDIO host registers at the Pi 3A+ Emu68 MMIO
+mapping. CMake option `-DFRF_WIFI_HW_PROBE=ON` enables this diagnostic.
+It has no GPIO/power writes, never submits card commands, and does not
+load Wi-Fi firmware. It prints `[WIFI]` lines on boot. Hardware
+readout is not yet confirmed on a physical Pi 3A+.
+
+Because the Wi-Fi chip and microSD controller paths are easy to mix
+up, readout never runs on another board or if the DT Wi-Fi node is disabled.
+
+
 `machine/Emu68/src/frf_wifi/frf_sdio_probe.c` implements a controller-
 independent, **read-only** SDIO card identification sequence. Host callbacks
 handle CMD0, CMD5, CMD3, CMD7 and CMD52; the code checks voltage,

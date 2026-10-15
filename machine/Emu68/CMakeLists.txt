@@ -14,6 +14,7 @@ option(EMU68_SKIP_FIRMWARE "Do not download Raspberry Pi firmware files" OFF)
 set(AGA_PISTORM "" CACHE PATH "Path to the AGA-PISTORM repository (enables the virtual AGA chipset)")
 option(FRF_VIRTUAL_AGA "Standalone virtual AGA Amiga: no physical PiStorm/Amiga bus" OFF)
 option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1 (required for usable Pi3A+ builds)" ON)
+option(FRF_WIFI_HW_PROBE "Read-only Pi3A+ SDIO hardware-register discovery; does not connect Wi-Fi" OFF)
 
 if(NOT EMU68_SKIP_PPC_ROM)
 ExternalProject_Add(
@@ -316,6 +317,14 @@ add_executable(Emu68.elf
     ${BASE_FILES}
     ${EMU68_FILES}
 )
+
+if(FRF_WIFI_HW_PROBE)
+    if(NOT FRF_VIRTUAL_AGA OR NOT "${TARGET}" STREQUAL "raspi64")
+        message(FATAL_ERROR "FRF_WIFI_HW_PROBE requires standalone Pi3 AArch64")
+    endif()
+    target_sources(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_wifi/frf_wifi_hw_probe.c)
+    target_compile_definitions(Emu68.elf PRIVATE FRF_WIFI_HW_PROBE=1)
+endif()
 
 target_compile_options(Emu68.elf
   PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti -fno-exceptions>
