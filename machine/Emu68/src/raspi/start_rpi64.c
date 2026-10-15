@@ -323,7 +323,7 @@ void display_logo()
             break;
     }
 #elif defined(PISTORM_CLASSIC)
-    text_x -= strlen("EMU68AGA BCM, ");
+    text_x -= strlen("EMU68AGA BARE METAL, ");
 #endif
 #endif
 
@@ -419,7 +419,7 @@ void display_logo()
             break;
     }
 #elif defined(PISTORM_CLASSIC)
-    kprintf_pc(__putc, NULL, "EMU68AGA BCM, ");
+    kprintf_pc(__putc, NULL, "EMU68AGA BARE METAL, ");
 #endif
 #endif
     /* Print EMu68 version number and git sha. */

@@ -48,7 +48,7 @@ FAT32_ROOT/
 The existing second MBR partition, type 0x76, must contain an installed
 bootable AGS/AmigaOS system; the FAT32 boot folder alone is insufficient.
 
-The [public boot-support ZIP](../distribution/EMU68AGA_BCM_v0.10.25_BOOT_SUPPORT_ROM_FREE.zip)
+The [public boot-support ZIP](../distribution/EMU68AGA_BARE_METAL_v0.10.25_BOOT_SUPPORT_ROM_FREE.zip)
 contains the original matching boot configuration and Raspberry Pi firmware,
 but **no kernel, Kickstart ROM, AGS, AmigaOS or game images**. Its purpose
 is to prevent future packaging errors while the USB-linked kernel's licence

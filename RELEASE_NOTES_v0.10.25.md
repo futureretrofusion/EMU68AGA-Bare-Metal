@@ -1,4 +1,4 @@
-# EMU68AGA BCM v0.10.25 — local hardware confirmation
+# EMU68AGA BARE METAL v0.10.25 — local hardware confirmation
 
 Reported hardware result, 15 October 2026: the USB-enabled v0.10.25
 kernel boots using **the boot files from v0.10.22**. Later repackaged
