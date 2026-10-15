@@ -1,0 +1,19 @@
+name: RTG HDMI ownership policy tests
+on:
+  push:
+    branches: [rtg-standalone-handoff]
+  pull_request:
+    paths:
+      - 'machine/arm/frf_rtg_handoff.h'
+      - 'tests/test_rtg_handoff.c'
+      - '.github/workflows/rtg-handoff-tests.yml'
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile handoff policy test
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror -pedantic             -Imachine/arm tests/test_rtg_handoff.c -o /tmp/test_rtg_handoff
+      - name: Run RTG/AGA handoff tests
+        run: /tmp/test_rtg_handoff

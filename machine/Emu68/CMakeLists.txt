@@ -14,6 +14,7 @@ option(EMU68_SKIP_FIRMWARE "Do not download Raspberry Pi firmware files" OFF)
 set(AGA_PISTORM "" CACHE PATH "Path to the AGA-PISTORM repository (enables the virtual AGA chipset)")
 option(FRF_VIRTUAL_AGA "Standalone virtual AGA Amiga: no physical PiStorm/Amiga bus" OFF)
 option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1 (required for usable Pi3A+ builds)" ON)
+option(FRF_RTG_HANDOFF "Respect external Picasso96 GPU display list in standalone AGA" OFF)
 
 if(NOT EMU68_SKIP_PPC_ROM)
 ExternalProject_Add(
@@ -316,6 +317,13 @@ add_executable(Emu68.elf
     ${BASE_FILES}
     ${EMU68_FILES}
 )
+
+if(FRF_RTG_HANDOFF)
+    if(NOT FRF_VIRTUAL_AGA OR NOT "${TARGET}" STREQUAL "raspi64")
+        message(FATAL_ERROR "RTG handoff requires standalone AArch64 virtual AGA")
+    endif()
+    target_compile_definitions(Emu68.elf PRIVATE FRF_RTG_HANDOFF=1)
+endif()
 
 target_compile_options(Emu68.elf
   PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti -fno-exceptions>

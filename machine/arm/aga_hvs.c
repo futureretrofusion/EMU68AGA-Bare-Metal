@@ -13,6 +13,9 @@
 #include <stdint.h>
 #include "aga/chipset.h"
 #include "aga_glue.h"
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+#include "frf_rtg_handoff.h"
+#endif
 #include "aga_crop.h"
 #include "aga_sharp.h"
 #include "aga_sync.h"
@@ -566,6 +569,10 @@ void aga_hvs_service(void)
 static uint32_t  cur_list;          /* LIST_A/LIST_B when mine is live, else 0 */
 static uint32_t  ptr0_word;         /* dlist word index of my plane's PTR0 */
 static int       video_ok;
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+static frf_rtg_handoff frf_rtg_display;
+#endif
+
 
 #define FB_BYTES   (AGA_OUT_W * AGA_OUT_H * 4)
 static inline int fb_next_page(int p) { return p >= 2 ? 0 : p + 1; }
@@ -618,6 +625,11 @@ int aga_video_init_at(uint8_t *fbmem_va, uintptr_t fbmem_phys)
 
     saved_list = reg_rd(REG_DISPLIST1);
     cur_list = 0;
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+    frf_rtg_handoff_init(&frf_rtg_display, saved_list);
+    aga_diag_log("[RTG] HDMI HVS arbitration active, waiting for external Picasso96 list");
+#endif
+
     video_ok = 1;
     crop_state();                       /* bit 0: Custom understood */
     kprintf("[AGA] HVS: display %dx%d, AGA plane %dx%d at %d,%d (scale %08x/%08x), fb %p\n",
@@ -1799,6 +1811,32 @@ static void hvs_check(void)
 void aga_video_present(const uint32_t *frame, int native_active)
 {
     if (!video_ok) return;
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+    /* P96 VideoCore.card writes DISPLIST1 independently on the 68k.
+       On a standalone Amiga our AGA core runs persistently; without this
+       ownership check show_frame() can overwrite P96's list every 20 ms.
+       Nothing is inferred from missing hardware and no RTG driver is patched.
+       Check a *valid* external HVS list only; don't misread blank/floating
+       display memory as ownership. */
+    {
+        uint32_t live = reg_rd(REG_DISPLIST1);
+        int external = live != 0 && live != LIST_A && live != LIST_B &&
+                       live != frf_rtg_display.boot_list &&
+                       live < DL_RAM_WORDS - 0x70u && list_len(live) > 0;
+        unsigned was = frf_rtg_display.rtg_owns;
+        int rtg = frf_rtg_handoff_step(&frf_rtg_display,live,
+            LIST_A,LIST_B,native_active,external,cur_list != 0);
+        if (rtg) {
+            if (!was) {
+                saved_list = live;
+                aga_diag_log("[RTG] external P96 display list claimed HDMI; yielding native AGA plane");
+            }
+            if (cur_list) hide(); /* if P96 already owns HVS, don't overwrite it */
+            return;
+        }
+        if (was) aga_diag_log("[RTG] native AGA display became active; HDMI reclaimed");
+    }
+#endif
     calib_on = 0;      /* the sandbox has the pages now: a Position screen left up is over */
     if (crop_on) { crop_on = 0; apply_crop(); }   /* ...and a crop screen */
     /* No native display. Normally hide the plane and let the RTG desktop
