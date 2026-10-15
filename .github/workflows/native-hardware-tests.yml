@@ -1,0 +1,24 @@
+name: Native hardware absence tests
+
+on:
+  push:
+    branches: [native-hardware-compat]
+  pull_request:
+    paths:
+      - 'machine/Emu68/src/frf_native_hw/**'
+      - 'tests/test_native_bus.c'
+      - '.github/workflows/native-hardware-tests.yml'
+
+jobs:
+  absent-device:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile native hardware tests
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            -Imachine/Emu68/src/frf_native_hw \
+            machine/Emu68/src/frf_native_hw/frf_native_bus.c \
+            tests/test_native_bus.c -o /tmp/test_native_bus
+      - name: Test absent peripherals and future backend
+        run: /tmp/test_native_bus

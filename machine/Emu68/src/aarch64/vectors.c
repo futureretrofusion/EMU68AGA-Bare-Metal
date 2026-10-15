@@ -35,6 +35,9 @@ static inline void aga_vrestore(struct aga_vsave *s)
 #include "A64.h"
 #include "config.h"
 #include "support.h"
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_VIRTUAL_GAYLE_ABSENT)
+#include "frf_native_bus.h"
+#endif
 #include "mmu.h"
 #include "tlsf.h"
 #include "M68k.h"
@@ -843,6 +846,9 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_write(far, size, value)) return 1;
+#ifdef FRF_VIRTUAL_GAYLE_ABSENT
+    if (frf_native_bus_write((uint32_t)far, (unsigned)size, value)) return 1;
+#endif
 #endif
     /* AGA/ECS mode switch request from the agaboot tool, valid in both modes */
     if (far == 0xDFF1F2 && size == 2 && ((value & 0xFFFF) == 0xA6A1 || (value & 0xFFFF) == 0xEC50)) {
@@ -1109,6 +1115,9 @@ int SYSReadValFromAddr(uint64_t *value, uint64_t *value2, int size, uint64_t far
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_read(far, size, value)) return 1;
+#ifdef FRF_VIRTUAL_GAYLE_ABSENT
+    if (frf_native_bus_read((uint32_t)far, (unsigned)size, value)) return 1;
+#endif
 #endif
     if (far == 0xDFF1EA && size == 2) { *value = aga_diag_read_word(); return 1; }
     if (aga_enabled && (far == 0xBFE001 || far == 0xBFE000 || far == 0xBFEC01)
@@ -1380,6 +1389,9 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_write(far, size, value)) return 1;
+#ifdef FRF_VIRTUAL_GAYLE_ABSENT
+    if (frf_native_bus_write((uint32_t)far, (unsigned)size, value)) return 1;
+#endif
 #endif
     /* AGA/ECS mode switch request from the agaboot tool, valid in both modes */
     if (far == 0xDFF1F2 && size == 2 && ((value & 0xFFFF) == 0xA6A1 || (value & 0xFFFF) == 0xEC50)) {
