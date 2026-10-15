@@ -14,7 +14,13 @@
 - [USB integration source](docs/USB_SOURCE.md) — FRF adapter only, not bundled USPi and not a redistributable combined binary.
 - [USB redistribution status](USB-LICENSING.md)
 
-A practical public alpha must include working keyboard/mouse input. The local development kernel has functional USPi-based USB input; public binaries are currently restricted to versions without that combined USB implementation. **A GPL-2.0-only + GPL-3.0-or-later static-link incompatibility must be resolved before publishing the working USB binary.** A clean-room compatible USB replacement or permission from the necessary upstream copyright holders is required.
+A practical public alpha **must** have working keyboard/mouse input.
+**`FRF_USB_HOST=ON` is now the default.** The local development kernel has
+working FRF USB integration using USPi. A fresh public-source build fails
+with an explicit missing-dependency message until the matching adapted
+USPi sources are provided; setting OFF produces only a no-input diagnostic,
+**not** a usable release. Public redistribution of the combined binary
+remains blocked by upstream licensing. **A GPL-2.0-only + GPL-3.0-or-later static-link incompatibility must be resolved before publishing the working USB binary.** A clean-room compatible USB replacement or permission from the necessary upstream copyright holders is required.
 
 ## Features exercised in local development
 

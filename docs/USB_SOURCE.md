@@ -24,8 +24,13 @@ USPi with the GPL-2.0-only AGA-PiStorm chipset, a licence conflict for
 public distribution. As a result, do not build and distribute a combined
 firmware binary using this source without resolving the conflict.
 
-`FRF_USB_HOST=OFF` remains the public build default. Source availability
-is not a declaration of licence compatibility for a combined binary.
+`FRF_USB_HOST=ON` is the expected default for usable Pi 3A+ builds.
+A missing adapted USPi dependency is a fatal CMake configuration error;
+the project must not silently compile a keyboardless release.
+`FRF_USB_HOST=OFF` may be selected explicitly for limited diagnostics,
+but does not produce a user-ready image.
+
+Source availability is not a declaration of licence compatibility for a combined binary.
 
 The experimental clean-room USB state-machine prototype is a separate
 unreleased effort; it is **not** included here and has not replaced USPi.

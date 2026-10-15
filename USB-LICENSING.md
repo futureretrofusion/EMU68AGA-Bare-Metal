@@ -41,4 +41,10 @@ redistribution of a statically linked combined kernel. The public support packag
 contains *only* the original v0.10.22 boot support files and excludes
 the kernel, Kickstart, AGS and commercial game content.
 
-Public-source builds should retain `FRF_USB_HOST=OFF` by default.
+The build **defaults to `FRF_USB_HOST=ON`** to reflect the usable
+hardware configuration and must fail clearly if adapted USPi sources are
+unavailable. `FRF_USB_HOST=OFF` is an explicit diagnostic opt-out:
+that kernel has no USB input and is **not** a usable Pi 3A+ release.
+
+Default ON does not resolve licence compatibility or permit release of the
+statically linked USB-enabled kernel.
