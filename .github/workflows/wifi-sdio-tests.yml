@@ -1,0 +1,25 @@
+name: SDIO Wi-Fi protocol tests
+
+on:
+  push:
+    branches:
+      - wifi-sdio-bringup
+  pull_request:
+    paths:
+      - 'machine/Emu68/src/frf_wifi/**'
+      - 'tests/test_sdio_probe.c'
+      - '.github/workflows/wifi-sdio-tests.yml'
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile isolated SDIO tests
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            -Imachine/Emu68/src/frf_wifi \
+            machine/Emu68/src/frf_wifi/frf_sdio_probe.c \
+            tests/test_sdio_probe.c -o /tmp/test_sdio_probe
+      - name: Run all mocked SDIO scenarios
+        run: /tmp/test_sdio_probe
