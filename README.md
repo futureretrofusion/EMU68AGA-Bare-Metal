@@ -17,7 +17,7 @@ A practical public alpha must include working keyboard/mouse input. The local de
 
 - Emu68 68k JIT, virtual AGA graphics (Alice/Lisa/Paula), Copper, blitter and CIA emulation.
 - HDMI video and Paula audio, 2 MiB Chip RAM, 512 KiB Ranger memory and Zorro III Fast RAM.
-- SD-hosted Amiga hard-disk partitions using MBR type \`0x76\` and an Emu68 ROM-board/autoconfig path.
+- 32 GB microSD layout with FAT32 boot and Emu68 `0x76` Amiga/AGS partitions and an Emu68 ROM-board/autoconfig path.
 - USB keyboard/mouse in the local build, with experimental joypad-to-Amiga-port-2 mapping.
 - Amiga soft-reset/autoconfig fixes in v0.10.21; WHDLoad game compatibility still varies by title/demo.
 - Built-in EMU68AGA BCM splash artwork, with Future Retro Fusion branding.
