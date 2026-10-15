@@ -1,4 +1,4 @@
-# FRF Emu68 Standalone AGA
+# EMU68AGA BCM AMIGA
 
 **Future Retro Fusion** — standalone, bare-metal Amiga/AGA system for Raspberry Pi 3A+, integrating Emu68 and AGA-PiStorm virtual chipset work. No physical Amiga or PiStorm adapter required.
 
