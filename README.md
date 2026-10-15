@@ -4,6 +4,14 @@ Experimental bare-metal Amiga/A1200-class system for Raspberry Pi 3, built from 
 
 FRF turns that stack into a standalone machine instead of requiring a physical Amiga/PiStorm bus.
 
+## Compiled public boot alpha
+
+Download the [v0.10.23 EMU68AGA BCM boot-test archive](distribution/FRF_EMU68AGA_BCM_PUBLIC_BOOT_ALPHA_v0.10.23.zip).
+
+Extract the archive, copy the contents of `boot/` to the FAT32 Raspberry Pi boot partition, and add your **own legally obtained Kickstart 3.1 ROM** as `boot/kick31.rom` (the actual filename expected by `floppy.txt`). An AmigaOS/AGS hard-disk image or Emu68-compatible `0x76` partition is also needed and **not** included.
+
+**Important alpha limitations:** This public build uses `FRF_USB_HOST=OFF` pending USB component licensing review, so USB keyboard, mouse and gamepad are not available. The build is compiled but has not been validated on a physical Pi 3A+. This is a boot evaluation package, not a complete plug-and-play system. Keep a backup of any working SD card.
+
 ## Current development state
 
 Hardware-tested work includes:
