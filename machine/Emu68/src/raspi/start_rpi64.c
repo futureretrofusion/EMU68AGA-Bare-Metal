@@ -243,6 +243,22 @@ static void draw_logo_rgb(uint32_t start_x, uint32_t start_y, uint32_t scale)
 }
 #endif
 
+#if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
+/* Boot-progress markers retained for local USB bring-up hardware tests. */
+void frf_boot_stage(unsigned stage)
+{
+    if (!framebuffer || !pitch || fb_width < 230 || fb_height < 40 ||
+        stage < 1 || stage > 10) return;
+    const uint32_t x0 = 6u + (stage - 1u) * 21u;
+    const uint16_t color = LE16(stage <= 5 ? 0x07e0u : 0xFFE0u);
+    for (uint32_t y = 6; y < 18; ++y) {
+        uint16_t *row = (uint16_t *)((uintptr_t)framebuffer + pitch*y);
+        for (uint32_t x = x0; x < x0 + 15u; ++x) row[x] = color;
+    }
+    __asm__ volatile("dsb ishst" ::: "memory");
+}
+#endif
+
 void display_logo()
 {
     uint16_t *fb;
@@ -640,6 +656,9 @@ void platform_post_init()
     }
 
     display_logo();
+#if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
+    frf_boot_stage(1);
+#endif
 
 #ifdef PISTORM_ANY_MODEL
 #ifndef FRF_VIRTUAL_AGA

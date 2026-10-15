@@ -973,6 +973,9 @@ void parse_cmdline(const char *cmdline)
 #endif
 }
 
+#if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
+extern void frf_boot_stage(unsigned stage);
+#endif
 void boot(void *dtree)
 {
     uintptr_t kernel_top_virt = ((uintptr_t)boot + (KERNEL_SYS_PAGES << 21)) & ~((1 << 21)-1);
@@ -2167,6 +2170,35 @@ void boot(void *dtree)
         kprintf("[BOOT] FRF virtual AGA: reset overlay ROM -> $000000-$07ffff\n");
     }
 #endif
+#if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
+    {
+        /* Start CPU1 USB only after CPU0 platform/ROM initialization.
+         * Tested v0.10.25 synchronization paired with v0.10.22 boot files. */
+        extern volatile uint8_t frf_usb_host_start_allowed;
+        extern volatile uint8_t frf_usb_boot_ready;
+        extern volatile uint8_t frf_usb_mouse_present;
+        extern volatile uint8_t frf_usb_mouse_seen;
+        extern volatile uint8_t frf_usb_mouse_buttons;
+        uint64_t f, t0, now;
+        frf_boot_stage(2);
+        __atomic_store_n(&frf_usb_host_start_allowed, 1u, __ATOMIC_RELEASE);
+        __asm__ volatile("sev" ::: "memory");
+        __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(f));
+        __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(t0));
+        do {
+            __asm__ volatile("yield");
+            __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(now));
+        } while (!__atomic_load_n(&frf_usb_boot_ready, __ATOMIC_ACQUIRE)
+                 && (now - t0) < f * 6u);
+        frf_boot_stage(3);
+        __asm__ volatile("dmb ish" ::: "memory");
+        kprintf("[BOOT] USB gate: ready=%u mouse=%u seen=%u buttons=%02x\n",
+                (unsigned)frf_usb_boot_ready,
+                (unsigned)frf_usb_mouse_present,
+                (unsigned)frf_usb_mouse_seen,
+                (unsigned)frf_usb_mouse_buttons);
+    }
+#endif
 #ifdef FRF_VIRTUAL_AGA
     {
         extern struct ExpansionBoard *__boards_start;
@@ -2174,6 +2206,23 @@ void boot(void *dtree)
         extern int board_idx;
         board = &__boards_start;
         board_idx = 0;
+    }
+#endif
+#if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
+    {
+        /* Allow early Ctrl+Shift+F12 HID input before guest Kickstart. */
+        uint64_t begin, now, hz;
+        __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(begin));
+        __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz));
+        do {
+            __asm__ volatile("yield");
+            __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(now));
+        } while ((now - begin) < hz * 2u);
+        extern void frf_usb_guest_start(void);
+        frf_usb_guest_start();
+        frf_boot_stage(4);
+        frf_boot_stage(5);
+        kprintf("[BOOT] FRF USB-SYNC: entering M68K_StartEmu now\n");
     }
 #endif
     M68K_StartEmu(0, NULL);

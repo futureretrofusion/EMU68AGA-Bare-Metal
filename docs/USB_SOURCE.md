@@ -1,12 +1,18 @@
 # FRF USB integration: source-only publication
 
-The three files in `machine/Emu68/src/frf_usb/` are the FRF-maintained
+The three core adapter files in `machine/Emu68/src/frf_usb/` are the FRF-maintained
 integration layer from the **v0.10.25 local USB-enabled test kernel**:
 
 - `frf_usb.c` — USB HID keyboard/mouse/gamepad state mapping into the virtual Amiga.
 - `frf_usb.h` — input events/interface.
 - `frf_uspi_env.c` — Pi 3 CPU1 host environment, DMA addressing,
   timer callbacks, USB IRQ adapter and VideoCore power mailbox.
+
+The matching CPU1 start gate, bounded readiness wait and early HID guest
+handoff are recorded in `machine/Emu68/src/aarch64/start.c`;
+the progress-marker helper lives in `src/raspi/start_rpi64.c`.
+These changes are guarded by `FRF_USB_HOST` and have no effect
+on the default public USB-off build.
 
 The source is shared to support inspection and independent work. These
 files **are not themselves a complete USB host implementation**.
