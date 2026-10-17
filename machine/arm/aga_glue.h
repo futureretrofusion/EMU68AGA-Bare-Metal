@@ -42,6 +42,7 @@ extern volatile int aga_sandbox_active;
 void aga_chipset_ecs(int mode);
 void aga_flickerfix(int on);         /* $59Dn: interlaced frames woven */
 void aga_brightness(int level);      /* $59Fn: 0 off .. 4 (110-150%) */
+void aga_gamma(int gamma);           /* $512n: 0 Exact, 1 CRT, 2 Lighter */
 void aga_video_standard(int ntsc);   /* $591n: PAL or NTSC for the next entry */
 
 /* Virtual floppy (vectors.c): CIA-B PRB writes / CIA-A PRA and SDR reads pass
@@ -55,6 +56,7 @@ extern volatile int aga_dskb_pending;
 void aga_disk_bridge_poll(void);
 /* control register $DFF1F2 = $ADxx: disk image commands (see aga_disk_command) */
 int  aga_disk_command(unsigned cmd);
+uint16_t aga_disk_status(void);
 /* M68k RESET instruction / ColdReboot: the machine restarts on the current
    chipset (virtual disks and window mode are kept) */
 void aga_machine_reset(void);
@@ -107,6 +109,8 @@ void aga_video_set_look(int look);   /* 0 sharp, 1 smooth, 2 TV (blends across) 
 void aga_video_set_scale(int mode);  /* 0 4:3, 1 integer, 2 fill - $597S */
 void aga_video_set_scanlines(int level);   /* 0 off .. 4 (25% steps) - $598L */
 void aga_video_set_laced_scanlines(int level);   /* the same, woven interlaced frames - $59En */
+void aga_video_set_mask(int level);            /* the CRT mask: 0 off, 1-4 = 25-100% dark ($510n) */
+void aga_video_set_scan_shape(int shape);      /* the scanlines' shape: 0 Even, 1 Crisp, 2 Whole lines ($511n) */
 void aga_video_set_border(int down, int pct);    /* TV border across / down, 0-10% - $59Bn / $59Cn */
 void aga_video_set_frame(int woven, int row, int ntsc);   /* core 3, before each present */
 void aga_video_set_pos_x(int x);     /* the picture right by x hires pixels - $57nn */
@@ -118,8 +122,8 @@ extern volatile int aga_beam_mode;   /* $581N: beam estimate lead - 0 one step, 
 void aga_video_hide(void);        /* take the plane off the display: sandbox leave, watchdog park */
 void aga_video_probe_pointer(void); /* re-read the RTG mouse pointer into the PTR_NOW counters */
 /* Debug overlay drawn into the presented frame. It is MY output, not the
-   game's, so it appears even when the game draws nothing at all - which is the
-   only way to read a machine whose OS a wedged game has taken away. */
+   game's, so it appears even when the game draws fuck-all - which is the only
+   way to read a machine whose OS a wedged game has taken away. */
 void aga_video_overlay(int row, uint32_t value);
 void aga_video_overlay_allow(int on);   /* boot-config gate; off means HUD cannot be enabled */
 void aga_video_overlay_enable(int on);
@@ -144,6 +148,7 @@ void aga_audio_set_ring(uint32_t base);
 int16_t *aga_audio_scratch(int *max_frames);
 void aga_audio_stop(void);
 void aga_audio_bus_service(void);   /* the housekeeper core's share of the audio: bus writes */
+void aga_wedge_test(void);          /* $52ED: the housekeeper wedges the bus on purpose (agaboot WEDGETEST) */
 /* the same mix on HDMI (aga_hdmi.c): set up at boot on core 0, fed from
    aga_audio_stream on core 3, watched from the housekeeper */
 void aga_hdmi_boot(uint8_t *fb_va, uintptr_t fb_phys);
@@ -169,52 +174,51 @@ void aga_audio_stereo(int i);       /* width 100 75 50 25 0 %: $5850 + enc(i), b
 void aga_audio_swap(int on);        /* left and right swapped: $5861 / $5860, both outputs (SOUND SWAP) */
 extern int aga_hdmi_audio_off;      /* cmdline aga.nohdmiaudio */
 
-/* Timed waits that sleep (from RGB2RTG 0.75-dev48). A core that spins on
-   yield until a time comes runs flat out and cooks the Pi: core 3, ahead
-   of a game, spent most of every frame that way on a Pi 4, and core 1
+/* Timed waits that sleep (from RGB2RTG 0.75-dev48, EMM #2029). A core that
+   spins on yield until a time comes runs flat out and heats the Pi: core 3,
+   ahead of a game, spent most of every frame that way on a Pi 4, and core 1
    between RGB port frames. Such waits do a wfe instead, and the core's own
    timer event stream ends every wfe within about 10 us (Pi 4: 2^9 ticks of
    54 MHz, 9.5 us; Pi 3: 2^7 of 19.2 MHz, 6.7 us); a sev from another core
    ends it at once. aga_evstream_on sets the stream up - per core, once on
-   each core that waits this way. OFF by default: it is one bastard of an
-   experiment, and only cmdline.txt aga.sleep turns it on (1.115). In a
-   game it saves little - Jim Power on a Pi 3 A+ ended half a degree cooler
-   (49.4 against 49.9 C), since the 68k's core, the housekeeper and core
-   3's pacing steps keep running; core 1 sleeps through the RGB port's
-   waits. (A crash report against RGB2RTG's Eco mode, which sleeps the same
-   way, turned out to be a tester's own damn firmware.) Without it
-   CNTKCTL_EL1 is not touched and every wait spins as before. A core
-   sleeps only if its own stream is on - a wfe without it could wait for a
-   sev that never comes. Lock spins stay on yield. A wait for a time
-   sleeps only while more than two event periods are left (aga_nap_before):
-   the stream ends a wfe up to a period late, and core 3 paces a game in
-   steps of 8 colour clocks, about 2.3 us - sleeping every one of those
-   waits made each step last a whole 6.7 us period, and Jim Power ran at a
-   quarter of its speed with its sound shot to hell (Pi 3 A+, 2026-10-11).
-   Such short waits spin as before. */
-extern int aga_sleep;               /* cmdline aga.sleep: off unless asked */
-extern uint32_t aga_nap_min;        /* timer ticks: two event periods; aga_evstream_on sets it */
+   each core that waits this way. OFF by default, an experiment: only
+   cmdline.txt aga.sleep turns it on (1.115). In a game it saves little -
+   Jim Power on a Pi 3 A+ ended half a degree cooler (49.4 against 49.9 C),
+   since the 68k's core, the housekeeper and core 3's pacing steps keep
+   running; core 1 sleeps through the RGB port's waits. (A crash report
+   against RGB2RTG's Eco mode, which sleeps the same way, turned out to be
+   a tester's own firmware.) Without it CNTKCTL_EL1 is not touched and
+   every wait spins as before. A core sleeps only if its own stream is on - a wfe without it
+   could wait for a sev that never comes. Lock spins stay on yield.
+   A wait for a time sleeps only while more than two event periods are left
+   (aga_nap_before): the stream ends a wfe up to a period late, and core 3
+   paces a game in steps of 8 colour clocks, about 2.3 us - sleeping every
+   one of those waits made each step last a whole 6.7 us period, and Jim
+   Power ran at a quarter of its speed with its sound broken up (Pi 3 A+,
+   2026-10-11). Such short waits spin as before. */
+extern int aga_sleep;               /* cmdline aga.sleep */
+extern uint32_t aga_nap_min;        /* timer ticks: two event periods, set by aga_evstream_on */
 static inline void aga_evstream_on(void)
 {
     uint64_t frq, k;
     unsigned n = 0;
     if (!aga_sleep) return;
     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frq));
-    while (n < 15 && (4ull << n) <= frq / 100000) n++;          /* the largest n whose 2^(n+1) ticks still fit in 10 us */
+    while (n < 15 && (4ull << n) <= frq / 100000) n++;          /* the largest n with 2^(n+1) ticks <= 10 us */
     __asm__ volatile("mrs %0, cntkctl_el1" : "=r"(k));
-    k = (k & ~0xFCull) | (1ull << 2) | ((uint64_t)n << 4);     /* EVNTEN on; EVNTDIR 0 so bit n rising fires; EVNTI n */
+    k = (k & ~0xFCull) | (1ull << 2) | ((uint64_t)n << 4);     /* EVNTEN; EVNTDIR 0 (bit n rising); EVNTI n */
     __asm__ volatile("msr cntkctl_el1, %0\n\tisb" :: "r"(k));
-    aga_nap_min = 4u << n;                                       /* an event every 2^(n+1) ticks, so two periods */
+    aga_nap_min = 4u << n;                                       /* an event every 2^(n+1) ticks: two of them */
 }
 static inline void aga_nap(void)
 {
     uint64_t k;
     __asm__ volatile("mrs %0, cntkctl_el1" : "=r"(k));
-    if (aga_sleep && (k & (1ull << 2))) __asm__ volatile("wfe");    /* this core's own stream is on */
+    if (aga_sleep && (k & (1ull << 2))) __asm__ volatile("wfe");    /* this core's stream is on */
     else __asm__ volatile("yield");
 }
-/* One turn of a wait for the timer to reach its deadline: the core sleeps
-   only while more than two event periods are left, otherwise it spins */
+/* One turn of a wait for the timer to reach deadline: asleep only while more
+   than two event periods are left, otherwise a spin */
 static inline void aga_nap_before(uint64_t deadline)
 {
     uint64_t t;
@@ -371,7 +375,7 @@ enum {
     AGA_D_DMACON_OFF_PC, AGA_D_DMACON_OFF_VAL, AGA_D_DMACON_LAST_VAL,
     /* the display is on and fetches nothing: so is the memory it points at
        empty (the game draws into the other buffer of a pair and I never
-       follow the flip), or is the window shut? */
+       follow the damn flip), or is the window shut? */
     AGA_D_BPL1PT_NOW, AGA_D_BPL1PT_CHANGES, AGA_D_BPL1_NONZERO,
     AGA_D_BPL1PT_MIN, AGA_D_BPL1PT_MAX,
     AGA_D_DIWSTRT_NOW, AGA_D_DIWSTOP_NOW, AGA_D_DDFSTRT_NOW, AGA_D_DDFSTOP_NOW,
@@ -390,7 +394,7 @@ enum {
     AGA_D_BC0LOG4, AGA_D_BC0LOG5, AGA_D_BC0LOG6, AGA_D_BC0LOG7,
     /* the 68k stopped talking to the chipset: when, and in which frame */
     AGA_D_CPU_STALL, AGA_D_CPU_STALL_FRAME,
-    /* at the stall: the 68k status register, what I last asked of it,
+    /* at the stall: the 68k status register, what the hell I last asked of it,
        and what the chipset thinks is pending and enabled */
     AGA_D_STALL_SR, AGA_D_STALL_INTF, AGA_D_STALL_INTENA,
     AGA_D_STALL_INTREQ, AGA_D_STALL_IPL,
@@ -581,9 +585,9 @@ void aga_rgbout_start(uint32_t chip_real);        /* sandbox entry, once the chi
 void aga_rgbout_stop(void);                       /* sandbox leave, before chip RAM is copied back */
 /* core 3: this frame was just presented - AGA_OUT_H rows AGA_OUT_W wide,
    `pitch` words apart (twice AGA_OUT_W: a woven frame's own field) */
-void aga_rgbout_frame(const uint32_t *frame, int pitch, int page);   /* page -1 means a woven frame */
-void aga_rgbout_line(int y, int page, const uint32_t *line);          /* core 3, on each drawn line */
-void aga_rgbout_set_bright(int percent);          /* the picture's brightness, taken back out for the RGB port */
+void aga_rgbout_frame(const uint32_t *frame, int pitch, int page);   /* page -1: a woven frame */
+void aga_rgbout_line(int y, int page, const uint32_t *line);          /* core 3, each drawn line */
+void aga_rgbout_set_tone(const uint8_t *inv, int on, int key);   /* the picture's Brightness and Gamma, taken back out for the RGB port */
 /* core 1, from aga_glue.c: where the running copper list starts (COP1LC as
    last written, 0 with copper DMA off), whether WHDLoad has taken the machine,
    and a word of the virtual chip RAM */
@@ -631,6 +635,8 @@ void aga_diag_reg_reset(void);                /* zero both, when the blank displ
 void aga_diag_cia(uint32_t far, int write);   /* CIA traffic, which bypasses every other counter */
 void aga_diag_cia_value(uint32_t far, int write, uint8_t v);   /* the bytes on CIA-B port A */
 void aga_diag_serial(uint8_t c);              /* a byte the 68k wrote to SERDAT */
+uint32_t aga_diag_serial_count(void);
+uint8_t  aga_diag_serial_get(uint32_t i);
 void aga_diag_capture_code(uint32_t pc);      /* 68k code around the PC I froze at */
 void aga_diag_capture_code2(uint32_t pc);     /* and where the last interrupt landed */
 void aga_diag_frame_trace(uint32_t sr, uint32_t traps, uint32_t chipw,

@@ -107,6 +107,45 @@ void aga_diag_log(const char *s)
     log_buf[(h + len) % LOG_SIZE] = '\n';
 }
 
+/* A core that saw Ctrl-Amiga-Amiga while the housekeeper did not take it
+   (ps_wedge_reset in the protocol files): one line for the kept session, so
+   the next boot's C:AGA-diag.log says where the machine was stuck. No
+   printf here - it runs on a core that may hold the bus lock, and the log
+   can damn well wait. */
+static char *wl_s(char *o, const char *s) { while (*s) *o++ = *s++; return o; }
+static char *wl_u(char *o, uint32_t v)
+{
+    char t[10]; int n = 0;
+    do { t[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) *o++ = t[--n];
+    return o;
+}
+static char *wl_x(char *o, uint64_t v)
+{
+    for (int i = 15; i >= 0; i--) *o++ = "0123456789abcdef"[(v >> (i * 4)) & 15];
+    return o;
+}
+void aga_diag_wedge(int where, unsigned core, unsigned owner, uintptr_t ra, uint32_t stuck_ms)
+{
+    char line[224], *o = line;
+    o = wl_s(o, "[AGA] Ctrl-Amiga-Amiga, the housekeeper stuck: core ");
+    o = wl_u(o, core);
+    o = wl_s(o, where == 1 ? " was in a bus transaction that never ended"
+              : where == 2 ? " was waiting for the bus"
+              : " (chipset core, frame watch) took it");
+    if (stuck_ms) { o = wl_s(o, " for "); o = wl_u(o, stuck_ms); o = wl_s(o, " ms"); }
+    if (owner) {
+        o = wl_s(o, "; bus held by core ");
+        o = wl_u(o, owner - 1);
+        o = wl_s(o, " for the code at ");
+        o = wl_x(o, (uint64_t)ra);
+    } else {
+        o = wl_s(o, "; bus free");
+    }
+    *o = 0;
+    aga_diag_log(line);
+}
+
 /* ---- trap ring (AGA_DIAG only) ---------------------------------------------
    The last TRAP_RING custom-register accesses the 68k made, oldest first.
 
@@ -606,6 +645,19 @@ void aga_diag_serial(uint8_t c)
 {
     ser_buf[ser_head] = (char)c;
     if (++ser_head >= SER_RING) { ser_head = 0; ser_wrapped = 1; }
+}
+
+uint32_t aga_diag_serial_count(void)
+{
+    return ser_wrapped ? SER_RING : ser_head;
+}
+
+uint8_t aga_diag_serial_get(uint32_t i)
+{
+    uint32_t n = ser_wrapped ? SER_RING : ser_head;
+    if (i >= n) return 0;
+    uint32_t start = ser_wrapped ? ser_head : 0;
+    return (uint8_t)ser_buf[(start + i) % SER_RING];
 }
 
 void aga_diag_reg_reset(void)

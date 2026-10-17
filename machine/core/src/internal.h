@@ -219,6 +219,8 @@ typedef struct playfield {
                                      (a mid-line BPLCON0 can raise it, never lower it;
                                      0 while the line has fetched nothing) */
     int      blocks_dirty;        /* blocks of blockdata written this line: cleared at the next */
+    int      line_bpl1dat;        /* the CPU or the copper wrote BPL1DAT this line: Denise
+                                     shows sprites on it (render_segment) */
     int      line_delay1, line_delay2;         /* native-pixel delays (odd/even planes) */
     int      line_bplcon0;
     /* planar line data: bit i of plane p = native pixel (block origin) + i, MSB first */
@@ -345,10 +347,12 @@ struct aga {
        the same for the last completed frame, for aga_frame_woven. */
     int      weave_now, weave_fill, weave_row;
     int      weave_done, weave_done_row;
-    /* Brightness (aga_set_brightness): cfg.bright over 100 puts every channel
-       of every shown colour through bright_lut. color_b is the palette
-       through it, kept beside a->color; rebuilt whole when bright_dirty. */
+    /* Brightness and Gamma (aga_set_brightness, aga_set_gamma): with tone_on
+       every channel of every shown colour goes through bright_lut. color_b
+       is the palette through it, kept beside a->color; rebuilt whole when
+       bright_dirty. */
     uint8_t  bright_lut[256];
+    int      tone_on;
     uint32_t color_b[256];
     int      bright_dirty;
     /* Frame skip. skip_req is the host's wish, latched at each frame end
@@ -463,6 +467,7 @@ void pf_color_write(aga_t *a, int num, uint16_t v, int hpos);
 uint16_t pf_con3(const playfield_t *p);
 uint16_t pf_con4(const playfield_t *p);
 int  pf_is_bpl_slot(aga_t *a, int hpos);   /* 1 if a bitplane fetch occupies this cycle */
+int  pf_bpl_running(aga_t *a, int hpos);   /* 1 while the line's bitplane fetch window runs (WinUAE bprun) */
 
 /* sprites.c */
 void spr_reset(aga_t *a);
@@ -491,7 +496,7 @@ void aud_dmacon_changed(aga_t *a, uint16_t old, uint16_t new_);
 void aud_line_tick(aga_t *a);
 
 /* ---- inline helpers ------------------------------------------------------- */
-/* a 0x00RRGGBB colour through the brightness table (aga_set_brightness) */
+/* a 0x00RRGGBB colour through the brightness and gamma table (bright_lut) */
 static inline uint32_t bright_rgb(const aga_t *a, uint32_t c)
 {
     return ((uint32_t)a->bright_lut[(c >> 16) & 255] << 16) | ((uint32_t)a->bright_lut[(c >> 8) & 255] << 8)

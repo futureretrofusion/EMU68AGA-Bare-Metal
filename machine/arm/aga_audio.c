@@ -69,7 +69,7 @@ static volatile int running;
  * sample 128 and volume 44 gives 5632, which my mixer turned into 44 out of
  * 127, where real hardware produces 127*44/64 = 87 - I was 6 dB down, because
  * hardware sums two channels per side in the ANALOG domain and can swing to
- * twice one DAC's range while I had to fit that sum into a single byte. And
+ * twice one DAC's range while I had to fit that sum into a single damn byte. And
  * everything was then quantised to 8 bits, so a channel at volume 10 came out
  * with about THREE bits of resolution. That is what "some channels are really
  * quiet" is, and why low-volume sound effects vanished entirely.
@@ -144,7 +144,7 @@ static void ring_release(void)
 /* How far ahead of the DMA I write. 512 samples is 18 ms on a Pi 4, whose
    frames never take longer than that. The Pi 3's worst frame with video on
    measured 31 ms (2026-09-14): Paula ate through an 18 ms lead on every
-   such spike and the ring restarted, 70 times in 33 seconds - the wobble
+   such spike and the ring restarted, 70 times in 33 seconds - the damn wobble
    in the music. 1024 samples is 37 ms, which covers it, at the price of
    19 ms more latency on that board only. */
 #define LEAD_PI4         512
@@ -207,8 +207,12 @@ static inline uint64_t cntfrq(void)
 void aga_audio_init(const uint8_t *chipram, uint32_t chipram_size)
 {
     (void)chipram; (void)chipram_size;
+#ifdef FRF_VIRTUAL_AGA
+    kprintf("[AGA] FRF v0.10.14: virtual Paula -> HDMI only; real-Paula DAC backend disabled\n");
+#else
     kprintf("[AGA] audio: real Paula DAC, %d Hz stereo (period 127; 128 on an NTSC crystal), %d-sample loop in real chip RAM\n",
             3546895 / PAULA_PERIOD, RING_SAMPLES);
+#endif
 }
 
 /* No register mirroring: the virtual Paula owns the audio registers. */
@@ -253,8 +257,8 @@ static void program_paula(void)
    (line < 64) and another 8 ms on, inside the same frame on either
    standard. Each read is bracketed by the timer and dropped when the bus
    held it up over 4 us - the bus lock is shared with the 68k's CIA cycles,
-   and a wait on one end skewed a 2 ms window enough to call a US A500 PAL
-   (found by review). Two measurements must agree. No answer in 2 s: the
+   and a wait on one end skewed a 2 ms window enough to call an American A500
+   PAL (found by review). Two measurements must agree. No answer in 2 s: the
    rings go on at the PAL period, as before, and the measuring goes on too,
    a try every quarter second - one bad window (a held bus, a reset) must
    not fix PAL for the whole boot. NTSC found while the rings already play
@@ -372,7 +376,7 @@ void aga_audio_stream(const int16_t *lr, int frames)
     /* Sandbox mode: AmigaOS owns every byte of chip RAM, so without a ring
        agaboot allocated for me there is nowhere safe to put the samples.
        Silence is the correct failure - the alternative is writing 8 KB over
-       whatever the running game was given, which is how this cost a day. In
+       whatever the running game was given, which is how this cost me a day. In
        machine mode the real chip RAM is dead space and the fallback is fine. */
     if (!ring_owned && aga_sandbox_active) {
         static int moaned;
@@ -430,8 +434,8 @@ void aga_audio_stream(const int16_t *lr, int frames)
          * absorbed.
          *
          * It used to be absorbed by program_paula(), which restarts the DMA
-         * loop outright. That is a hard discontinuity in the middle of the
-         * music, and the drift is far larger than the design assumed: 31
+         * loop outright. That is a hard fucking discontinuity in the middle of
+         * the music, and the drift is far larger than the design assumed: 31
          * restarts in 110 seconds, one every three and a half seconds, where
          * the header promises "an inaudible hiccup every few minutes". Beats
          * landing in the wrong place is exactly what that sounds like.
@@ -533,19 +537,32 @@ void aga_audio_stream(const int16_t *lr, int frames)
 /* The housekeeper core's share, called from its loop on every visit (about a
    million times a second): at most one group of four samples per visit, so
    the IPL sampling it exists for never waits behind more than four bus
-   writes - plus, while the RGB port's HAM6 is on, four words of the frame
-   the RGB port is sending (aga_rgbout.c, a classic PiStorm) - which is
-   exactly why these writes were moved off core 3. A fresh start clears the
-   four real rings sixteen words per visit, then programs Paula and stamps
-   the moment the DMA really began. */
+   writes - and, while the RGB port's HAM6 is on, four words of its frame
+   (aga_rgbout.c, a classic PiStorm) - which is exactly why these writes were
+   moved off core 3. A fresh start clears the four real rings sixteen words
+   per visit, then programs Paula and stamps the moment the DMA really began. */
 extern void aga_hvs_service(void);      /* aga_hvs.c: the post-hand-back HVS watch */
+/* agaboot WEDGETEST YES ($52ED, from the 68k): the next visit takes the bus
+   lock and never fucking gives it back - the housekeeper stuck the way a
+   tester's PiStorm16 was, so Ctrl-Amiga-Amiga has to come through another
+   core (ps_wedge_reset in the protocol files). For trying that path only. */
+static volatile int wedge_req;
+void aga_wedge_test(void) { wedge_req = 1; }
 void aga_audio_bus_service(void)
 {
-    aga_hvs_service();                  /* cheap: one timer read unless a watch is armed */
-    aga_hdmi_service();                 /* cheap too: one timer read unless the mix stopped */
-    aga_rgbout_bus_service();           /* cheap: one load unless core 1 handed it a frame */
+    aga_hvs_service();                  /* Raspberry-Pi-side presentation */
+    aga_hdmi_service();                 /* Raspberry-Pi-side audio */
+#ifdef FRF_VIRTUAL_AGA
+    /* Standalone machine: there is no donor Amiga chipset underneath us.
+       Never probe a physical beam, service real-Paula DMA rings, or touch
+       physical HAM/RGB state.  This defensive return also protects against
+       any stale caller outside start.c. */
+    return;
+#else
+    aga_rgbout_bus_service();
     /* from the hand-over to the 68k, until it knows: a look every 0.5 ms */
     if (!crystal_known && housekeeper_enabled) crystal_measure();
+#endif
     if (!__atomic_load_n(&running, __ATOMIC_ACQUIRE)) return;
     svc_busy = 1;
     __asm__ volatile("dmb ish" ::: "memory");
@@ -612,8 +629,8 @@ void aga_audio_bus_service(void)
     }
     /* Distance forward from flush_pos, modulo the ring. A -1 nudge on core 3
        can put the target BEHIND me; half a ring of "distance" means exactly
-       that, and the answer is to give up the gap, not to walk the whole ring
-       writing stale samples. */
+       that, and the answer is to give up the gap, not to walk the whole
+       damn ring writing stale samples. */
     uint32_t target = __atomic_load_n(&pub_wr, __ATOMIC_ACQUIRE) & ~3u;
     uint32_t dist = (target - flush_pos) & (RING_SAMPLES - 1);
     if (dist > RING_SAMPLES / 2) { flush_pos = target; dist = 0; }
@@ -652,7 +669,11 @@ void aga_audio_stop(void)
     __atomic_store_n(&reinit_req, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&paula_reset, 0, __ATOMIC_RELEASE);
     refresh_step = 0;                            /* the next session's refresh starts afresh */
+#ifndef FRF_VIRTUAL_AGA
     if (was) ps_write_16(0xDFF096, 0x000F);      /* clear AUD0..AUD3 */
+#else
+    (void)was;
+#endif
     have = 0;
     ring_release();
 }

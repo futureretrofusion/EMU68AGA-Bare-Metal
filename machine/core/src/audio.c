@@ -29,8 +29,8 @@ static int32_t acc_cck;          /* cck accumulated in current output sample, fi
 static int32_t cck_per_sample;   /* 16.16 */
 
 /* Paula's steps for HDMI's band-limited Paula (aga_audio_steps). The colour
-   clock runs on from boot - a reset does not set the damn thing back - so its
-   times only ever grow. */
+   clock runs on from boot - a reset does not set it back - so its times only
+   ever grow. */
 static uint64_t aud_t;                           /* colour clocks mixed since boot */
 static aga_step_t steps[AGA_STEP_RING];
 static uint32_t steps_wr, steps_rd;
@@ -78,9 +78,8 @@ void aud_reset(aga_t *a)
     aud_clock(a);
 }
 
-/* colour clocks per output sample, straight from the standard in force:
-   NTSC's colour clock is 0.92% faster, and the samples are made from
-   emulated time */
+/* colour clocks per output sample, from the standard in force: NTSC's colour
+   clock is 0.92% faster, and the samples are made from emulated time */
 void aud_clock(aga_t *a)
 {
     double cck_hz = a->ntsc ? 3579545.0 : 3546895.0;
@@ -118,7 +117,7 @@ void aud_write(aga_t *a, uint32_t reg, uint16_t v)
         c->dat_written = 1;
         /* only while the channel's last request has been answered: WinUAE
            audio_state_channel2, state 0 - `dat_written && !isirq(nr)` - leaves
-           an idle channel idle when its damn interrupt is still pending */
+           an idle channel idle when its interrupt is still pending */
         if (!c->dmaen && c->state == 0 && !(a->intreq & (INTF_AUD0 << n))) {
             /* manual mode: start output, request next word */
             c->state = 2;
@@ -128,7 +127,7 @@ void aud_write(aga_t *a, uint32_t reg, uint16_t v)
             c->intreq2 = 1;
             aga_intreq_set(a, (uint16_t)(INTF_AUD0 << n)); a->dbg_audirq[0]++;
         } else if (!c->dmaen && c->state == 0) {
-            c->dat_written = 0;          /* ignored and forgotten - exactly what WinUAE does */
+            c->dat_written = 0;          /* ignored, and forgotten - as WinUAE does */
         }
         break;
     default: break;
@@ -191,7 +190,7 @@ void aud_dmacon_changed(aga_t *a, uint16_t old, uint16_t new_)
         } else if (was && !now) {
             /* The channel does not stop here. Paula plays out the word it
                has, then asks for another (see the end of chan_run). Only a
-               channel that never fetched a damn thing has nothing to finish. */
+               channel that never fetched anything has nothing to finish. */
             a->aud_dmaoff[n]++;
             c->dmaen = 0;
             if (c->state == 1) {
@@ -205,8 +204,7 @@ void aud_dmacon_changed(aga_t *a, uint16_t old, uint16_t new_)
 void aud_dma_slot(aga_t *a, int hpos)
 {
     (void)a; (void)hpos;
-    /* DMA fetches are performed on demand in aud_line_tick; this slot exists
-       only for future cycle accuracy. */
+    /* DMA fetches are performed on demand in aud_line_tick; this slot exists for future cycle accuracy. */
 }
 
 static void chan_next_word(aga_t *a, int n, audio_channel_t *c)
@@ -374,9 +372,9 @@ static void chan_run(aga_t *a, int n, audio_channel_t *c, int cck, int64_t *l, i
  *
  * which samples the mix at the LINE rate - 3546895/227, about 15.6 kHz - and
  * then holds it across the 1.79 output samples that fit in a line. That halves
- * the usable bandwidth to ~7.8 kHz and folds every damn thing above it back
- * down as aliasing, even though an output sample is only 127 colour clocks and
- * the resolution was there all along. Music mostly survives it; short bright
+ * the usable bandwidth to ~7.8 kHz and folds everything above it back down as
+ * aliasing, even though an output sample is only 127 colour clocks and the
+ * resolution was there all along. Music mostly survives it; short bright
  * effects turn to mush or vanish into the mix, which is what a game with music
  * and effects on four channels actually sounds like.
  *

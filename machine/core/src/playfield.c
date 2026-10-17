@@ -1,4 +1,4 @@
-/* AGA-PISTORM — bitplane DMA fetch and line rendering (Alice/Lisa playfield).
+/* AGA-PISTORM - bitplane DMA fetch and line rendering (Alice/Lisa playfield).
  * SPDX-License-Identifier: GPL-2.0-only
  *
  * UAE's line model: fetch units, fetch start, plane sequence and delay
@@ -86,16 +86,16 @@ static inline int slot_plane(int maxplanes, int cyc)
    a HAM pixel keeps channels of the pixel before and replaces one, so its
    base colours must be the real ones, and only what comes out is brightened.
    line_ehb is what EHB's half-bright pixels of the first 32 colours show:
-   I halve the real colour, as the chip does, and only then brighten it -
-   halving the brightened one instead made bright colours' halves too damn
-   dark wherever the brightening clips (found by RGB2RTG, 2026-10-10). */
+   the real colour halved, as the chip does, and only then brightened -
+   halving the brightened one made bright colours' halves too dark wherever
+   the brightening clips (found by RGB2RTG, 2026-10-10). */
 static uint32_t line_color[256];
 static uint32_t line_raw[256];
 static uint32_t line_ehb[32];
 static inline uint32_t ehb_half(uint32_t c) { return (c >> 1) & 0x7F7F7F; }
 static inline uint32_t ehb_shown(const aga_t *a, uint32_t raw)
 {
-    return a->cfg.bright > 100 ? bright_rgb(a, ehb_half(raw)) : ehb_half(raw);
+    return a->tone_on ? bright_rgb(a, ehb_half(raw)) : ehb_half(raw);
 }
 static uint16_t line_bplcon0, line_bplcon1, line_bplcon2, line_bplcon3, line_bplcon4;
 
@@ -390,7 +390,7 @@ void pf_color_write(aga_t *a, int num, uint16_t v, int hpos)
             p->aga_pairs++;
             if (val == a->color[num]) return;
             a->color[num] = val;
-            if (a->cfg.bright > 100) a->color_b[num] = bright_rgb(a, val);
+            if (a->tone_on) a->color_b[num] = bright_rgb(a, val);
             aga_record_change(a, LC_COLOR + num, val);
             return;
         }
@@ -408,7 +408,7 @@ void pf_color_write(aga_t *a, int num, uint16_t v, int hpos)
     uint32_t val = (cr << 16) | (cg << 8) | cb;
     if (val == cur) return;
     a->color[idx] = val;
-    if (a->cfg.bright > 100) a->color_b[idx] = bright_rgb(a, val);
+    if (a->tone_on) a->color_b[idx] = bright_rgb(a, val);
     aga_record_change(a, LC_COLOR + idx, val);      /* the full 0..255 index */
     (void)hpos;
 }
@@ -425,6 +425,7 @@ void pf_write(aga_t *a, uint32_t reg, uint16_t v, int hpos)
     }
     if (reg >= BPL1DAT && reg < BPL1DAT + 16) {
         p->bpldat[(reg - BPL1DAT) >> 1] = v;
+        if (reg == BPL1DAT) p->line_bpl1dat = 1;
         return;
     }
     switch (reg) {
@@ -437,7 +438,7 @@ void pf_write(aga_t *a, uint32_t reg, uint16_t v, int hpos)
            with BPLCON0 $0200 at colour clock $3E of line 59 and sets the
            playfield's pointers right after: WinUAE fetches up to $41 and
            stops, I fetched the rest of the line with four planes, those
-           pointers ran a line ahead and the whole playfield came from the
+           damn pointers ran a line ahead and the whole playfield came from the
            wrong rows (from RGB2RTG d888409). line_planes stays the most the
            line had, for drawing: the blocks a plane missed hold zeros
            (cleared each line). A line that began with no planes - or more
@@ -572,6 +573,7 @@ void pf_start_line(aga_t *a)
     p->line_plfleft = -1;
     p->line_blocks = 0;
     p->line_planes = 0;
+    p->line_bpl1dat = 0;
     p->fetch_start_h = -1;
     /* only the blocks the last line wrote: the rest are zero already (every
        line clears what it used, and reset cleared the lot). 8 KB a line
@@ -582,7 +584,7 @@ void pf_start_line(aga_t *a)
         p->blocks_dirty = 0;
     }
 
-    if (a->cfg.bright > 100) {
+    if (a->tone_on) {
         if (a->bright_dirty) {                   /* a new level, or colours set around pf_color_write */
             for (int i = 0; i < 256; i++) a->color_b[i] = bright_rgb(a, a->color[i]);
             a->bright_dirty = 0;
@@ -796,6 +798,31 @@ int pf_is_bpl_slot(aga_t *a, int hpos)
     return (int)((p->slot_used[hpos >> 6] >> (hpos & 63)) & 1);
 }
 
+/* How long after the write at colour clock hpos a register change shows, in
+   hires pixels. BPLCON1's scroll is seen 3 lores pixels later; a colour is
+   seen at the write itself, where this delay was 2 hires from the core's
+   first commit on ("small pipeline delay", never calibrated) and put every
+   colour 1 lores pixel right of WinUAE - Shadow of the Beast's sky band, and
+   Castlevania's scores (from RGB2RTG, EMM #2061: 10 renders change, each one
+   closer to WinUAE, none worse). */
+static inline int change_delay(uint32_t reg)
+{
+    if (reg == BPLCON1) return 6;
+    if (reg >= LC_COLOR) return 0;
+    return 2;
+}
+
+/* Is the line's bitplane fetch running at colour clock hpos - the whole
+   window from its first fetch cycle to its last, free cycles too? WinUAE's
+   bprun: sprite DMA gets no slot while it is set (spr_dma_slot). The same
+   catch-up as pf_is_bpl_slot. */
+int pf_bpl_running(aga_t *a, int hpos)
+{
+    playfield_t *p = &a->pf;
+    pf_sync(a, hpos + 1);
+    return p->fetch_start_h >= 0 && hpos >= p->fetch_start_h && hpos < p->fetch_start_h + p->fetch_total;
+}
+
 /* -------------------------------------------------------------------------- */
 /* planar -> chunky for the whole line, odd and even planes separately (both keep
    their original bit positions: odd planes in bits 0,2,4,6, even in 1,3,5,7) */
@@ -893,6 +920,23 @@ static inline uint32_t spr_pixel(uint32_t c, const uint8_t *spr, int sprlen, int
     return line_color[idx & 255];
 }
 
+/* The sprite line's pixel sv over colour c, if its pair is in front (pair <
+   thr: the fast path's threshold). The sprite line is in super-hires pixels
+   and the output in hires ones, so a lores or hires playfield takes two sprite
+   pixels to each output pixel. Lores and hires sprites always fill both;
+   super-hires ones (BPLCON3 SPRES = 3) can differ, and taking only the first
+   threw half of a dither away: Super Stardust AGA's menu pointer, a super-hires
+   checkerboard (one line 1010..., the next 0101...), came out as solid lines and
+   gaps. Both are drawn and mixed, as the super-hires playfield's pairs are
+   (from RGB2RTG 04538c4, EMM #2157). */
+static inline uint32_t spr_thr(uint32_t c, uint8_t sv, int thr, int base_even, int base_odd)
+{
+    if (!sv || (sv >> 6) >= thr) return c;
+    int cc = sv & 15;
+    int idx = (sv & 0x10) ? (base_odd + cc) : (((sv & 0x20) ? base_odd : base_even) + (sv >> 6) * 4 + cc);
+    return line_color[idx & 255];
+}
+
 /* A playfield pixel's raw value, decoded once per setting instead of at
    every pixel - bits 0-7 the colour index (BPLAM applied), bit 8 EHB's half
    brightness, bits 9-11 the sprite pairs shown in front of it (pair < this).
@@ -945,7 +989,7 @@ static void apply_change(aga_t *a, segstate_t *s, const linechange_t *c)
 {
     if (c->reg >= LC_COLOR && c->reg < LC_COLOR + 256) {
         int i = c->reg - LC_COLOR;
-        if (a->cfg.bright > 100) { line_raw[i] = c->value; line_color[i] = bright_rgb(a, c->value); }
+        if (a->tone_on) { line_raw[i] = c->value; line_color[i] = bright_rgb(a, c->value); }
         else line_color[i] = c->value;
         if (i < 32) line_ehb[i] = ehb_shown(a, c->value);
         return;
@@ -1003,6 +1047,20 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
     int base_even = ((s->con4 >> 4) & 15) << 4, base_odd = (s->con4 & 15) << 4;
     int vdiw = p->vdiw;
     const uint8_t *spr = a->sprline_valid ? a->sprline : NULL;
+    /* Denise shows sprites on a line only once BPL1DAT has been written on it
+       - by the bitplane DMA, or by the CPU or the copper - and hides them again
+       at the next line's start; ECS/AGA border sprites (BRDSPRT) show them all
+       the same (WinUAE drawing.cpp: hstart_new, bpl1dat_enable_sprites). A
+       line without bitplane data is border all along, inside the display
+       window too. Lupus Reditus (AGA, Revision 2025) turns its planes off for
+       the last two lines of its window while its eight 64-pixel sprites, with
+       VSTOP 4 under VSTART 80, run on past their data into the next sprite's
+       control words: I drew those words as a row of specks in four groups
+       under the picture, which WinUAE does not draw and the reporter's Amiga
+       apparently does not show (RGB2RTG 0.76 report, EMM #2162). Before the
+       first BPL1DAT of a line that does
+       have data WinUAE hides them too; that part is not modelled here. */
+    if (!have_data && !p->line_bpl1dat && !brdsprt) spr = NULL;
     int sprlen = (int)sizeof a->sprline;
     int d1 = 0, d2 = 0;
 #ifndef SCROLL_MODEL_BLOCK
@@ -1048,11 +1106,10 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
                 if (spr && brdsprt) {
                     int sx = (L2 + hx) << 1;
                     uint8_t sv = (sx < sprlen) ? spr[sx] : 0;
-                    if (sv) {
-                        int pair = sv >> 6, c = sv & 15;
-                        int idx = (sv & 0x10) ? (base_odd + c) : (((sv & 0x20) ? base_odd : base_even) + pair * 4 + c);
-                        col = line_color[idx & 255];
-                    }
+                    uint8_t sv2 = (sx + 1 < sprlen) ? spr[sx + 1] : 0;
+                    col = spr_thr(border, sv, 4, base_even, base_odd);      /* in the border every pair shows */
+                    if (sv2 != sv)
+                        col = mix2(col, spr_thr(border, sv2, 4, base_even, base_odd));
                 }
                 out[hx] = col;
             }
@@ -1134,14 +1191,10 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
                     if (spr) {
                         int sx = (hires + k) << 1;
                         uint8_t sv = (sx < sprlen) ? spr[sx] : 0;
-                        if (sv) {
-                            int pair = sv >> 6;
-                            if (pair < thr) {
-                                int cc = sv & 15;
-                                int idx = (sv & 0x10) ? (base_odd + cc) : (((sv & 0x20) ? base_odd : base_even) + pair * 4 + cc);
-                                c = line_color[idx & 255];
-                            }
-                        }
+                        uint8_t sv2 = (sx + 1 < sprlen) ? spr[sx + 1] : 0;
+                        c = spr_thr(col, sv, thr, base_even, base_odd);
+                        if (sv2 != sv)                    /* super-hires sprites: the pair mixed */
+                            c = mix2(c, spr_thr(col, sv2, thr, base_even, base_odd));
                     }
                     out[hx] = c;
                 }
@@ -1211,7 +1264,7 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
     #endif
                 } else if (ham) {
                     pfv = v;
-                    const uint32_t *hb = a->cfg.bright > 100 ? line_raw : line_color;   /* the real colours */
+                    const uint32_t *hb = a->tone_on ? line_raw : line_color;   /* the real colours */
                     if (planes == 8) {
                         switch (v & 3) {
                         case 0: s->ham_last = hb[(v >> 2) ^ (xorv >> 2)]; break;
@@ -1229,7 +1282,7 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
                         default:   s->ham_last = (s->ham_last & 0xFF00FF) | (n8 << 8); break;
                         }
                     }
-                    col = a->cfg.bright > 100 ? bright_rgb(a, s->ham_last) : s->ham_last;
+                    col = a->tone_on ? bright_rgb(a, s->ham_last) : s->ham_last;
                 } else if (ehb) {
                     pfv = v;
                     if (v & 0x20) col = line_ehb[(v & 31) ^ (xorv & 31)];
@@ -1244,19 +1297,13 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
 
             /* sprites */
             if (spr && (in_window || brdsprt)) {
-                uint8_t sv = (sx >= 0 && sx < sprlen) ? spr[sx] : 0;
-                if (sv) {
-                    int pair = sv >> 6;
-                    int visible;
-                    if (!in_window || pfv == 0) visible = 1;
-                    else if (front_pf == 1)     visible = pair < pf1p;
-                    else                        visible = pair < pf2p;
-                    if (visible) {
-                        int c = sv & 15;
-                        int idx = (sv & 0x10) ? (base_odd + c) : (((sv & 0x20) ? base_odd : base_even) + pair * 4 + c);
-                        col = line_color[idx & 255];
-                    }
-                }
+                uint32_t under = col;
+                int pv = in_window ? pfv : 0;
+                col = spr_pixel(under, spr, sprlen, sx, pv, front_pf, pf1p, pf2p, base_even, base_odd);
+                /* one decode per output pixel (not super-hires): super-hires
+                   sprites' second pixel too, mixed (spr_thr) */
+                if (subs == 1 && sx >= 0 && sx + 1 < sprlen && spr[sx + 1] != spr[sx])
+                    col = mix2(col, spr_pixel(under, spr, sprlen, sx + 1, pv, front_pf, pf1p, pf2p, base_even, base_odd));
             }
 
             /* once bit 0 is found, only pixels with a sprite on them need looking at */
@@ -1332,14 +1379,14 @@ void pf_finish_line(aga_t *a)
     s.con0 = line_bplcon0; s.con1 = line_bplcon1; s.con2 = line_bplcon2;
     s.con3 = line_bplcon3; s.con4 = line_bplcon4;
     s.diw_hstart = p->diw_hstart; s.diw_hstop = p->diw_hstop;
-    s.ham_last = a->cfg.bright > 100 ? line_raw[0] : line_color[0];
+    s.ham_last = a->tone_on ? line_raw[0] : line_color[0];
 
     int hx = 0;
     for (int i = 0; i < a->nchanges; i++) {
         const linechange_t *c = &a->changes[i];
-        /* change takes effect at lores pixel 2*hpos plus a small pipeline delay
-           (BPLCON1 scroll changes are seen 3 lores pixels after the write, colours 1) */
-        int chx = (int)c->hpos * 4 + (c->reg == BPLCON1 ? 6 : 2) - AGA_OUT_LEFT_LORES * 2;
+        /* change takes effect at lores pixel 2*hpos plus the register's own
+           delay (change_delay above) */
+        int chx = (int)c->hpos * 4 + change_delay(c->reg) - AGA_OUT_LEFT_LORES * 2;
         if (chx > AGA_OUT_W) chx = AGA_OUT_W;
         if (chx > hx) {
             render_segment(a, &s, out, hx, chx, have_data, x0, nbits, clx);

@@ -55,7 +55,7 @@ void cop_strobe(aga_t *a, int which)
     }
     /* Written by the CPU: takes effect at once, after one idle cycle. The
        pointer itself is read at the first fetch (c->reload), as in WinUAE,
-       which matters a damn sight when copper DMA is off - see cop_vsync. */
+       which matters when copper DMA is off - see cop_vsync. */
     c->pc = (which == 1) ? c->cop1lc : c->cop2lc;
     c->reload = which;
     c->state = COP_strobe_delay;
@@ -82,8 +82,8 @@ void cop_vsync(aga_t *a)
        all DMA off, writes BPLCON0 $0211, points COP1LC at its own list and
        turns DMA on again. Latching the pointer here kept the OS copinit
        from the vertical blank before, and copinit's second MOVE (BPLCON0
-       $0200) ran the moment DMA returned: no bitplane ever, just copper
-       road and sky. */
+       $0200) ran the moment DMA returned: no bitplane ever, copper road and
+       sky only. */
     a->cop.pc = a->cop.cop1lc;
     a->cop.reload = 1;
     a->cop.state = COP_read1;
@@ -95,8 +95,8 @@ void cop_start_line(aga_t *a)
 {
     /* The first cycle a line offers the copper is 2, not 0: WinUAE DMA records
        show copper accesses at 2,4,..,226 (113 per line), never at 0. Starting
-       at 0 gave the copper one extra damn access per line, which showed up as
-       a drift of one instruction word per line whenever a long copper run was
+       at 0 gave the copper one extra access per line, which showed up as a
+       drift of one instruction word per line whenever a long copper run was
        not interrupted by a WAIT (see docs/VALIDATION-FINDINGS.md). */
     a->cop.last_hpos = 1;
 }
@@ -129,7 +129,7 @@ static inline int beam_reached(const aga_t *a, int hpos)
    the meantime but a strobe or a new WAIT, which leave COP_wait or forget the
    wake; it holds for this pass of this line only (line_no never repeats, and
    a beam set back before wake_from finds it again). RGB2RTG 0.75 (by the same
-   author): Jim Power's copper waits for a place on nearly every damn line. */
+   author): Jim Power's copper waits for a place on nearly every line. */
 static void cop_wait_wake(aga_t *a, int c_hpos)
 {
     copper_t *c = &a->cop;
@@ -269,6 +269,16 @@ void cop_sync(aga_t *a, int until)
                instruction only at line $120. */
             break;
         case COP_wait:
+            /* and no wake-up in one either: WinUAE's copper leaves a WAIT in a
+               cycle it can use, so after WAIT h=$40 it reads the next MOVE at
+               $48 where mine read at $44 ($40 is short, $44 is the wake). The
+               wake shortcut (custom.c cck_step, wake_h) stays a lower bound.
+               Shadow of the Beast sets COLOR00 from a WAIT at each edge of the
+               display window on every line, and its sky band came out 8 lores
+               pixels left (from RGB2RTG, EMM #2061: copper slots differing from
+               WinUAE on this corpus - SOTB 221 to 1, boot 51 to 1, Castlevania
+               t1/t2 59 to 1, Reshoot title 269 to 133, none worse). */
+            if (pf_is_bpl_slot(a, c_hpos)) break;
             if (prev >= 0 && beam_reached(a, prev)) {
                 if (c->blitwait && a->blt.busy) {
                     c->state = COP_bltwait;

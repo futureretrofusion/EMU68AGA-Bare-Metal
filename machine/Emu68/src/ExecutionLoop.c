@@ -15,6 +15,13 @@
 #include "pistorm/ps_protocol.h"
 #endif
 
+#ifdef AGA_PISTORM
+extern int aga_mode;
+#define FRF_PHYSICAL_IPL_ALLOWED() (!aga_mode)
+#else
+#define FRF_PHYSICAL_IPL_ALLOWED() 1
+#endif
+
 register uint32_t PC __asm__("w18");
 register void (*ARMCode)() __asm__("x12");
 extern uint32_t EPOCH;
@@ -379,13 +386,13 @@ void MainLoop()
                 /* Now, if Higher-level interrupt was coming from Paula, report it */
 #if defined(PISTORM)
                 /* On PiStorm32 IPL level is obtained by second CPU core from the GPIO directly */
-                if (ctx->INTF.IPL > level)
+                if (FRF_PHYSICAL_IPL_ALLOWED() && ctx->INTF.IPL > level)
                 {
                     level = ctx->INTF.IPL;
                 }
 #else
                 /* On classic pistorm we need to obtain IPL from PiStorm status register */
-                if (ctx->INTF.IPL)
+                if (FRF_PHYSICAL_IPL_ALLOWED() && ctx->INTF.IPL)
                 {
                     int ipl_level;
 

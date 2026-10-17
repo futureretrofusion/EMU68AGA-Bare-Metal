@@ -92,6 +92,38 @@ static inline int crop_auto_track(struct crop_auto *s, int rows, int ok, int x0,
     return moved;
 }
 
+/* What Auto shows across: the window - or, when the game's playfield is
+   narrower than the standard screen, 640 hires pixels round it: the standard
+   screen itself when the window lies inside it, else centred on the window,
+   inside the frame. The window is the bitplanes' (DIW on lines with data), so
+   it does not see sprites in the border: Banshee's in-game playfield is 256
+   lores pixels by 256 lines (242..754 in the frame) and its score, lives and
+   shield panel is border sprites (BRDSPRT) to the left of it, filling the
+   standard screen to 114. Taken literally the window lost the panel and Fill
+   stretched the rest 1.7 times where a standard game gets 1.33; centred, the
+   panel was cut and the right showed border. Only the width: a window lower
+   than the standard screen is what Auto is for, the letterbox it zooms away.
+   Steps of two hires pixels. */
+#define CROP_AUTO_MIN_W 640     /* the standard screen (aga_hvs.c zoom_rect[2]) */
+#define CROP_STD_X      114     /* ...and where it starts in the frame: DIWSTRT $2C81 */
+static inline void crop_auto_span(int x0, int x1, int *x, int *w)
+{
+    int cx = x0, cw = x1 - x0;
+    if (cw < CROP_AUTO_MIN_W) {
+        if (x0 >= CROP_STD_X && x1 <= CROP_STD_X + CROP_AUTO_MIN_W)
+            cx = CROP_STD_X;
+        else {
+            cx = x0 - (CROP_AUTO_MIN_W - cw) / 2;
+            if (cx > CROP_FRAME_W - CROP_AUTO_MIN_W) cx = CROP_FRAME_W - CROP_AUTO_MIN_W;
+            if (cx < 0) cx = 0;
+            cx &= ~1;
+        }
+        cw = CROP_AUTO_MIN_W;
+    }
+    *x = cx;
+    *w = cw;
+}
+
 /* The words at $DFF1F2. Bits 1 and 15 stay clear in every one: a kernel
    without them stores the word as the core's aga_ctrl, where those two mean
    "windowed" and "use the register" (vectors.c).

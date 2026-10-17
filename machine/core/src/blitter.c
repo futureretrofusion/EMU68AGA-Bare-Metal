@@ -77,8 +77,7 @@ static inline uint32_t blit_func(uint32_t sa, uint32_t sb, uint32_t sc, uint8_t 
 
 static inline uint16_t do_fill(const blitter_t *b, uint16_t d, int *fc)
 {
-    /* IFE and EFE both set fill exclusively - WinUAE's "weird fill mode",
-       and weird it is */
+    /* IFE and EFE both set fill exclusively (WinUAE's "weird fill mode") */
     int ife = (b->con1 & (BLTCON1_IFE | BLTCON1_EFE)) == BLTCON1_IFE ? 2 : 0;
     int fc1 = fill_table[d & 255][ife + *fc][1];
     uint16_t out = fill_table[d & 255][ife + *fc][0] | (fill_table[d >> 8][ife + fc1][0] << 8);
@@ -95,8 +94,7 @@ static void blit_normal(aga_t *a, int hsize, int vsize)
     int ash = (b->con0 >> 12) & 15, bsh = (b->con1 >> 12) & 15;
     int desc = b->con1 & BLTCON1_DESC;
     /* fill works ascending too, the carry running the other way through the
-       words (WinUAE fills it anyway; its debugger only warns "fill without
-       desc") */
+       words (WinUAE fills; its debugger only warns "fill without desc") */
     int fill = (b->con1 & (BLTCON1_IFE | BLTCON1_EFE)) != 0;
     uint32_t apt = b->apt, bpt = b->bpt, cpt = b->cpt, dpt = b->dpt;
     /* the shifters' previous words, cleared as the blit started (blit_start) */
@@ -188,7 +186,7 @@ static void blit_line(aga_t *a, int count)
        write needs USEC, not USED (C must be on or nothing is drawn), and only
        with USEC does a Y step move C and start a new row for SING. 9 Fingers
        and State of the Art matched the real chip RAM after this in RGB2RTG
-       (from RGB2RTG 6429272) - took me long enough. */
+       (from RGB2RTG 6429272). */
     for (int i = 0; i < count; i++) {
         int pixel = !sing || !onedot;
         onedot = 1;
@@ -196,7 +194,7 @@ static void blit_line(aga_t *a, int count)
         b->aold = (uint16_t)((((uint32_t)b->aold << 16) | (b->adat & b->afwm)) >> shift);   /* blitter_line_adat */
         /* the texture bit is bit 0 of BLTBDAT rotated right by BSH: bit BSH for
            the first pixel, then BSH-1, BSH-2... (WinUAE blitter_line_minterm,
-           blitter_nxline). Bit 15 drew every dash one damn pixel early. */
+           blitter_nxline). Bit 15 drew every dash one pixel early. */
         uint16_t bhold = (blineb & 1) ? 0xFFFF : 0;
         uint16_t cdat = usec ? chip_rd16(a, cpt) : b->cdat;
         uint16_t ddat = (uint16_t)blit_func(ahold, bhold, cdat, mt);
@@ -240,8 +238,8 @@ static void blit_line(aga_t *a, int count)
     b->zero = zero;
 }
 
-/* Report a blit finished: drop BBUSY, raise the interrupt, and release a
-   copper stuck waiting on BLTDONE. */
+/* Report a blit finished: drop BBUSY, raise the interrupt, release a copper
+   that is waiting on BLTDONE. */
 static void blit_finish(aga_t *a)
 {
     blitter_t *b = &a->blt;
@@ -266,7 +264,7 @@ static void blit_finish(aga_t *a)
  * a few microseconds - expiring the delay long before the game has armed its
  * wait, which is the exact race the delay exists to prevent. That coupling is
  * why the loop could not be allowed to catch up, and why the audio generated
- * from the same clock ran 4.5% slow - a right shower of shit, both of them.
+ * from the same clock ran 4.5% slow.
  *
  * So the core now only says "a blit is outstanding" and the glue, which has a
  * real timer, decides when enough WALL TIME has passed. The two clocks are
@@ -282,7 +280,7 @@ static void blit_finish(aga_t *a)
  * load-bearing the moment anything waits on it. A copper list that waits on
  * BLTDONE stalls for the whole blit, and a big one costs frames: with a
  * per-word cost, Banshee drew its title and then crawled, sound stuck and its
- * damn quit key taking minutes to answer.
+ * quit key taking minutes to answer.
  *
  * The delay exists for exactly one reason: a blit must not report finished
  * inside its own BLTSIZE write, or a game that arms its wait AFTER starting
@@ -316,9 +314,8 @@ static void blit_start(aga_t *a, int hsize, int vsize)
     blitter_t *b = &a->blt;
     b->dur_cck = blit_duration(b, hsize, vsize);
     if (!aga_dma_enabled(a, DMAF_BLTEN)) {
-        /* Blitter DMA disabled: the blit is latched and would start when
-           enabled. For simplicity run it anyway (games always enable the
-           damn thing). */
+        /* Blitter DMA disabled: the blit is latched and would start when enabled.
+           For simplicity run it anyway (games always enable it). */
     }
     if (b->busy) blit_finish(a);       /* a new blit while one is outstanding */
     b->busy = 1;

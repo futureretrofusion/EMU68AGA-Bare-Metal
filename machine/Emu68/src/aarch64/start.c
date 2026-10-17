@@ -511,14 +511,16 @@ void secondary_boot(void)
 #else
     (void)async_log;
     if (cpu_id == 2 && aga_chip_base) {
-        /* The physical PiStorm housekeeper is intentionally absent, but HDMI
-           audio still needs its cheap retry/idle maintenance.  The standalone
-           audio stream never starts the real-Paula rings, so this service path
-           cannot issue physical Paula bus traffic. */
-        extern void aga_audio_bus_service(void);
-        kprintf("[BOOT] FRF v0.9.5: CPU2 standalone HDMI/audio service\n");
+        /* FRF v0.10.15 STANDALONE FIREWALL:
+           CPU2 services only Raspberry-Pi-side presentation.  Do NOT call
+           aga_audio_bus_service(): that legacy wrapper also owns the donor
+           Amiga's real-Paula crystal probe / DMA-ring backend. */
+        extern void aga_hvs_service(void);
+        extern void aga_hdmi_service(void);
+        kprintf("[BOOT] FRF v0.10.15: CPU2 standalone HVS/HDMI only; physical Amiga bus firewalled\n");
         for (;;) {
-            aga_audio_bus_service();
+            aga_hvs_service();
+            aga_hdmi_service();
             __asm__ volatile("yield");
         }
     }
@@ -933,7 +935,7 @@ void parse_cmdline(const char *cmdline)
     zorro_disable = 0;
     ppc_enable = 0;
     fast_page0 = 0;
-    kprintf("[BOOT] FRF virtual AGA v0.9.5 KEYBOARD: machine mode, 2048 KB chip, MMU, no physical bus\n");
+    kprintf("[BOOT] FRF virtual AGA v0.10.15 COHERENT-MMU: machine mode, 2048 KB chip, MMU, no physical bus\n");
 #endif
     if ((tok = find_token(cmdline, "checksum_rom")))
     {
@@ -973,9 +975,7 @@ void parse_cmdline(const char *cmdline)
 #endif
 }
 
-#if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
 extern void frf_boot_stage(unsigned stage);
-#endif
 void boot(void *dtree)
 {
     uintptr_t kernel_top_virt = ((uintptr_t)boot + (KERNEL_SYS_PAGES << 21)) & ~((1 << 21)-1);
@@ -1611,11 +1611,14 @@ void boot(void *dtree)
             if (aga_mode || !aga_diag_have_prev())
                 memset((void *)aga_chip_base, 0, aga_chip_size);
             memset((void *)(aga_chip_base + aga_chip_size), 0, AGA_FB_RESERVE);
-            /* machine mode: 68k address 0 is the virtual chip RAM from boot. No MMU
-               unless aga.mmu asks for it - the abort handler serves it instead.
-               The redirect flag is raised after aga_glue_init has set chip_va. */
-            if (aga_mode && aga_use_mmu)
-                mmu_map(aga_chip_base, 0x000000, aga_chip_size, MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_ATTR_CACHED, 0);
+            /* FRF v0.10.15 COHERENT-MMU: standalone Chip RAM MUST stay behind the
+               abort-handler path. A direct MMU map would let JIT loads/stores
+               bypass the 7 MHz bus governor completely. Ignore aga.mmu in
+               machine mode; Fast/Z3 RAM remains directly mapped and fast. */
+            if (aga_mode && aga_use_mmu) {
+                kprintf("[BOOT] CHIP7: aga.mmu ignored in standalone mode; Chip RAM governed at 7 MHz\n");
+                aga_use_mmu = 0;
+            }
             aga_glue_init((uint8_t *)aga_chip_base, aga_chip_size,
                           (uint8_t *)(aga_chip_base + aga_chip_size), aga_chip_base + aga_chip_size, 0, aga_mode);
             if (aga_mode && !aga_use_mmu) aga_chip_redirect = 1;
@@ -2172,17 +2175,17 @@ void boot(void *dtree)
 #endif
 #if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
     {
-        /* Start CPU1 USB only after CPU0 platform/ROM initialization.
-         * Tested v0.10.25 synchronization paired with v0.10.22 boot files. */
+        /* CPU1 must not race CPU0 through early firmware mailbox operations. */
         extern volatile uint8_t frf_usb_host_start_allowed;
+        extern void frf_boot_stage(unsigned stage);
+        frf_boot_stage(2);
+        __atomic_store_n(&frf_usb_host_start_allowed, 1u, __ATOMIC_RELEASE);
+        __asm__ volatile("sev" ::: "memory");
         extern volatile uint8_t frf_usb_boot_ready;
         extern volatile uint8_t frf_usb_mouse_present;
         extern volatile uint8_t frf_usb_mouse_seen;
         extern volatile uint8_t frf_usb_mouse_buttons;
         uint64_t f, t0, now;
-        frf_boot_stage(2);
-        __atomic_store_n(&frf_usb_host_start_allowed, 1u, __ATOMIC_RELEASE);
-        __asm__ volatile("sev" ::: "memory");
         __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(f));
         __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(t0));
         do {
@@ -2210,7 +2213,8 @@ void boot(void *dtree)
 #endif
 #if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
     {
-        /* Allow early Ctrl+Shift+F12 HID input before guest Kickstart. */
+        /* Give keyboard HID a brief boot-time window for Ctrl+Shift+F12.
+           Keyboard is already enumerated by the USB boot gate above. */
         uint64_t begin, now, hz;
         __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(begin));
         __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz));
@@ -2221,6 +2225,11 @@ void boot(void *dtree)
         extern void frf_usb_guest_start(void);
         frf_usb_guest_start();
         frf_boot_stage(4);
+    }
+#endif
+#if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
+    {
+        extern void frf_boot_stage(unsigned stage);
         frf_boot_stage(5);
         kprintf("[BOOT] FRF USB-SYNC: entering M68K_StartEmu now\n");
     }

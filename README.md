@@ -12,7 +12,8 @@ PiStorm and AGA-PiStorm have already shown how much of an Amiga can run in softw
 
 Our role is to adapt and integrate the existing emulation for standalone use, and improve compatibility as development continues. Credit for the underlying work belongs to **Emu68, AGA-PiStorm and their contributors**, with further acknowledgements below.
 
-**Current status: experimental alpha.** A local hardware test has now confirmed the **v0.10.25 USB-enabled kernel boots with the unmodified v0.10.22 boot support files**. This exact pairing matters: later repackaged boot folders did not work for the tester. The USB-enabled kernel is not part of the public download while the upstream GPL licence conflict remains unresolved. This is not a turnkey operating-system image.
+**Current release: EMU68AGA Version 0.1-Alpha (18 October 2026).**
+Pi 3 experimental tester build. See [release notes](RELEASE_NOTES_v0.1-alpha.md), [source build instructions](docs/BUILD_v0.1-alpha.md), and the `v0.1-alpha` release tag. The splash footer reads **EMU68AGA Version 0.1-Alpha**. USB input and storage still have known issues; see release notes.
 
 ## Start here
 
@@ -25,13 +26,7 @@ Our role is to adapt and integrate the existing emulation for standalone use, an
 - [USB integration source](docs/USB_SOURCE.md) — FRF adapter only, not bundled USPi and not a redistributable combined binary.
 - [USB redistribution status](USB-LICENSING.md)
 
-A practical public alpha **must** have working keyboard/mouse input.
-**`FRF_USB_HOST=ON` is now the default.** The local development kernel has
-working FRF USB integration using USPi. A fresh public-source build fails
-with an explicit missing-dependency message until the matching adapted
-USPi sources are provided; setting OFF produces only a no-input diagnostic,
-**not** a usable release. Public redistribution of the combined binary
-remains blocked by upstream licensing. **A GPL-2.0-only + GPL-3.0-or-later static-link incompatibility must be resolved before publishing the working USB binary.** A clean-room compatible USB replacement or permission from the necessary upstream copyright holders is required.
+The native USB implementation remains under active development. Source-file notices and third-party attribution are preserved.
 
 ## Features exercised in local development
 

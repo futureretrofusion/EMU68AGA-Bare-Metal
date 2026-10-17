@@ -96,7 +96,15 @@ static inline int hsync_step(struct hsync *s, int phase, int vactive, int k_now)
         return s->k = 0;
     }
     if (!s->blocks) return s->k;
-    if (s->need16 < -(1 << 15) || s->need16 > (HS_KMAX << 16) + (1 << 15)) {
+    /* A frame faster than the mode's own porch allows - any need below 0 -
+       is out of reach too, however little (RGB2RTG 0.75-dev52): the porch
+       can only lengthen HDMI's frame, so the blank drifts through the
+       Amiga's frames and wraps whatever it does. Steering such a frame
+       walked the porch at every wrap - 19 changes in ten minutes at -0.26
+       lines, 31 at -0.45 (test_sync.c), a monitor that blanks at each, and
+       not one frame saved. Held at the mode's own: no timing change at all.
+       (Up to 1.115 only below -0.5.) */
+    if (s->need16 < 0 || s->need16 > (HS_KMAX << 16) + (1 << 15)) {
         s->reach = -1; s->steady = 0;
         return s->k = 0;
     }

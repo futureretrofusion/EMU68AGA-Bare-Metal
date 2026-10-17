@@ -13,6 +13,9 @@
 #include <stdint.h>
 #include "aga/chipset.h"
 #include "aga_glue.h"
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+#include "frf_rtg_handoff.h"
+#endif
 #include "aga_crop.h"
 #include "aga_sharp.h"
 #include "aga_sync.h"
@@ -566,6 +569,10 @@ void aga_hvs_service(void)
 static uint32_t  cur_list;          /* LIST_A/LIST_B when mine is live, else 0 */
 static uint32_t  ptr0_word;         /* dlist word index of my plane's PTR0 */
 static int       video_ok;
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+static frf_rtg_handoff frf_rtg_display;
+#endif
+
 
 #define FB_BYTES   (AGA_OUT_W * AGA_OUT_H * 4)
 static inline int fb_next_page(int p) { return p >= 2 ? 0 : p + 1; }
@@ -618,6 +625,11 @@ int aga_video_init_at(uint8_t *fbmem_va, uintptr_t fbmem_phys)
 
     saved_list = reg_rd(REG_DISPLIST1);
     cur_list = 0;
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+    frf_rtg_handoff_init(&frf_rtg_display, saved_list);
+    aga_diag_log("[RTG] HDMI HVS arbitration active, waiting for external Picasso96 list");
+#endif
+
     video_ok = 1;
     crop_state();                       /* bit 0: Custom understood */
     kprintf("[AGA] HVS: display %dx%d, AGA plane %dx%d at %d,%d (scale %08x/%08x), fb %p\n",
@@ -646,6 +658,12 @@ static uint32_t src_rows = AGA_OUT_H, src_pitch = AGA_OUT_W * 4;
      1 integer  that shape, whole number of display lines per Amiga line:
                 sharpest, scanlines come out even
      2 fill     whole display, shape be damned
+   and since 1.116 RGB2RTG's shapes (0.75-dev63/64):
+     3 5:4      square pixels - hires pixel half a line's height, PAL or
+                NTSC: a PAL screen 5:4 (on a 1280 x 1024 monitor 4x
+                exactly), an NTSC one 16:10
+     4-7        16:9, 16:10, 21:9, 32:9: the picture stretched to that
+                shape, whatever its own, as big as fits
    Up to 1.106 the one fit took hires pixels square on doubled lines, 4%
    narrower than a monitor.
 
@@ -656,6 +674,8 @@ static uint32_t src_rows = AGA_OUT_H, src_pitch = AGA_OUT_W * 4;
    left, in shape, centred. */
 static int scale_mode;
 static int border_x, border_y;
+static int scan_level, lscan_level;    /* the scanlines (below), for Whole lines */
+static int scan_shape;                 /* 0 Even (the default), 1 Crisp, 2 Whole lines */
 static void set_source(void);
 static void fit(void)
 {
@@ -664,7 +684,10 @@ static void fit(void)
         dst_w = aw;
         dst_h = ah;
     } else {
-        uint64_t sw = (uint64_t)crop_w * (frame_ntsc ? 430 : 520), sh = (uint64_t)crop_h * 1000;   /* the shape */
+        static const uint16_t shape[8][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+                                              { 16, 9 }, { 16, 10 }, { 21, 9 }, { 32, 9 } };
+        uint64_t sw = (uint64_t)crop_w * (scale_mode == 3 ? 500 : frame_ntsc ? 430 : 520), sh = (uint64_t)crop_h * 1000;   /* the shape */
+        if (scale_mode >= 4) { sw = shape[scale_mode][0]; sh = shape[scale_mode][1]; }
         if ((uint64_t)aw * sh <= (uint64_t)ah * sw) { dst_w = aw; dst_h = (uint32_t)(aw * sh / sw); }
         else                                        { dst_h = ah; dst_w = (uint32_t)(ah * sw / sh); }
         if (scale_mode == 1 && dst_h >= crop_h) {
@@ -674,6 +697,21 @@ static void fit(void)
     }
     if (dst_w > aw) dst_w = aw;
     if (dst_h > ah) dst_h = ah;
+    /* Scanline shape Whole lines (RGB2RTG's VideoCore.card 1.9): while the
+       scanlines are on, a whole number of display rows per Amiga line (or
+       woven row) - height rounded down to n of them, n 2 or more, width by
+       the same factor so the shape is kept, centred below like any picture.
+       Every line then gets the same rows, the last one dark: at 800 x 600,
+       where 4:3 gives a line 2.1 rows, 2 each. Nothing when they are whole
+       already (Scale integer) or fewer than 2 (no scanlines). */
+    if (scan_shape == 2 && (frame_woven ? lscan_level : scan_level)) {
+        uint32_t lines = (frame_woven && dst_h >= 2 * crop_h) ? 2 * crop_h : crop_h;   /* as set_source shows it */
+        uint32_t n = lines ? dst_h / lines : 0;
+        if (n >= 2 && n * lines != dst_h) {
+            dst_w = (uint32_t)((uint64_t)dst_w * (n * lines) / dst_h);
+            dst_h = n * lines;
+        }
+    }
     if (!dst_w) dst_w = 1;
     if (!dst_h) dst_h = 1;
     dst_x = (disp_w - dst_w) / 2;
@@ -730,7 +768,9 @@ static void apply_crop(void)
         if (y1 > rows - 1) y1 = rows - 1;       /* a PAL window, an NTSC frame since */
         if (y0 > rows - 64) y0 = rows - 64;
         if (y1 < y0 + 63) y1 = y0 + 63;
-        crop_x = (uint32_t)autow.x0; crop_w = (uint32_t)(autow.x1 - autow.x0);
+        int cx, cw;                             /* never narrower than the standard screen */
+        crop_auto_span(autow.x0, autow.x1, &cx, &cw);
+        crop_x = (uint32_t)cx; crop_w = (uint32_t)cw;
         crop_y = (uint32_t)y0; crop_h = (uint32_t)(y1 - y0 + 1);
     } else {
         int sz = zoom_mode > 2 ? 1 : zoom_mode, px = zoom_mode > 2 ? 0 : pos_x, py = zoom_mode > 2 ? 0 : pos_y;
@@ -869,7 +909,7 @@ void aga_video_set_sharp(int on) { aga_video_set_look(on ? 0 : 1); }
 /* $597S: scale, 0 4:3 / 1 integer / 2 fill (fit, above) */
 void aga_video_set_scale(int mode)
 {
-    scale_mode = (mode >= 0 && mode <= 2) ? mode : 0;
+    scale_mode = (mode >= 0 && mode <= 7) ? mode : 0;
     if (disp_w) fit();
     zoom_gen++;
     calib_refresh();
@@ -894,13 +934,15 @@ void aga_video_set_border(int down, int pct)
    others on 4:3 or fill. Image sits in the frame reserve behind the two
    pages - uncached, as the HVS reads it. */
 #define SCAN_OFF   0x2A0000u
-#define SCAN_W     16
+/* Scanline alpha is uniform across X; halving scratch width preserves
+ * 4096 line samples while making space for v1.116's CRT aperture mask
+ * without colliding with FRF's third framebuffer. */
+#define SCAN_W     8
 _Static_assert(3 * FB_BYTES <= SCAN_OFF, "the scanline image would overlap the three pages");
 #define CTL_SCL(s) ((((uint32_t)(s)) << 5) | (((uint32_t)(s)) << 8))   /* both planes' scaling mode */
 #define SCL_H_PPF_V_NONE 4
 static const uint8_t scan_alpha[5] = { 0, 64, 128, 192, 255 };
-static int scan_level, lscan_level;
-static uint32_t mask_rows, mask_src, mask_level;   /* what the image in memory was written for */
+static uint32_t mask_rows, mask_src, mask_level, mask_shape;   /* what the image in memory was written for */
 
 /* The last game's picture for the crop screen, above the scanline image and
    below the HDMI sound ring. Each frame shown is marked (last_*, present),
@@ -914,10 +956,78 @@ static uint32_t mask_rows, mask_src, mask_level;   /* what the image in memory w
 _Static_assert(SCAN_OFF + 4096u * SCAN_W * 4 <= SNAP_OFF, "the scanline image for a 4096-line display would reach the snapshot");
 _Static_assert(SNAP_OFF + FB_BYTES <= AGA_HDMI_AUDIO_OFF, "the snapshot would reach the HDMI sound ring");
 
+/* CRT mask ($510n, agaboot RTG Image), RGB2RTG's (VideoCore.card 1.7 and
+   1.8): an aperture grille's dark columns as a Trinitron or a PVM shows them -
+   one in every three display columns, six on a display taller than 1440
+   lines - as dark as the scanline levels. Darkening only: the HVS lays a
+   plane over the picture and cannot part its colours like a CRT's phosphors
+   do. An unscaled plane over the picture with a pitch of 0, so the HVS reads
+   the same row of memory for every line: the grille costs one row, between
+   the scanline image and the snapshot. With the scanlines on as well the two
+   darkenings multiply, as they do on a CRT - RGB2RTG's user: "much better
+   than only scanlines". Pitch 0 checked on a Pi 4 and a tester's Pi 3. */
+/* FRF has three 800x286 frames (end 0x29E500), scanline scratch
+ * 0x2A0000..0x2C0000 at 8 pixels x 4096 rows, and snapshot starts 0x2E0000.
+ * The 16 KiB CRT mask fits in the gap at 0x2C0000..0x2C4000. */
+#define MASK_OFF   0x2C0000u
+#define MASK_W_MAX 4096u
+_Static_assert(3 * FB_BYTES <= SCAN_OFF, "scanline scratch overlaps third framebuffer");
+_Static_assert(SCAN_OFF + 4096u * SCAN_W * 4 <= MASK_OFF, "scanline scratch overlaps CRT mask");
+_Static_assert(MASK_OFF + MASK_W_MAX * 4 <= SNAP_OFF, "the CRT mask's row would reach the snapshot");
+static int grille_level;
+static uint32_t grille_w, grille_h, grille_lv;   /* what the row in memory was written for */
+
+void aga_video_set_mask(int level)
+{
+    grille_level = (level >= 0 && level <= 4) ? level : 0;
+    zoom_gen++;
+    calib_refresh();
+}
+
+/* The grille's row for this geometry, written when it is not already; 0 =
+   none now. Its columns count from the picture's left edge. */
+static int grille_ready(void)
+{
+    if (!grille_level || dst_w > MASK_W_MAX || !dst_w) return 0;
+    if (grille_w == dst_w && grille_h == disp_h && grille_lv == (uint32_t)grille_level) return 1;
+    uint32_t *row = (uint32_t *)(fb_va + MASK_OFF);
+    uint32_t a = (uint32_t)scan_alpha[grille_level] << 24;     /* black; bytes A,R,G,B like the frames */
+    uint32_t period = disp_h > 1440 ? 6 : 3, dark = period / 3;
+    for (uint32_t x = 0; x < dst_w; x++)
+        row[x] = (x % period) >= period - dark ? a : 0;
+    grille_w = dst_w; grille_h = disp_h; grille_lv = (uint32_t)grille_level;
+    return 1;
+}
+
+/* The mask's plane at word o, over the picture: unscaled (no scaler, no
+   kernel), every line from the one row. Returns the word after it. */
+#define CTL_UNITY_VC4 (1UL << 4)
+#define CTL_UNITY_VC6 (1UL << 15)
+static uint32_t mask_plane(uint32_t o)
+{
+    uint32_t start = o++;                        /* its control word last, like the picture's */
+    if (hvs_gen == 4) {
+        dl_wr(o++, VC4_POS0(dst_x, dst_y));
+        dl_wr(o++, (dst_w & 0xfff) | ((dst_h & 0xfff) << 16));          /* POS2: size, alpha per pixel */
+    } else {
+        dl_wr(o++, POS0_X(dst_x) | POS0_Y(dst_y));
+        dl_wr(o++, POS2_ALPHA(0xfff));                                   /* alpha per pixel */
+        dl_wr(o++, POS2_H(dst_h) | POS2_W(dst_w));
+    }
+    dl_wr(o++, 0xdeadbeefUL);                                            /* POS3 ctx (HVS) */
+    dl_wr(o++, 0xc0000000UL | (uint32_t)(fb_phys + MASK_OFF));
+    dl_wr(o++, 0xdeadbeefUL);                                            /* PTRCTX0 (HVS) */
+    dl_wr(o++, 0);                                                       /* pitch 0: every line the same row */
+    dl_wr(start, CTL_VALID | CTL_WORDS(o - start) | (hvs_gen == 4 ? CTL_UNITY_VC4 : CTL_UNITY_VC6)
+                 | CTL_ALPHA_EXPAND | CTL_RGB_EXPAND | CTL_FORMAT(FMT_RGBA8888)
+                 | CTL_PIXEL_ORDER(hvs_gen == 4 ? ORDER_VC4_ARGB_BYTES : ORDER_BGRA));
+    return o;
+}
+
 void aga_video_set_scanlines(int level)
 {
     scan_level = (level >= 0 && level <= 4) ? level : 0;
-    zoom_gen++;
+    apply_crop();                       /* Whole lines fits the picture to them */
     calib_refresh();
 }
 
@@ -927,7 +1037,23 @@ void aga_video_set_scanlines(int level)
 void aga_video_set_laced_scanlines(int level)
 {
     lscan_level = (level >= 0 && level <= 4) ? level : 0;
-    zoom_gen++;
+    apply_crop();
+}
+
+/* $511n: the scanlines' shape, RGB2RTG's (VideoCore.card 1.6 and 1.9):
+     0 Even         every Amiga line as dark, also where its display rows are
+                    no whole number (4:3 and Fill: 286 lines on 1080 rows are
+                    3.78 each) - dark gap one row tall at each line's end, a
+                    row as dark as the part of a gap it covers (the default)
+     1 Crisp        a whole dark row at the end of each line, some lines a
+                    row taller than others (up to 1.115 the only one)
+     2 Whole lines  picture fitted to a whole number of rows a line (fit), a
+                    little smaller, its shape kept: clean at low resolutions */
+void aga_video_set_scan_shape(int shape)
+{
+    scan_shape = (shape >= 0 && shape <= 2) ? shape : 0;
+    apply_crop();
+    calib_refresh();
 }
 
 /* The image for this geometry, written if not already there; 0 = none now.
@@ -939,16 +1065,29 @@ static int scan_ready(void)
     uint32_t lines = src_rows;
     if (!level || dst_h < 2 * lines) return 0;
     if ((uint64_t)SCAN_OFF + (uint64_t)dst_h * SCAN_W * 4 > SNAP_OFF) return 0;   /* the crop screen's snapshot is above */
-    if (mask_rows == dst_h && mask_src == lines && mask_level == (uint32_t)level) return 1;
+    if (mask_rows == dst_h && mask_src == lines && mask_level == (uint32_t)level && mask_shape == (uint32_t)scan_shape)
+        return 1;
     uint32_t *m = (uint32_t *)(fb_va + SCAN_OFF);
-    uint32_t a = (uint32_t)scan_alpha[level] << 24;        /* black; bytes A,R,G,B like the frames */
+    uint32_t alpha = scan_alpha[level];                     /* black; bytes A,R,G,B like the frames */
     for (uint32_t r = 0; r < dst_h; r++) {
-        uint32_t line = ((2 * r + 1) * lines) / (2 * dst_h);
-        uint32_t next = ((2 * r + 3) * lines) / (2 * dst_h);
-        uint32_t v = (next != line || r + 1 == dst_h) ? a : 0;   /* a line's last row */
+        uint32_t v = 0;
+        if (scan_shape == 0) {
+            /* Even, counted in 1/dst_h of a line: row r covers [r * lines,
+               r * lines + lines), the gap of the line it starts in the last
+               `lines` of that line's dst_h - with a whole number of rows a
+               line, Crisp's rows exactly */
+            uint32_t lo = r * lines, hi = lo + lines;
+            uint32_t end = (lo / dst_h + 1) * dst_h, gap = end - lines;
+            uint32_t s0 = lo > gap ? lo : gap, e0 = hi < end ? hi : end;
+            if (e0 > s0) v = ((alpha * (e0 - s0) + lines / 2) / lines) << 24;
+        } else {
+            uint32_t line = ((2 * r + 1) * lines) / (2 * dst_h);
+            uint32_t next = ((2 * r + 3) * lines) / (2 * dst_h);
+            if (next != line || r + 1 == dst_h) v = alpha << 24;   /* a line's last row */
+        }
         for (int x = 0; x < SCAN_W; x++) *m++ = v;
     }
-    mask_rows = dst_h; mask_src = lines; mask_level = (uint32_t)level;
+    mask_rows = dst_h; mask_src = lines; mask_level = (uint32_t)level; mask_shape = (uint32_t)scan_shape;
     return 1;
 }
 
@@ -990,7 +1129,7 @@ static uint8_t  bl_mine[BL_MAX];
 static uint32_t hvs_rebuilds;
 
 /* Build my display list in the block that is not live: one scaled plane,
-   plus the scanlines over it when they are on. */
+   plus the scanlines over it when they are on, and the CRT mask over both. */
 static void build_list(uint32_t block, uintptr_t frame_phys)
 {
     uint32_t o = block + 1;
@@ -1026,6 +1165,7 @@ static void build_list(uint32_t block, uintptr_t frame_phys)
            | CTL_FORMAT(FMT_RGBA8888) | CTL_PIXEL_ORDER(hvs_gen == 4 ? ORDER_VC4_ARGB_BYTES : ORDER_BGRA);
     dl_wr(block, bl_ctl);
     if (scan_ready()) o = scan_plane(o);
+    if (grille_ready()) o = mask_plane(o);
     dl_wr(o++, LIST_END);
     hvs_rebuilds++;
 }
@@ -1799,6 +1939,32 @@ static void hvs_check(void)
 void aga_video_present(const uint32_t *frame, int native_active)
 {
     if (!video_ok) return;
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+    /* P96 VideoCore.card writes DISPLIST1 independently on the 68k.
+       On a standalone Amiga our AGA core runs persistently; without this
+       ownership check show_frame() can overwrite P96's list every 20 ms.
+       Nothing is inferred from missing hardware and no RTG driver is patched.
+       Check a *valid* external HVS list only; don't misread blank/floating
+       display memory as ownership. */
+    {
+        uint32_t live = reg_rd(REG_DISPLIST1);
+        int external = live != 0 && live != LIST_A && live != LIST_B &&
+                       live != frf_rtg_display.boot_list &&
+                       live < DL_RAM_WORDS - 0x70u && list_len(live) > 0;
+        unsigned was = frf_rtg_display.rtg_owns;
+        int rtg = frf_rtg_handoff_step(&frf_rtg_display,live,
+            LIST_A,LIST_B,native_active,external,cur_list != 0);
+        if (rtg) {
+            if (!was) {
+                saved_list = live;
+                aga_diag_log("[RTG] external P96 display list claimed HDMI; yielding native AGA plane");
+            }
+            if (cur_list) hide(); /* if P96 already owns HVS, don't overwrite it */
+            return;
+        }
+        if (was) aga_diag_log("[RTG] native AGA display became active; HDMI reclaimed");
+    }
+#endif
     calib_on = 0;      /* the sandbox has the pages now: a Position screen left up is over */
     if (crop_on) { crop_on = 0; apply_crop(); }   /* ...and a crop screen */
     /* No native display. Normally hide the plane and let the RTG desktop
@@ -1915,6 +2081,12 @@ extern void pi_reset(void);
 void aga_reboot(int tryboot)
 {
     aga_diag_inc(AGA_D_REBOOTS);
+#ifdef FRF_VIRTUAL_AGA
+    /* Standalone has no physical reset-line housekeeper to save the previous
+       session. Save it explicitly before the Pi watchdog reset. */
+    aga_diag_log("[AGA] standalone host reboot: preserving previous session");
+    aga_diag_persist();
+#endif
     if (tryboot) {
         int c = 1;
         req[c++] = 0;

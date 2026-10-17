@@ -11,6 +11,8 @@
 
 extern void frf_vcia_keyboard_raw(uint8_t raw);
 extern void frf_uspi_poll(void);
+extern void frf_um_init(void);
+extern void frf_um_service(void);
 extern void aga_virtual_joy_set(int port, uint16_t joydat, int fire);
 extern void aga_virtual_mouse_update(int dx, int dy, unsigned buttons);
 
@@ -333,6 +335,7 @@ void frf_usb_main(void)
         for (;;) __asm__ volatile("wfe");
     }
 
+    frf_um_init();
     frf_boot_stage(9);
     int kb = USPiKeyboardAvailable();
     int ms = USPiMouseAvailable();
@@ -340,6 +343,8 @@ void frf_usb_main(void)
 
     kprintf("[USB] enumeration complete: keyboard=%d mouse=%d gamepads=%d\n",
             kb, ms, gp);
+    kprintf("[MOUSE-DIAG] USB boot mouse present=%d; callback=%s; no receiver required\n",
+            ms, ms ? "install" : "MISSING");
 
     if (kb) {
         lock_led_mask = 0;
@@ -376,6 +381,8 @@ void frf_usb_main(void)
     for (;;) {
         frf_uspi_poll();
         frf_uspi_timer_service();
+        USPiGamePadService();
+        frf_um_service();
 
         if (kb && lock_led_pending) {
             uint8_t leds = lock_led_mask;

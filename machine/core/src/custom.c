@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include "internal.h"
+#include "tone_tab.h"
 
 /* --------------------------------------------------------------------------
  * logging
@@ -128,15 +129,40 @@ static void set_geometry(aga_t *a)
     set_line_length(a);
 }
 
-/* the brightness table for cfg.bright (aga_set_brightness); the palette
-   through it is rebuilt at the next line */
+/* RGB2RTG's Gamma and Brightness (0.75-dev47, its tools/mktone.py), one
+   table: each channel through the gamma (tone_tab.h, in 1/65536), then the
+   brightness g - the gain up to a knee at x0 = 2/g - 1 and above it a
+   parabola with the same slope there and none at white, ending at white:
+   y = g x0 + g d - a d^2, d = x - x0, a = g / (2 (1 - x0)). It rises all the
+   way, so near-whites stay apart; straight gain (up to 1.115) clipped every
+   value from 255 / g up to white - at 150% from 170. Integer only. */
+int aga_tone_build(uint8_t lut[256], int percent, int gamma)
+{
+    const uint32_t *gt = tone_gamma[gamma >= 0 && gamma < TONE_GAMMAS ? gamma : 0];
+    int64_t pct = percent > 100 ? (percent > 200 ? 200 : percent) : 100;
+    int64_t G = pct * 65536 / 100;                          /* gain, 1/65536 */
+    int64_t X0 = 200 * 65536 / pct - 65536;                 /* the knee: 2/g - 1 */
+    int64_t A = X0 < 65536 ? G * 65536 / (2 * (65536 - X0)) : 0;
+    int ident = 1;
+    for (int v = 0; v < 256; v++) {
+        int64_t x = gt[v], y;
+        if (x <= X0) y = G * x >> 16;
+        else {
+            int64_t d = x - X0;
+            y = (G * X0 >> 16) + (G * d >> 16) - (A * (d * d >> 16) >> 16);
+        }
+        int64_t o = (y * 255 + 32768) >> 16;
+        lut[v] = (uint8_t)(o < 0 ? 0 : o > 255 ? 255 : o);
+        if (lut[v] != v) ident = 0;
+    }
+    return !ident;
+}
+
+/* the table for cfg.bright and cfg.gamma; the palette through it is
+   rebuilt at the next line */
 static void bright_build(aga_t *a)
 {
-    int pct = a->cfg.bright > 100 ? a->cfg.bright : 100;
-    for (int v = 0; v < 256; v++) {
-        int o = (v * pct + 50) / 100;
-        a->bright_lut[v] = (uint8_t)(o > 255 ? 255 : o);
-    }
+    a->tone_on = aga_tone_build(a->bright_lut, a->cfg.bright, a->cfg.gamma);
     a->bright_dirty = 1;
 }
 
@@ -195,7 +221,7 @@ void aga_reset(aga_t *a)
     /* Which chipset I present is a property of the game about to run, not
        of the chipset state, so it has to outlive the memset above - the
        sandbox picks the mode and THEN enters, and entering resets the whole
-       thing. pf_reset keeps it across its own memset too, but only reads
+       damn thing. pf_reset keeps it across its own memset too, but only reads
        what is here, so this line is what makes the ECS toggle work at all. */
     a->pf.ecs_mode = ecs;
     a->pf.ecs_forced = ecs_forced;
@@ -502,13 +528,19 @@ void aga_custom_wput(aga_t *a, uint32_t reg, uint16_t v)
     case BPLHMOD: case SPRHPTH: case SPRHPTL: case BPLHPTH: case BPLHPTL:
     case NOOP:
         break;
-    case 0x1F2:              /* AGA-PISTORM control register (not an Amiga register) */
+#ifdef FRF_VIRTUAL_AGA
+    case 0x1F2: case 0x1F4: case 0x1F6: case 0x1F8: case 0x1FA:
+        /* standalone machine: reserved/no-op; $1FC FMODE remains real AGA */
+        break;
+#else
+    case 0x1F2:
         a->aga_ctrl = v;
         break;
-    case 0x1F4: a->aga_win[0] = v; break;   /* window x (RTG screen pixels) */
-    case 0x1F6: a->aga_win[1] = v; break;   /* window y */
-    case 0x1F8: a->aga_win[2] = v; break;   /* window width */
-    case 0x1FA: a->aga_win[3] = v; break;   /* window height */
+    case 0x1F4: a->aga_win[0] = v; break;
+    case 0x1F6: a->aga_win[1] = v; break;
+    case 0x1F8: a->aga_win[2] = v; break;
+    case 0x1FA: a->aga_win[3] = v; break;
+#endif
     default:
         break;
     }
@@ -664,7 +696,7 @@ static inline void cck_step(aga_t *a)
        waiting on a busy blitter, cop_sync would return at once - after noting
        the cycles it was offered, which is done here instead. Those were
        36,000 calls a frame in Reshoot Proxima 3, a fifth of the chipset
-       core's work, doing sweet fuck all. */
+       core's work, doing nothing. */
     if (!(h & 1)) {
         copper_t *c = &a->cop;
         int idle = (a->dmacon & (DMAF_DMAEN | DMAF_COPEN)) != (DMAF_DMAEN | DMAF_COPEN)
@@ -777,8 +809,8 @@ uint32_t *aga_framebuffer_live(aga_t *a)
  * an AGA WHDLoad game loading, 2,173,700 reads per second - 43,000 per frame -
  * from a dozen different two-instruction loops in ROM and in fast RAM at once.
  * Taking the chipset mutex for each of those made the machine spend all its
- * time in the trap path, and fired two million cross-core SEVs a second at
- * the poor core actually running the chipset.
+ * time in the trap path, and fired two million cross-core SEVs a second at the
+ * core actually running the chipset.
  *
  * Nothing here needs the lock. vpos, hpos and lof are plain integers the
  * chipset thread advances; the worst a racing reader gets is a value a few
@@ -794,7 +826,7 @@ int aga_is_beam_reg(uint32_t reg) { reg &= 0x1FE; return reg == VPOSR || reg == 
  * position - `move.b $dff007,d0 / cmp.b d1,d0 / bne` - and 7 targets in 8 are
  * never produced. The phase drifts by maxhpos mod CHUNK_CCK each line, so the
  * loop does eventually catch its value, but only once every few lines: every
- * short beam wait in the machine silently becomes several damn lines long.
+ * short beam wait in the machine silently becomes several lines long.
  *
  * Stepping the chipset one clock at a time would fix it and cost core 3 eight
  * times the work. Interpolating at the point of the read costs a divide, and
@@ -955,6 +987,11 @@ int aga_frame_woven(const aga_t *a, int *row)
 void aga_set_brightness(aga_t *a, int percent)
 {
     a->cfg.bright = percent < 100 ? 100 : percent > 200 ? 200 : percent;
+    bright_build(a);
+}
+void aga_set_gamma(aga_t *a, int gamma)
+{
+    a->cfg.gamma = gamma >= 0 && gamma < TONE_GAMMAS ? gamma : 0;
     bright_build(a);
 }
 void aga_set_ntsc(aga_t *a, int on) { a->cfg.ntsc = on ? 1 : 0; }

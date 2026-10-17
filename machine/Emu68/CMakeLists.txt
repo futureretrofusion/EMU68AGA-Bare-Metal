@@ -13,7 +13,12 @@ option(EMU68_SKIP_PPC_ROM "Do not build the PowerPC ROM (use an empty stub)" OFF
 option(EMU68_SKIP_FIRMWARE "Do not download Raspberry Pi firmware files" OFF)
 set(AGA_PISTORM "" CACHE PATH "Path to the AGA-PISTORM repository (enables the virtual AGA chipset)")
 option(FRF_VIRTUAL_AGA "Standalone virtual AGA Amiga: no physical PiStorm/Amiga bus" OFF)
-option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1 (required for usable Pi3A+ builds)" ON)
+option(FRF_WIFI_GUEST_COMPAT "Normalize Pi 3A+ guest device tree for standard WiFiPi driver" OFF)
+option(FRF_NET_Z2_BRIDGE "Expose virtual FRF Ethernet shared-memory board (no radio connectivity)" OFF)
+option(FRF_WIFI_SD1_ENUM "Allow runtime opt-in ARM SD1 Arasan SDIO identification (no firmware/WPA)" OFF)
+option(FRF_WIFI_HW_PROBE "Pi3A+ SDIO register audit (read only)" OFF)
+option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1" OFF)
+option(FRF_RTG_HANDOFF "Respect external Picasso96 HVS display list in standalone AGA" OFF)
 
 if(NOT EMU68_SKIP_PPC_ROM)
 ExternalProject_Add(
@@ -317,6 +322,13 @@ add_executable(Emu68.elf
     ${EMU68_FILES}
 )
 
+if(FRF_RTG_HANDOFF)
+    if(NOT FRF_VIRTUAL_AGA OR NOT "${TARGET}" STREQUAL "raspi64")
+        message(FATAL_ERROR "FRF_RTG_HANDOFF needs Pi standalone virtual AGA")
+    endif()
+    target_compile_definitions(Emu68.elf PRIVATE FRF_RTG_HANDOFF=1)
+endif()
+
 target_compile_options(Emu68.elf
   PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti -fno-exceptions>
 )
@@ -338,33 +350,43 @@ if(FRF_VIRTUAL_AGA)
     target_sources(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/boards/frf_z3ram.c)
 endif()
 
+if(FRF_WIFI_GUEST_COMPAT)
+    target_sources(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_wifi/frf_wifi_guest_compat.c)
+    target_compile_definitions(Emu68.elf PRIVATE FRF_WIFI_GUEST_COMPAT=1)
+endif()
+
+if(FRF_NET_Z2_BRIDGE)
+    target_sources(Emu68.elf PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/frf_net/frf_net_bridge.c
+        ${CMAKE_SOURCE_DIR}/src/frf_net/frf_net_z2board.c)
+    target_include_directories(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_net)
+endif()
+if(FRF_WIFI_SD1_ENUM)
+    target_sources(Emu68.elf PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/frf_net/frf_sdio_probe.c
+        ${CMAKE_SOURCE_DIR}/src/frf_net/frf_wifi_sd1_adapter.c)
+    target_include_directories(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_net)
+    target_compile_definitions(Emu68.elf PRIVATE FRF_WIFI_SD1_ENUM=1)
+endif()
+
+if(FRF_WIFI_HW_PROBE)
+    target_sources(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_wifi/frf_wifi_hw_probe.c)
+    target_compile_definitions(Emu68.elf PRIVATE FRF_WIFI_HW_PROBE=1)
+endif()
+
 if(FRF_USB_HOST)
     if(NOT "${TARGET}" STREQUAL "raspi64")
         message(FATAL_ERROR "FRF_USB_HOST currently supports Raspberry Pi only")
     endif()
-    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/uspi/include/uspi.h"
-       OR NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/uspi/include/uspios.h")
-        message(FATAL_ERROR
-            "FRF_USB_HOST=ON (the usable Pi3A+ default), but the adapted USPi "
-            "host sources are missing from third_party/uspi/. "
-            "This public tree does not bundle USPi due to incompatible "
-            "redistribution licences for the statically linked firmware. "
-            "To reproduce your private tested build, provide the matching "
-            "adapted USPi include/ and lib/ source under "
-            "machine/Emu68/third_party/uspi/. "
-            "FRF_USB_HOST=OFF builds only a diagnostic image WITHOUT USB input.")
-    endif()
     file(GLOB FRF_USPI_SRC ${CMAKE_SOURCE_DIR}/third_party/uspi/lib/*.c)
-    if(NOT FRF_USPI_SRC)
-        message(FATAL_ERROR
-            "FRF_USB_HOST=ON but third_party/uspi/lib contains no C sources. "
-            "The build cannot provide keyboard/mouse/gamepad input.")
-    endif()
     set(FRF_USB_ENV
         ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_uspi_env.c
         ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_usb.c
     )
     target_sources(Emu68.elf PRIVATE ${FRF_USPI_SRC} ${FRF_USB_ENV})
+    target_sources(Emu68.elf PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_usb_mass_board.c
+        ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_usb_mass_host.c)
     target_include_directories(Emu68.elf PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/uspi/include
         ${CMAKE_SOURCE_DIR}/src/frf_usb

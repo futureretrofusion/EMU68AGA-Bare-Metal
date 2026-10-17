@@ -52,6 +52,9 @@ extern void emu68_raise_nmi(void);
 extern int  emu68_get_real_ipl(void);
 extern uint32_t emu68_get_pc(void);   /* 68k PC, for the trap ring */
 
+/* Guest Exec memory probes were removed from the normal chipset
+ * loop: they are not virtual chipset emulation. */
+
 /* ---- state ---------------------------------------------------------------- */
 /* volatile: core 0 writes these, core 3 polls them in a spin loop. Without it
    gcc -O3 may hoist the load out of `while (!aga_enabled) yield;` and core 3
@@ -65,8 +68,8 @@ int aga_enter_stop = 0;      /* aga.enter_stop=N on the cmdline */
 int aga_loop_stop  = 0;      /* aga.loop_stop=N  on the cmdline */
 int aga_leave_stop = 0;      /* aga.leave_stop=N on the cmdline */
 int aga_use_mmu    = 0;      /* aga.mmu: the old MMU-remap path, kept for A/B */
-int aga_sleep      = 0;      /* aga.sleep: let the timed waits sleep (aga_glue.h); off by default */
-uint32_t aga_nap_min = 0xFFFFFFFFu;   /* ticks left below which a timed wait spins, not sleeps (aga_evstream_on) */
+int aga_sleep      = 0;      /* aga.sleep: timed waits sleep (aga_glue.h); off by default */
+uint32_t aga_nap_min = 0xFFFFFFFFu;   /* ticks left below which a timed wait spins (aga_evstream_on) */
 static volatile uint32_t last_chip_wr;   /* overlay: last chip RAM address the 68k wrote */
 volatile int aga_chip_redirect = 0;   /* no-MMU: serve redirect_lo..redirect_hi from chip_va in the abort handler */
 static uint32_t redirect_lo, redirect_hi;   /* the window; the sandbox uses all of chip RAM */
@@ -81,14 +84,33 @@ static uint32_t chip_size;   /* the virtual chip RAM: what the game gets, 2 MB *
    unit alike - and it only ever learns of a change from a bus write. In the
    sandbox chip RAM is written through the redirect or the MMU map, by my
    blitter and by disk DMA, never by a bus write, so a line kept there could
-   hand out code the program had since rewritten, NoCache or not. With this
-   set, chip addresses are read where they live. */
+   hand out code the program had already fucking rewritten, NoCache or not.
+   With this set, chip addresses are read where they live. */
 uint8_t * volatile aga_code_chip;
 volatile uint32_t aga_code_chip_size;
 /* $5941 on (the default) / $5940 off, from the next sandbox entry: the A/B
    switch for the above (agaboot CODEDIRECT). */
 static volatile int aga_code_direct = 1;
 void aga_set_code_direct(int on) { aga_code_direct = on; }
+
+/* Standalone machine OVL owns the meaning of low 68k addresses.  Keep the
+   translator/cache direct-code backing in lockstep with that hardware state:
+   ROM overlay ON -> no virtual Chip-RAM shortcut; overlay OFF -> read code
+   straight from chip_va. */
+void aga_machine_code_overlay(int rom_on)
+{
+#ifdef FRF_VIRTUAL_AGA
+    if (rom_on || !aga_code_direct) {
+        aga_code_chip = NULL;
+        aga_code_chip_size = 0;
+    } else {
+        aga_code_chip_size = chip_size;
+        __atomic_store_n(&aga_code_chip, chip_va, __ATOMIC_RELEASE);
+    }
+#else
+    (void)rom_on;
+#endif
+}
 static uint32_t chip_real;   /* the real chip RAM: what is copied in and out, probed at entry */
 static volatile char aga_lock_v __attribute__((aligned(64)));
 static volatile int frames_done;
@@ -143,6 +165,9 @@ static volatile uint16_t frf_joydat[2];
 static volatile uint8_t frf_fire_bits;
 static volatile uint8_t frf_mouse_buttons;
 static volatile uint8_t frf_mouse_x, frf_mouse_y;
+/* Paula POTGO high-byte state. OUT/DAT pairs are:
+   15/14 RY, 13/12 RX, 11/10 LY (port-1 right mouse), 9/8 LX. */
+static volatile uint16_t frf_potgo;
 
 uint8_t aga_virtual_ciaa_buttons(void)
 {
@@ -176,16 +201,35 @@ static uint16_t hook_ext_read(void *u, uint32_t reg)
 {
     (void)u;
 #ifdef FRF_VIRTUAL_AGA
+    /* FRF v0.10.15 STANDALONE FIREWALL.
+       ext_read is now a host-input/default provider only.  No register read
+       may escape to ps_read_* or to a donor Amiga chipset. */
     if (reg == JOY0DAT) return __atomic_load_n(&frf_joydat[0], __ATOMIC_ACQUIRE);
     if (reg == JOY1DAT) return __atomic_load_n(&frf_joydat[1], __ATOMIC_ACQUIRE);
     if (reg == POTGOR) {
-        uint16_t v = 0xFF00u;
-        if (__atomic_load_n(&frf_mouse_buttons, __ATOMIC_ACQUIRE) & 2u)
-            v &= (uint16_t)~0x0400u;
+        uint16_t pg = __atomic_load_n(&frf_potgo, __ATOMIC_ACQUIRE);
+        uint16_t v = (uint16_t)((pg & 0xAA00u) | 0x5500u);
+        uint8_t mb = __atomic_load_n(&frf_mouse_buttons, __ATOMIC_ACQUIRE);
+        if ((pg & 0x0800u) && !(pg & 0x0400u)) v &= (uint16_t)~0x0400u;
+        if ((pg & 0x0200u) && !(pg & 0x0100u)) v &= (uint16_t)~0x0100u;
+        extern int frf_usb_early_startup_active(void);
+        if (frf_usb_early_startup_active()) mb |= 3u;
+        if (mb & 2u) v &= (uint16_t)~0x0400u;
+        if (mb & 4u) v &= (uint16_t)~0x0100u;
         return v;
     }
-#endif
+    /* No receive-side serial device is attached. Real Paula reports the
+       transmitter empty/shift-register empty bits; returning $FFFF here was
+       a hybrid stub leak and is not a valid virtual-Paula state. */
+    if (reg == SERDATR) return 0x3000u;
+    /* POT counters and fallback disk data are quiescent unless the virtual
+       device core itself supplied a value before ext_read was reached. */
+    if (reg == POT0DAT || reg == POT1DAT || reg == DSKDATR || reg == DSKBYTR)
+        return 0;
+    return 0;
+#else
     return (uint16_t)ps_read_16(0xDFF000 + reg);
+#endif
 }
 
 /* Is a WHDLoad game running, rather than the Workbench?
@@ -209,9 +253,10 @@ static uint16_t hook_ext_read(void *u, uint32_t reg)
  *   SR=%0010011000000000            <- interrupt mask 6
  *   $361E4D7C 2008 3613D108 0078    <- stacked frame, vector offset $078
  *
- * i.e. I was killing the game with an interrupt it never asked for. In game
- * mode I leave EXTER exactly as WHDLoad set it. PORTS (level 2) stays, since
- * WHDLoad handles the keyboard itself and the quit key depends on it.
+ * i.e. I was killing the game with an interrupt it never fucking asked for.
+ * In game mode I leave EXTER exactly as WHDLoad set it. PORTS (level 2)
+ * stays, since WHDLoad handles the keyboard itself and the quit key depends
+ * on it.
  *
  * WHEN it engages matters as much as what it does. `agaboot SANDBOX AUTO` runs
  * from WHDLoad's startup script, so the sandbox opens while AmigaOS is still
@@ -389,15 +434,44 @@ void aga_flickerfix(int on)
     aga_set_weave(aga, on);
     unlock();
 }
+/* Brightness ($59Fn) and Gamma ($512n): the core puts every shown colour
+   through their one curve (aga_tone_build); the RGB port, which takes the
+   core's frames to the Amiga's own RGB port and wants the real colours,
+   gets the curve's inverse - nearest input for each output, the curve
+   rising all the way. Up to 1.115 the brightness was a straight gain and the
+   RGB port divided it back out. */
+static int tone_pct = 100, tone_gamma_sel;
+static void tone_apply(void)
+{
+    static uint8_t lut[256], inv[256];
+    int on = aga_tone_build(lut, tone_pct, tone_gamma_sel);
+    for (int o = 0, v = 0; o < 256; o++) {
+        while (v < 255 && lut[v] < o) v++;
+        inv[o] = (uint8_t)(v > 0 && o - lut[v - 1] < lut[v] - o ? v - 1 : v);
+    }
+#ifndef FRF_VIRTUAL_AGA
+    /* Only physical RGBPORT needs inverse colour curves. FRF's standalone
+       RGB output path is independent and keeps the tested 0.10.38 engine. */
+    aga_rgbout_set_tone(inv, on, tone_gamma_sel << 12 | tone_pct);
+#else
+    (void)inv; (void)on;
+#endif
+    if (!aga) return;
+    lock();
+    aga_set_brightness(aga, tone_pct);
+    aga_set_gamma(aga, tone_gamma_sel);
+    unlock();
+}
 void aga_brightness(int level)
 {
     static const int pct[5] = { 100, 110, 120, 135, 150 };
-    int p = pct[(level >= 0 && level <= 4) ? level : 0];
-    aga_rgbout_set_bright(p);
-    if (!aga) return;
-    lock();
-    aga_set_brightness(aga, p);
-    unlock();
+    tone_pct = pct[(level >= 0 && level <= 4) ? level : 0];
+    tone_apply();
+}
+void aga_gamma(int gamma)
+{
+    tone_gamma_sel = (gamma >= 0 && gamma <= 2) ? gamma : 0;
+    tone_apply();
 }
 void aga_video_standard(int ntsc)
 {
@@ -532,6 +606,25 @@ static void exter_storm_check(void)
 
 static void hook_ext_write_body(void *u, uint32_t reg, uint16_t v)
 {
+#ifdef FRF_VIRTUAL_AGA
+    (void)u;
+    /* Standalone machine: the virtual chipset is authoritative.  Extension
+       writes are host-side effects only; nothing is mirrored to a physical
+       Paula/Agnus/CIA. */
+    switch (reg) {
+    case SERDAT:
+        /* Preserve WHDLoad's serial exception dump for diagnostics. */
+        aga_diag_serial((uint8_t)(v & 0xFF));
+        break;
+    case POTGO:
+        __atomic_store_n(&frf_potgo, (uint16_t)(v & 0xFF00u), __ATOMIC_RELEASE);
+        break;
+    default:
+        break;
+    }
+    return;
+#else
+
     (void)u;
     if (aga_audio_reg_write(reg, v)) return;     /* AUDx*, DMACON audio bits -> real Paula */
     switch (reg) {
@@ -570,8 +663,13 @@ static void hook_ext_write_body(void *u, uint32_t reg, uint16_t v)
                free to enable exactly the ones it wants - which suppressing
                EXTER at Paula denied it, leaving every task that waits on a
                timer waiting for ever. */
+#ifdef FRF_VIRTUAL_AGA
+            extern void frf_vcia_ciab_takeover_request(void);
+            frf_vcia_ciab_takeover_request();
+#else
             ps_write_8(0xBFDD00, 0x7F);        /* CIA-B ICR: clear every enable */
             (void)ps_read_8(0xBFDD00);         /* and the read drops a pending line */
+#endif
             aga_exter_locked = 1;
             aga_loct_fix_pending = 1;
             aga_diag_log("[AGA] WHDLoad took the machine: stale CIA-B interrupt sources silenced");
@@ -601,14 +699,23 @@ static void hook_ext_write_body(void *u, uint32_t reg, uint16_t v)
         /* Every character the 68k transmits. WHDLoad's crash handler dumps its
            register state down this line and then waits for a keypress from a
            terminal that is not there - which is exactly the state a hung game
-           leaves the machine in. Recording the bytes is how I read it. */
+           leaves the machine in. Recording the bytes is how I fucking read it. */
         aga_diag_serial((uint8_t)(v & 0xFF));
         ps_write_16(0xDFF030, v);
         break;
+#ifdef FRF_VIRTUAL_AGA
+    case POTGO:
+        /* Standalone mode has no physical Paula to remember POTGO. Retain its
+           OUT/DAT state so POTGOR behaves like the controller port. START is
+           a strobe and therefore is not retained. */
+        __atomic_store_n(&frf_potgo, (uint16_t)(v & 0xFF00u), __ATOMIC_RELEASE);
+        break;
+#endif
     default:
-        ps_write_16(0xDFF000 + reg, v);   /* SERDAT, SERPER, POTGO, JOYTEST, DSK* */
+        ps_write_16(0xDFF000 + reg, v);
         break;
     }
+#endif
 }
 
 static void hook_ipl(void *u, int ipl)
@@ -630,6 +737,45 @@ static volatile uint32_t last_trap_pc;   /* 68k PC at the last register write */
 static volatile uint32_t last_wr;        /* reg << 16 | value, last write */
 static volatile uint32_t last_rd;        /* reg << 16 | value, last read  */
 
+/* FRF v0.10.15 NEXT32 — diagnostics only.
+   v0.10.15 proved the first 16 accesses are WHDLoad's normal state save:
+     INTENA=$7FFF, then reads $DFF002,$004,...,$01E.
+   Skip those 16 known-good accesses and capture the NEXT 32. */
+#define WHD_TRACE_N 32u
+#define WHD_TRACE_SKIP 16u
+static volatile uint32_t whd_trace_pc[WHD_TRACE_N];
+static volatile uint32_t whd_trace_meta[WHD_TRACE_N];
+static volatile uint32_t whd_trace_n;
+static volatile uint32_t whd_trace_seen;
+static volatile uint32_t whd_trace_armed;
+
+static inline void whd_trace_rearm(void)
+{
+    __atomic_store_n(&whd_trace_n, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&whd_trace_seen, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&whd_trace_armed, 1u, __ATOMIC_RELEASE);
+}
+static inline void whd_trace_push(int wr, uint32_t reg, int size,
+                                  uint16_t value, uint32_t pc)
+{
+    if (!__atomic_load_n(&whd_trace_armed, __ATOMIC_ACQUIRE)) return;
+    uint32_t seen = __atomic_fetch_add(&whd_trace_seen, 1u, __ATOMIC_ACQ_REL);
+    if (seen < WHD_TRACE_SKIP) return;
+    uint32_t n = seen - WHD_TRACE_SKIP;
+    if (n >= WHD_TRACE_N) {
+        __atomic_store_n(&whd_trace_armed, 0u, __ATOMIC_RELEASE);
+        return;
+    }
+    whd_trace_pc[n] = pc;
+    whd_trace_meta[n] = (wr ? 0x80000000u : 0u)
+                      | (((uint32_t)size & 7u) << 28)
+                      | ((reg & 0x0fffu) << 16)
+                      | value;
+    __atomic_store_n(&whd_trace_n, n + 1u, __ATOMIC_RELEASE);
+    if (n + 1u >= WHD_TRACE_N)
+        __atomic_store_n(&whd_trace_armed, 0u, __ATOMIC_RELEASE);
+}
+
 static volatile int frame_pending;
 
 static void hook_frame(void *u)
@@ -640,7 +786,7 @@ static void hook_frame(void *u)
 }
 
 /* each drawn line, from the core's cache: the RGB port keeps its own copy
-   (aga_rgbout_line), so core 1 no longer reads the damn uncached page back */
+   (aga_rgbout_line), so core 1 no longer reads the uncached page back */
 static void hook_line(void *u, int y, int page, const uint32_t *line)
 {
     (void)u;
@@ -663,6 +809,7 @@ void aga_glue_snapshot_regs(uint16_t *regs, uint32_t *colors)
 }
 
 /* ---- init ----------------------------------------------------------------- */
+static inline void chip7_reset_clock(void);
 static int aga_start_ntsc;   /* what this kernel was BUILT for; regs[] does not know */
 
 int aga_glue_init(uint8_t *chipram_va, uint32_t size, uint8_t *fb_va, uintptr_t fb_phys, int ntsc, int enable)
@@ -685,7 +832,7 @@ int aga_glue_init(uint8_t *chipram_va, uint32_t size, uint8_t *fb_va, uintptr_t 
     aga_video_overlay_allow(frf_hud);
     aga_video_overlay_enable(frf_hud);
     aga_overlay_idle = frf_hud;
-    kprintf("[AGA] FRF v0.9.5: native AGA/Lisa personality; HUD %s by config\n",
+    kprintf("[AGA] FRF v0.10.15: native AGA/Lisa personality; HUD %s by config\n",
             frf_hud ? "ENABLED" : "OFF");
 #endif
     /* The RGB port's line fingerprints and line copy (aga_rgbout_line): a
@@ -724,9 +871,36 @@ int aga_glue_init(uint8_t *chipram_va, uint32_t size, uint8_t *fb_va, uintptr_t 
        Use the simple/classic Paula mix first and start HDMI automatically. */
     aga_hdmi_paula(0);
     aga_hdmi_enable(1);
-    kprintf("[AGA] FRF v0.9.5: standalone HDMI Paula audio requested at boot\n");
+    kprintf("[AGA] FRF v0.10.15: standalone HDMI Paula audio requested at boot\n");
 #endif
     aga_diag_init();
+
+#ifdef FRF_VIRTUAL_AGA
+    /* FRF v0.10.15: standalone Pi3 machine mode is the coherent direct-MMU
+       model used by the last Workbench-working lineage.  If a non-MMU build
+       is explicitly selected, retain the redirect implementation below. */
+    if (enable && aga_use_mmu) {
+        aga_chip_redirect = 0;
+        aga_code_chip = NULL;       /* ROM overlay is still active here */
+        aga_code_chip_size = 0;
+        kprintf("[AGA] coherent MMU Chip-RAM mode armed; OVL will map 2 MB at zero\n");
+    } else if (enable) {
+        redirect_lo = 0;
+        redirect_hi = size;
+        aga_chip_redirect = 1;
+
+        /* Do NOT publish aga_code_chip yet: OVL still maps Kickstart at zero.
+           The overlay transition in vectors.c switches code backing at the
+           exact ROM->Chip boundary. */
+        aga_code_chip = NULL;
+        aga_code_chip_size = 0;
+
+        chip7_reset_clock();
+        __asm__ volatile("dmb ish" ::: "memory");
+        kprintf("[AGA] CHIP7 machine redirect armed: $000000-$%06x\n", size - 1);
+    }
+#endif
+
     aga_enabled = enable;
     kprintf("[AGA] chipset core ready, %d KB chip RAM at %p, %s\n", size >> 10, chip_va,
             enable ? "machine mode" : "parked (sandbox available)");
@@ -760,9 +934,12 @@ int aga_glue_game_taken(void) { return game_taken; }
 #ifdef FRF_VIRTUAL_AGA
 void aga_virtual_cia_irq(uint16_t bit, int active)
 {
-    if (!aga) return;
+    /* CIA IRQ output is level-driven, but Paula INTREQ is latched:
+       falling CIA IRQ does not acknowledge the Paula request.
+       Only guest INTREQ writes clear it. */
+    if (!aga || !active) return;
     lock();
-    aga_custom_wput(aga, INTREQ, (uint16_t)((active ? 0x8000u : 0u) | bit));
+    aga_custom_wput(aga, INTREQ, (uint16_t)(0x8000u | bit));
     unlock();
     __asm__ volatile("dsb ish; sev" ::: "memory");
 }
@@ -958,6 +1135,10 @@ static uint32_t probe_real_chip(void)
 
 int aga_sandbox_enter(void)
 {
+#ifdef FRF_VIRTUAL_AGA
+    aga_diag_log("[AGA] standalone firewall: sandbox entry ignored");
+    return 0;
+#else
     if (!aga || aga_enabled) return 0;
     aga_diag_log("[AGA] enter 1: begin");
     /* Bring-up: stop after step N and return, leaving the machine untouched.
@@ -967,8 +1148,8 @@ int aga_sandbox_enter(void)
        whether the machine is still alive, so make that the signal: raise the
        stop point one step at a time and see which step kills it.
        Steps 1-2 touch nothing, so the machine MUST survive them; if it does
-       not, the fault is in the trap dispatch or the bus reads, before any of
-       my chipset logic runs. */
+       not, the fault is in the trap dispatch or the bus reads, before a single
+       line of my chipset logic even gets to run. */
     if (aga_enter_stop && aga_enter_stop < 2) return 0;
     kprintf("[AGA] sandbox: entering\n");
     /* HDMI's sound back at 48 kHz, should an AHI program have left it at
@@ -1016,7 +1197,7 @@ int aga_sandbox_enter(void)
        and AmigaOS cannot survive without interrupts. So a stop at step 3 or
        beyond MUST hand the chipset back before returning, or the machine
        freezes for reasons that have nothing to do with the step under test -
-       which is precisely how the earlier bisects fooled me. */
+       which is precisely how the earlier bisects fooled the crap out of me. */
     if (aga_enter_stop && aga_enter_stop <= 3) { restore_real(dmacon, intena, adkcon); return 0; }
 
     /* 3. now copy the OS state out of real chip RAM, with the bus to ourselves.
@@ -1171,6 +1352,7 @@ int aga_sandbox_enter(void)
     aga_diag_log("[AGA] sandbox entered");
     kprintf("[AGA] sandbox: active (DMACON %04x INTENA %04x)\n", dmacon, intena);
     return 1;
+#endif
 }
 
 /* Undo everything sandbox entry did, from core 3's own context: chip RAM back
@@ -1328,6 +1510,10 @@ static void sandbox_restore(void)
 
 int aga_sandbox_leave(void)
 {
+#ifdef FRF_VIRTUAL_AGA
+    aga_diag_log("[AGA] standalone firewall: sandbox leave ignored");
+    return 0;
+#else
     if (!aga || !aga_sandbox_active) return 0;
     kprintf("[AGA] sandbox: leaving\n");
     /* 1. park the chipset loop and the virtual interrupt line.
@@ -1340,8 +1526,9 @@ int aga_sandbox_leave(void)
        machine dies outright - no console, no counters, no network, power cut
        the only way out. That is exactly what the first ever SANDBOX OFF did.
 
-       So: bounded, with the SEV repeated. If core 3 will not park I abandon
-       the leave and stay sandboxed, which is ugly but alive and reportable. */
+       So: bounded, with the SEV repeated. If core 3 will not damn well park I
+       abandon the leave and stay sandboxed - ugly as hell, but alive and
+       reportable. */
     aga_enabled = 0;
     {
         uint64_t f = cntfrq(), deadline = cntvct() + f / 2;   /* 500 ms */
@@ -1356,7 +1543,11 @@ int aga_sandbox_leave(void)
     }
     sandbox_restore();
     return 1;
+#endif
 }
+
+/* CHIP7 governor is defined below, before the custom-register trap path. */
+static inline void chip7_wait(uint64_t far, int size);
 
 /* ---- chip RAM redirection, no MMU (core 0, abort handler) -----------------
  *
@@ -1380,6 +1571,7 @@ int aga_sandbox_leave(void)
 int aga_chip_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
 {
     if (!aga_chip_redirect || far < redirect_lo || far + (uint64_t)size > redirect_hi) return 0;
+    chip7_wait(far, size);
     aga_diag_ctr[AGA_D_CHIP_R]++;
     cpu_activity++;
     /* NO instrumentation here. A 16-slot scan on every JIT cache-line fill -
@@ -1402,6 +1594,7 @@ int aga_chip_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
 int aga_chip_write(uint64_t far, int size, uint64_t value, uint64_t value2)
 {
     if (!aga_chip_redirect || far < redirect_lo || far + (uint64_t)size > redirect_hi) return 0;
+    chip7_wait(far, size);
     cpu_activity++;
 #ifdef AGA_PROBES
     aga_diag_ctr[AGA_D_CHIP_W]++;
@@ -1425,8 +1618,8 @@ int aga_chip_write(uint64_t far, int size, uint64_t value, uint64_t value2)
    Denise to show it on the Amiga's own RGB port? A 320 x 256 HAM6 frame is
    61,440 bytes; fifty of them a second is 3 MB/s through a 68000 bus. So
    first a number: agaboot lends 64 KB of chip RAM ($DFF1EC, outside the
-   sandbox only, where the OS owns chip RAM and this buffer is mine to
-   scribble on) and asks for one timed run per control word $596N:
+   sandbox only, where the OS owns chip RAM and this buffer is damn well mine
+   to scribble on) and asks for one timed run per control word $596N:
      0  16-bit writes, the bus lock taken per write (what ps_write_16 does)
      1  32-bit writes, lock per write
      2  16-bit writes, lock per 64 words (a line at a time, as a writer would)
@@ -1540,6 +1733,70 @@ int aga_redirect_test(unsigned n)
     return 1;
 }
 
+/* ---- A1200 Chip-RAM bus governor -----------------------------------------
+ *
+ * FRF v0.10.15 CHIP7
+ *
+ * The standalone machine must not let Emu68 treat Chip RAM as ordinary host
+ * RAM. The real A1200 shared chip-memory domain is clocked from the 7 MHz
+ * chipset/bus clock (PAL master 28.37512 MHz / 4 = 7.09378 MHz; NTSC
+ * 28.63636 MHz / 4 = 7.15909 MHz). Fast/Z3 RAM is intentionally untouched.
+ *
+ * One 1/2/4-byte CPU Chip-RAM access consumes one 32-bit bus cycle. Wider
+ * accesses generated by Emu68's cache-line fill consume as many 32-bit cycles
+ * as the touched address range spans. Idle time is deliberately not banked.
+ */
+static uint64_t chip7_next_ticks;
+static uint32_t chip7_next_frac;
+static uint64_t chip7_ticks_per_slot_fp;
+static uint32_t chip7_hz;
+
+static inline void chip7_reset_clock(void)
+{
+    chip7_next_ticks = 0;
+    chip7_next_frac = 0;
+    chip7_ticks_per_slot_fp = 0;
+    chip7_hz = 0;
+}
+
+static inline void chip7_wait(uint64_t far, int size)
+{
+#ifdef FRF_VIRTUAL_AGA
+    uint64_t now = cntvct();
+
+    if (!chip7_ticks_per_slot_fp) {
+        uint64_t f;
+        __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(f));
+        chip7_hz = aga_start_ntsc ? 7159090u : 7093780u;
+        chip7_ticks_per_slot_fp = (f << 32) / chip7_hz;
+        if (!chip7_ticks_per_slot_fp) chip7_ticks_per_slot_fp = 1ull << 32;
+    }
+
+    if (!chip7_next_ticks || (int64_t)(now - chip7_next_ticks) > 0) {
+        chip7_next_ticks = now;
+        chip7_next_frac = 0;
+    }
+
+    unsigned slots = (unsigned)(((far & 3u) + (uint64_t)size + 3u) >> 2);
+    if (!slots) slots = 1;
+
+    while (slots--) {
+        uint64_t inc = chip7_ticks_per_slot_fp;
+        uint32_t oldf = chip7_next_frac;
+        uint32_t newf = oldf + (uint32_t)inc;
+        chip7_next_ticks += (inc >> 32) + (newf < oldf ? 1u : 0u);
+        chip7_next_frac = newf;
+    }
+
+    while ((int64_t)(cntvct() - chip7_next_ticks) < 0)
+        __asm__ volatile("yield");
+
+    __asm__ volatile("dmb ish" ::: "memory");
+#else
+    (void)far; (void)size;
+#endif
+}
+
 /* ---- CPU trap path (core 0) ----------------------------------------------- */
 int aga_trap_write(uint64_t far, int size, uint64_t value, uint64_t value2)
 {
@@ -1547,6 +1804,11 @@ int aga_trap_write(uint64_t far, int size, uint64_t value, uint64_t value2)
     uint32_t reg = (uint32_t)far & 0x1FF;
     last_trap_pc = emu68_get_pc();
     last_wr = (reg << 16) | (uint16_t)value;
+    /* WHDLoad takeover signature seen in the v0.10.15 film. Re-arm on every
+       occurrence so an earlier OS clear cannot steal the capture. */
+    if ((reg & 0x1FEu) == INTENA && size == 2 && (uint16_t)value == 0x7FFFu)
+        whd_trace_rearm();
+    whd_trace_push(1, reg, size, (uint16_t)value, last_trap_pc);
     cpu_activity++;
     AGA_DIAG_INC(AGA_D_TRAPS_W);
     aga_diag_reg(reg, 1);
@@ -1578,6 +1840,10 @@ int aga_trap_write(uint64_t far, int size, uint64_t value, uint64_t value2)
         }
     }
 #endif
+    /* Real 68k Chip RAM and custom-register writes share one ordered bus.
+       Publish all prior cached Chip RAM stores before exposing the register
+       write that may make Copper/blitter/bitplane DMA consume them. */
+    __asm__ volatile("dmb ish" ::: "memory");
     lock();
 #ifdef AGA_PROBES
     uint64_t hold0;
@@ -1653,9 +1919,9 @@ int aga_trap_write(uint64_t far, int size, uint64_t value, uint64_t value2)
         /* A MOVEM.L of four or more registers reaches me as 128-bit stores
            (value = the first eight bytes, value2 = the next eight, as in
            aga_chip_write). They fell into the default below and were
-           dropped without a trace: OutRun AGA loads sixteen registers from
-           BPLCON0 up with one movem.l d0-d7,$100(a6), so BPLCON0 kept the
-           OS's blank $0200 and the game ran for ever with no bitplane on
+           dropped without a fucking trace: OutRun AGA loads sixteen registers
+           from BPLCON0 up with one movem.l d0-d7,$100(a6), so BPLCON0 kept
+           the OS's blank $0200 and the game ran for ever with no bitplane on
            screen - the copper's road and sky, no cars, no scenery, no text. */
         aga_write(aga, reg, (uint32_t)(value >> 32), 4);
         aga_write(aga, reg + 4, (uint32_t)value, 4);
@@ -1785,6 +2051,7 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
            few thousand a second, which makes the same ring about 100 ms of the
            machine actually doing things: what it programmed, and where it
            stopped. The rate itself is still counted in traps_read. */
+        whd_trace_push(0, reg, size, (uint16_t)*value, emu68_get_pc());
         return 1;
     }
     lock();
@@ -1804,7 +2071,11 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
     /* after the read, so the ring records what the 68k actually got back - the
        whole question with a busy-wait is what value it keeps seeing */
     last_rd = (reg << 16) | (uint16_t)*value;
-    AGA_DIAG_TRAP(reg, (uint16_t)*value, 0, emu68_get_pc());
+    {
+        uint32_t pc_now = emu68_get_pc();
+        whd_trace_push(0, reg, size, (uint16_t)*value, pc_now);
+        AGA_DIAG_TRAP(reg, (uint16_t)*value, 0, pc_now);
+    }
     return 1;
 }
 
@@ -1844,7 +2115,7 @@ void free(void *p)
 
 void aga_chipset_main(void)
 {
-  aga_evstream_on();                /* with aga.sleep set, core 3's timed waits get to sleep (aga_glue.h) */
+  aga_evstream_on();                /* with aga.sleep, core 3's timed waits sleep (aga_glue.h) */
   for (;;) {
     core_idle = 1;
     /* WFE, not a yield spin. Once aga_enabled became volatile, a tight
@@ -1865,8 +2136,8 @@ void aga_chipset_main(void)
     aga_diag_log("[AGA] core 3: woke, entering the chipset loop");
     const uint64_t freq = cntfrq();
     /* PAL colour clock 3546895 Hz; NTSC 3579545 Hz. Fixed point 32.32 ticks per cck. */
-    /* PAL 3546895, NTSC 3579545 - from the flag the machine was created with,
-     * NOT from the register file.
+    /* PAL 3546895, NTSC 3579545 - from the flag I was created with, NOT from
+     * the register file.
      *
      * This used to ask aga_peek_reg(aga, BEAMCON0), and regs[] only ever holds
      * what the 68k has WRITTEN: aga_reset memsets it, and the machine's real
@@ -2106,7 +2377,7 @@ void aga_chipset_main(void)
                 uint64_t w0 = cntvct();
                 if (chunk_at && w0 > chunk_at && w0 - chunk_at > body_max) body_max = w0 - chunk_at;
                 while (cntvct() < target)
-                    aga_nap_before(target); /* with aga.sleep: asleep while far ahead; a step's wait just spins */
+                    aga_nap_before(target); /* with aga.sleep: asleep while far ahead; a step's wait spins */
                 chunk_at = cntvct();
                 if (chunk_at > w0) wait_acc += chunk_at - w0;
             }
@@ -2275,8 +2546,9 @@ void aga_chipset_main(void)
                raised a real level 4, the program's handler found nothing in
                the emulated registers to clear, and the real line pulled it
                straight back in: 1.7 million level-4 interrupts in 25 seconds,
-               not one frame on screen, then a reset. Put the real enables
-               back to the CIA sources whenever anything else turns up. */
+               not one fucking frame on screen, then a reset. Put the real
+               enables back to the CIA sources whenever anything else turns
+               up. */
             uint16_t ri = (uint16_t)ps_read_16(0xDFF01C);
             /* AUDIO ONLY. The first version cleared every non-CIA enable, and
                when WHDLoad crashed back to a desktop before its cleanup could
@@ -2634,6 +2906,14 @@ void aga_chipset_main(void)
             aga_diag_max(AGA_D_FRAME_US_WORST, us);
             aga_diag_inc(AGA_D_FRAMES);
             aga_diag_inc(AGA_D_PRESENTS);
+            {   /* Ctrl-Amiga-Amiga that the housekeeper did not take within
+                   20 ms: it is stuck, so this core reboots the Pi (the
+                   protocol file's ps_wedge_reset) */
+#ifndef FRF_VIRTUAL_AGA
+                extern void ps_reset_watch(void);
+                ps_reset_watch();
+#endif
+            }
             if (AGA_PROBES_ON) {   /* how far behind real time the loop is as this frame goes out */
                 uint64_t nowt = cntvct();
                 uint64_t lagt = nowt > next_ticks ? nowt - next_ticks : 0;
@@ -2741,42 +3021,20 @@ void aga_chipset_main(void)
                  3 FMODE:DIWHIGH    4 DIWSTRT:DIWSTOP  5 DDFSTRT:DDFSTOP
                  6 BPL1MOD:BPL2MOD  7 BPL1PT   8 BPL2PT
                  9 frames (moving = alive)  10 blits  11 last write reg:value */
-#define OVL2(r1, r2) (((uint32_t)aga_peek_reg(aga, r1) << 16) | aga_peek_reg(aga, r2))
-            aga_video_overlay(0, ((uint32_t)aga_peek_reg(aga, 0x100) << 16) | aga_custom_rget(aga, DMACONR));
-            aga_video_overlay(1, OVL2(0x102, 0x104));
-#ifdef FRF_VIRTUAL_AGA
-            aga_video_overlay(2, aga_peek_color(aga, 0));
-            aga_video_overlay(3, aga_peek_color(aga, 1));
-#else
-            aga_video_overlay(2, OVL2(0x106, 0x10C));
-            aga_video_overlay(3, OVL2(0x1FC, 0x1E4));
-#endif
-            aga_video_overlay(4, OVL2(0x08E, 0x090));
-            aga_video_overlay(5, OVL2(0x092, 0x094));
-            aga_video_overlay(6, OVL2(0x108, 0x10A));
-            aga_video_overlay(7, aga_peek_bplpt(aga, 0));
-#ifdef FRF_VIRTUAL_AGA
-            {
-                uint32_t bp = aga_peek_bplpt(aga, 0);
-                aga_video_overlay(8, ((uint32_t)aga_glue_chip_word(bp) << 16) |
-                                     aga_glue_chip_word(bp + 2));
+/* Non-invasive HUD: unlike the old EXECWIDE profiler, this only
+ * samples already maintained core status when the HUD is requested.
+ * No traversal of guest Exec lists or guest memory reads per frame. */
+            if (aga_overlay_idle) {
+                aga_video_overlay(0, emu68_get_pc());
+                aga_video_overlay(1, emu68_get_sr());
+                aga_video_overlay(2, ((uint32_t)aga_custom_rget(aga, INTENAR) << 16) |
+                                      aga_custom_rget(aga, INTREQR));
+                aga_video_overlay(3, ((uint32_t)aga_custom_rget(aga, DMACONR) << 16) |
+                                      aga_peek_reg(aga, BPLCON0));
+                aga_video_overlay(4, aga_diag_ctr[AGA_D_FRAMES]);
+                aga_video_overlay(5, emu68_get_insn_count());
+                aga_video_overlay(6, aga_blit_count(aga));
             }
-#else
-            aga_video_overlay(8, aga_peek_bplpt(aga, 1));
-#endif
-            aga_video_overlay(9, aga_diag_ctr[AGA_D_FRAMES]);
-#ifdef FRF_VIRTUAL_AGA
-            {
-                extern uint32_t overlay;
-                aga_video_overlay(10, emu68_get_insn_count());
-                aga_video_overlay(11, ((overlay & 1u) << 31) |
-                                      (emu68_get_irq_check() & 0x7fffffffu));
-            }
-#else
-            aga_video_overlay(10, aga_diag_ctr[AGA_D_BLITS]);
-            aga_video_overlay(11, last_wr);
-#endif
-#undef OVL2
             wd_deadline = cntvct() + freq * AGA_WATCHDOG_SEC;   /* progress: rearm */
             { extern uint32_t aga_dl_inuse, aga_dl_free_at, aga_dl_free_len;
               aga_diag_set(AGA_D_DL_INUSE, aga_dl_inuse);
@@ -2955,13 +3213,15 @@ static uint8_t *dsk_slot[DSK_SLOTS];      /* images kept for Ctrl+F1..F4 swappin
 static uint32_t dsk_slot_size[DSK_SLOTS];
 static int      key_ctrl;
 
-static void slot_insert(int n)
+static int slot_insert(int n)
 {
-    if (n < 0 || n >= DSK_SLOTS || !dsk_slot[n]) return;
+    if (!aga || n < 0 || n >= DSK_SLOTS || !dsk_slot[n]) return 0;
     lock();
-    aga_disk_insert(aga, 0, dsk_slot[n], dsk_slot_size[n], 0);
+    int rc = aga_disk_insert(aga, 0, dsk_slot[n], dsk_slot_size[n], 1);
     unlock();
-    kprintf("[AGA] disk: DF0 <- slot %d (%d KB)\n", n + 1, dsk_slot_size[n] >> 10);
+    if (rc != 0) return 0;
+    kprintf("[AGA] disk: DF0 <- slot %d (%d KB) [WP]\n", n + 1, dsk_slot_size[n] >> 10);
+    return 1;
 }
 
 /* The CIA hooks exist only for the virtual drives: with no image inserted they
@@ -2969,6 +3229,10 @@ static void slot_insert(int n)
    WHDLoad game without a floppy never sees them. */
 int aga_cia_write(uint64_t far, int size, uint64_t value)
 {
+#ifdef FRF_VIRTUAL_AGA
+    (void)far; (void)size; (void)value;
+    return 0;
+#else
     if (!aga_enabled || !aga || !aga_disk_active(aga)) return 0;
     if (far == 0xBFD100 && (size == 1 || size == 2)) {
         /* CIA-B lives on the upper data byte: a word access carries PRB in bits 8-15 */
@@ -2983,10 +3247,15 @@ int aga_cia_write(uint64_t far, int size, uint64_t value)
         return 1;
     }
     return 0;
+#endif
 }
 
 int aga_cia_read(uint64_t far, int size, uint64_t *value)
 {
+#ifdef FRF_VIRTUAL_AGA
+    (void)far; (void)size; (void)value;
+    return 0;
+#else
     /* The mouse quit. WHDLoad, once it has moved the VBR, compares its quit
        key with the keyboard's serial register at EVERY interrupt, whatever
        handlers the program installed - which is why F10 gets out of most
@@ -3039,6 +3308,7 @@ int aga_cia_read(uint64_t far, int size, uint64_t *value)
         return 1;
     }
     return 0;
+#endif
 }
 
 /* $DFF1F2 = $ADxx with the image address in $DFF1EC/$DFF1EE (68k address of a
@@ -3046,21 +3316,34 @@ int aga_cia_read(uint64_t far, int size, uint64_t *value)
      $ADF0/$ADF1  insert the image into DF0/DF1 (also kept as swap slot 1 for DF0)
      $ADC1..$ADC4 load the image into swap slot 1..4 (Ctrl+F1..F4 inserts it into DF0)
      $ADE0/$ADE1  eject DF0/DF1 */
+/* Runtime AmigaOS mount tool reads the last command's status on $DFF1F2.
+ * $AD80=idle/protocol present; $AD81=inserted; $AD82=ejected;
+ * $AD83=slot ready; $AD40=error; $AD41=chipset unavailable.
+ */
+static volatile uint16_t frf_adf_status = 0xAD80u;
+uint16_t aga_disk_status(void) { return frf_adf_status; }
 int aga_disk_command(unsigned cmd)
 {
     aga_diag_inc(AGA_D_DISK_CMDS);
-    if (!aga_enabled || !aga) { kprintf("[AGA] disk command %02x ignored (chipset not active)\n", cmd); return 0; }
+    if (!aga_enabled || !aga) { frf_adf_status = 0xAD41u; kprintf("[AGA] disk command %02x ignored (chipset not active)\n", cmd); return 0; }
     unsigned op = (cmd >> 4) & 0xF, n = cmd & 0xF;
+    if (op == 0xB && n >= 1 && n <= DSK_SLOTS) {
+        int rc = slot_insert(n - 1);
+        frf_adf_status = rc ? 0xAD84u : 0xAD40u;
+        return rc;
+    }
     if (op == 0xE) {
         lock(); aga_disk_eject(aga, n & 1); unlock();
         kprintf("[AGA] disk: DF%d ejected\n", n & 1);
+        frf_adf_status = 0xAD82u;
         return 1;
     }
     uint32_t addr = ((uint32_t)aga_peek_reg(aga, 0x1EC) << 16) | aga_peek_reg(aga, 0x1EE);
     uint32_t szf = aga_peek_reg(aga, 0x1F0);
     uint32_t size = (szf & 0xFFF) << 10;
     int wprot = (szf >> 12) & 1;
-    if (addr < 0x200000 || addr + size > 0xFFFFFFFFu || (size != 901120 && size != 1802240)) {
+    if (addr < 0x200000 || (uint64_t)addr + size > 0x100000000ULL || (size != 901120 && size != 1802240)) {
+        frf_adf_status = 0xAD40u;
         kprintf("[AGA] disk command %02x: bad image %08x/%d\n", cmd, addr, size);
         return 0;
     }
@@ -3071,17 +3354,20 @@ int aga_disk_command(unsigned cmd)
             if (!dsk_slot[0]) dsk_slot[0] = calloc(1, 1802240);
             if (dsk_slot[0]) { memcpy(dsk_slot[0], src, size); dsk_slot_size[0] = size; }
         }
+        frf_adf_status = r == 0 ? 0xAD81u : 0xAD40u;
         kprintf("[AGA] disk: DF%d insert %d KB from %08x -> %d\n", n, size >> 10, addr, r);
         return r == 0;
     }
     if (op == 0xC && n >= 1 && n <= DSK_SLOTS) {
         if (!dsk_slot[n - 1]) dsk_slot[n - 1] = calloc(1, 1802240);
-        if (!dsk_slot[n - 1]) return 0;
+        if (!dsk_slot[n - 1]) { frf_adf_status = 0xAD40u; return 0; }
         memcpy(dsk_slot[n - 1], src, size);
         dsk_slot_size[n - 1] = size;
+        frf_adf_status = 0xAD83u;
         kprintf("[AGA] disk: slot %d loaded (%d KB)\n", n, size >> 10);
         return 1;
     }
+    frf_adf_status = 0xAD40u;
     return 0;
 }
 

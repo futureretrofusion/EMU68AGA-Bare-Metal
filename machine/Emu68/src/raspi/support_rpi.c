@@ -235,6 +235,28 @@ static void mbox_send(uint32_t channel, uint32_t data)
 //uint32_t FBReq[128] __attribute__((aligned(16)));
 uint32_t *FBReq = (uint32_t *)0xffffff9000001000;
 
+/* Report physical Pi model, not the optional fallback device-tree model.
+ * Firmware property tag 0x00010002 (GET_BOARD_REVISION). Only queried during
+ * single-core early boot, before the USB thread is allowed to use mailbox. */
+uint32_t frf_get_board_revision(void)
+{
+    FBReq[0] = LE32(7u * 4u);
+    FBReq[1] = 0;
+    FBReq[2] = LE32(0x00010002u);
+    FBReq[3] = LE32(4u);
+    FBReq[4] = 0;
+    FBReq[5] = 0;
+    FBReq[6] = 0;
+    arm_flush_cache((intptr_t)FBReq, 28);
+    mbox_send(8, mmu_virt2phys((intptr_t)FBReq));
+    mbox_recv(8);
+    arm_dcache_invalidate((intptr_t)FBReq, 28);
+    if ((LE32(FBReq[1]) & 0x80000000u) == 0 ||
+        (LE32(FBReq[4]) & 0x80000000u) == 0)
+        return 0;
+    return LE32(FBReq[5]);
+}
+
 uint32_t get_clock_rate(uint32_t clock_id)
 {
     FBReq[0] = LE32(4*8);       // Length

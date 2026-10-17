@@ -1,4 +1,4 @@
-/* AGA-PISTORM — portable AGA chipset core, public API.
+/* AGA-PISTORM - portable AGA chipset core, public API.
  * SPDX-License-Identifier: GPL-2.0-only
  *
  * The core is single-threaded by design: all entry points must be called with
@@ -49,11 +49,11 @@ typedef struct aga_hooks {
     /* Called at the beginning of vertical blank: the framebuffer for the finished frame is ready. */
     void     (*frame_done)(void *user);
     void     *user;
-    /* Called after I've drawn each line - not for a woven frame's lines -
-       with the line still in my own cached buffer, AGA_OUT_W pixels: y its
-       frame row, page the framebuffer it went to (aga_set_framebuffers'
-       order). May be NULL; I keep it last so a positional initializer of
-       the fields above leaves the bastard NULL. */
+    /* Called after each line is drawn - not for a woven frame's lines - with
+       the line still in the core's own (cached) buffer, AGA_OUT_W pixels: y
+       its frame row, page the framebuffer it went to (aga_set_framebuffers'
+       order). May be NULL. Last, so a positional initializer of the fields
+       above leaves it NULL. */
     void     (*line_done)(void *user, int y, int page, const uint32_t *line);
 } aga_hooks_t;
 
@@ -64,6 +64,7 @@ typedef struct aga_config {
     int render;             /* 0 = skip pixel rendering (headless timing only) */
     int weave;              /* 1 = interlaced frames woven, both fields at once (aga_set_weave) */
     int bright;             /* the picture's brightness in percent; 0 or 100 = the palette's own */
+    int gamma;              /* the picture's gamma: 0 Exact (the palette's own), 1 CRT, 2 Lighter */
 } aga_config_t;
 
 /* ---- lifecycle ------------------------------------------------------------ */
@@ -108,11 +109,21 @@ void     aga_set_weave(aga_t *a, int on);
    page with 2 x AGA_OUT_H rows, and *row (if not NULL) says which rows are its
    own field - 0 the even ones (a long field), 1 the odd ones. */
 int      aga_frame_woven(const aga_t *a, int *row);
-/* Brightness in percent, 100 = off: every colour shown goes through a table
-   that multiplies each channel and stops at 255 - for scanlines, which darken
+/* Brightness in percent, 100 = off, and Gamma (aga_set_gamma): every colour
+   shown goes through one table per channel (aga_tone_build) - for scanlines,
+   which darken
    the picture. The palette the game reads back is not touched. Survives
    aga_reset(). */
 void     aga_set_brightness(aga_t *a, int percent);
+/* 0 Exact, 1 CRT (the 1084S's darker mid-tones), 2 Lighter: see aga_tone_build.
+   Survives aga_reset() too. */
+void     aga_set_gamma(aga_t *a, int gamma);
+/* The table a channel goes through for a brightness and a gamma: lut[v] for v
+   0..255, RGB2RTG's curve - the gamma, then the gain up to a knee and from
+   there a smooth bend to white, so near-whites stay apart where straight gain
+   clipped everything above 255 / gain. Returns 1 when it is not the identity.
+   Integer only: it runs in the 68k's trap (a control word) as well. */
+int      aga_tone_build(uint8_t lut[256], int percent, int gamma);
 /* PAL (0) or NTSC (1) from the next aga_reset() on - the standard a game
    starts in, as the sandbox resets on entry. A game can still switch itself
    with BEAMCON0. aga_is_ntsc: the standard in force now. The setting is

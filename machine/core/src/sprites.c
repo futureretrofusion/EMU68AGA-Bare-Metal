@@ -12,7 +12,7 @@
  * the eight-bit position match is denise_xposmask (drawing.cpp, expand_fmode
  * and matchsprites2_aga), the skipped fetch generate_sprites' dblscan test
  * (custom.cpp). The rendering, the replay of mid-line rewrites and the
- * collision groups are my own.
+ * collision groups are this project's own.
  *   WinUAE custom.cpp:  Copyright 1995-2002 Bernd Schmidt,
  *     Copyright 1995 Alessandro Bissacco, Copyright 2000-2025 Toni Wilen
  *   WinUAE drawing.cpp: Copyright 1995-2000 Bernd Schmidt,
@@ -82,8 +82,8 @@ static void spr_update_posctl(aga_t *a, int n)
    flag then - so every sprite shows twice a line, 256 lores pixels apart.
    Castlevania AGA (Scorpion Engine) tiles its far layer that way: four
    64-pixel sprites side by side, repeated. One copy each drew the clouds and
-   mountains over the left 128 pixels of the play area and bugger all right
-   of them. */
+   mountains over the left 128 pixels of the play area and nothing right of
+   them. */
 static inline int spr_copies(const aga_t *a, int xpos, int x[2])
 {
     if (!(a->pf.fmode & 0x8000)) { x[0] = xpos; return 1; }
@@ -219,7 +219,14 @@ void spr_dma_slot(aga_t *a, int hpos)
     /* SSCAN2 scan-doubling: a sprite with SPRxPOS bit 7 set fetches data only
        on lines of its start line's parity, so each data line shows twice */
     int dbl = s->dmadata && (a->pf.fmode & 0x8000) && (s->pos & 0x80) && ((a->vpos ^ s->vstart) & 1);
-    if (s->dmacycle && aga_dma_enabled(a, DMAF_SPREN) && !dbl) {
+    /* No sprite slot while the line's bitplane fetch runs (WinUAE do_sprites:
+       only if bprun != 1): nothing is fetched and the pointer stays, though
+       the state machine below still steps. Brian the Lion's copper sets
+       DDFSTRT $30, so sprite 7's slots belong to the bitplanes - I fetched
+       it from its stale pointer and armed it with junk (dark-blue dashes;
+       from RGB2RTG, EMM #2072). The OCS Agnus's off-by-one and the
+       DDFSTOP bplconflict edge are not modelled. */
+    if (s->dmacycle && aga_dma_enabled(a, DMAF_SPREN) && !dbl && !pf_bpl_running(a, hpos)) {
         uint32_t bytes = a->sprite_width >> 3;
         if (!s->dmadata) {
             aga_trace_at(a, hpos, AGA_DMA_SPRITE,
@@ -297,9 +304,20 @@ static int spr_line_copies(const aga_t *a, int n, const int *t_after, int *cx, u
         ncp = spr_copies(a, e->xpos, xs);
         for (int c = 0; c < ncp && nc < AGA_SPR_EVENTS; c++) {
             /* E-UAE decide_sprites: before a write at colour clock h every
-               sprite whose comparator position (no display offset) is up to
-               h*2-3 lores pixels is matched with the old state: SPR_NOW-16 */
-            if (xs[c] > e->sx - 16 && xs[c] <= t_next - 16) { cx[nc] = xs[c] + hwoff; cda[nc] = e->data; cdb[nc] = e->datb; nc++; }
+               sprite whose comparator position (no display offset) is below
+               h*2-6 lores pixels is matched with the old state, and one
+               exactly at the bound already sees the write: so >= sx-28 and
+               < t_next-28 in sprline units. WinUAE's Denise counter stands
+               at 2h-8 (drawing.cpp: 3 refresh offset + 2 pipeline delay) and
+               a register write takes effect one colour clock after its slot,
+               which puts the bound at 2h-6. Brian the Lion's clouds - sprite
+               7 placed by the copper 2-4 times a line, SPR7DATA at the very
+               clock its copy starts - showed each chunk with the previous
+               chunk's data; ReshootR moves sprite 6 (its rock layer) 4-5
+               times a line with every SPR6POS exactly at the bound, and with
+               h*2-3 every copy was dropped and the rock came out as flat
+               colour bands (from RGB2RTG, EMM #2072 then #2099). */
+            if (xs[c] >= e->sx - 28 && xs[c] < t_next - 28) { cx[nc] = xs[c] + hwoff; cda[nc] = e->data; cdb[nc] = e->datb; nc++; }
         }
     }
     return nc;
@@ -312,14 +330,21 @@ static int spr_copy_to_buffer(const aga_t *a, uint8_t *v, int x, int limit, uint
 {
     int w = a->sprite_width;
     if (!a->nsprres_ev) {
-        /* one resolution all line: bit (x - cx) >> sh at each pixel */
+        /* one resolution all line: sprite pixel i covers 1 << sh output
+           pixels, so its value is worked out once and written as a run (from
+           RGB2RTG a861e51: pixel by pixel this loop was about an eighth of
+           Jim Power's chipset time on a PC; the pictures are the same) */
         int sh = 2 - a->sprres_line0;
         int end = x + (w << sh);
         if (end > limit) end = limit;
         if (end < x) end = x;
-        for (int px = x < 0 ? 0 : x; px < end; px++) {
-            int b = 63 - ((px - x) >> sh);
-            v[px] = (uint8_t)(((da >> b) & 1) | (((db >> b) & 1) << 1));
+        int px = x < 0 ? 0 : x;
+        while (px < end) {
+            int i = (px - x) >> sh, b = 63 - i;
+            uint8_t val = (uint8_t)(((da >> b) & 1) | (((db >> b) & 1) << 1));
+            int nxt = x + ((i + 1) << sh);
+            if (nxt > end) nxt = end;
+            do v[px] = val; while (++px < nxt);
         }
         return end;
     }
@@ -631,6 +656,38 @@ void spr_build_line(aga_t *a, int clx)
                     int x = xs[cp] + hwoff + k * pixw;
                     uint8_t v = (uint8_t)(c | 0x10 | 0x20 | (pair << 6));
                     for (int p = 0; p < pixw; p++) if (x + p >= 0 && x + p < linelen) line[x + p] = v;
+                }
+            }
+            continue;
+        }
+        if (attached && (se->armed || so->armed)) {
+            /* the pair is attached by the odd sprite's ATTACH bit alone (WinUAE
+               drawing.cpp: dspr[].attached from the odd SPRxCTL), armed or not
+               and wherever each one is: a pixel's colour is both sprites' bits,
+               one not armed or not there giving none - as the replay has it.
+               Drawn as two sprites of their own, the even one took its pair's
+               four colours instead of the sixteen: Brian the Lion's glove,
+               whose odd half stops 14 lines above the even one, came out light
+               at its right edge where it is dark (from RGB2RTG, EMM #2085). */
+            int xse[2], xso[2], span = w * pixw;
+            ncp = spr_copies(a, se->xpos, xse);
+            spr_copies(a, so->xpos, xso);
+            for (int cp = 0; cp < ncp; cp++) {
+                int be = xse[cp] + hwoff, bo = xso[cp] + hwoff;
+                int lo = so->armed && (!se->armed || bo < be) ? bo : be;
+                int hi = so->armed && (!se->armed || bo > be) ? bo + span : be + span;
+                spr_mark(a, lo, hi, linelen);
+                for (int x = lo < 0 ? 0 : lo; x < hi && x < linelen; x++) {
+                    int c = 0;
+                    if (se->armed && x >= be && x < be + span) {
+                        int b = 63 - (x - be) / pixw;
+                        c = (int)((se->data >> b) & 1) | ((int)((se->datb >> b) & 1) << 1);
+                    }
+                    if (so->armed && x >= bo && x < bo + span) {
+                        int b = 63 - (x - bo) / pixw;
+                        c |= ((int)((so->data >> b) & 1) << 2) | ((int)((so->datb >> b) & 1) << 3);
+                    }
+                    if (c) line[x] = (uint8_t)(c | 0x10 | 0x20 | (pair << 6));
                 }
             }
             continue;

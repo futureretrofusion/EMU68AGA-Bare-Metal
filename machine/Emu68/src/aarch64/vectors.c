@@ -38,6 +38,10 @@ static inline void aga_vrestore(struct aga_vsave *s)
 #include "mmu.h"
 #include "tlsf.h"
 #include "M68k.h"
+#ifdef AGA_PISTORM
+extern int aga_mode;
+#endif
+extern uint32_t EPOCH;
 #include "cache.h"
 #include "intc.h"
 
@@ -405,16 +409,20 @@ static inline void frf_vcia_unlock(void);
 static volatile char frf_vcia_lock_v __attribute__((aligned(64)));
 static uint64_t frf_vcia_last_tick, frf_vcia_e_frac;
 static uint64_t frf_vcia_a_tod_frac, frf_vcia_b_tod_frac;
+static volatile uint8_t frf_ciab_takeover_pending;
 
 #define FRF_KBD_QN 64u
 static uint8_t frf_kbd_q[FRF_KBD_QN];
 static uint8_t frf_kbd_qr, frf_kbd_qw;
 static uint32_t frf_kbd_drop;
 
-/* Real Amiga keyboard protocol state.
-   One byte may be outstanding. The computer acknowledges it by switching
-   CIA-A CRA bit 6 (SPMODE) to output, holding the SP handshake, then returning
-   it to input. The official keyboard protocol requires an 85 us pulse. */
+/* Real Amiga keyboard wire timing.
+   A byte is eight ~60 us bit cells (~480 us total), then the keyboard waits
+   for the host's SP handshake. The host pulse is specified as >=85 us for
+   universal keyboard compatibility. */
+static uint8_t  frf_kbd_tx_active;
+static uint8_t  frf_kbd_tx_sdr;
+static uint64_t frf_kbd_tx_done;
 static uint8_t  frf_kbd_wait_ack;
 static uint8_t  frf_kbd_ack_active;
 static uint64_t frf_kbd_ack_start;
@@ -461,40 +469,69 @@ static void frf_vcia_overlay_recalc_locked(void)
     if (next == overlay) return;
     overlay = next;
     if (next) {
+        extern void aga_machine_code_overlay(int rom_on);
+        aga_machine_code_overlay(1);
         mmu_map(0x00f80000u, 0x000000u, 0x00080000u,
                 MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 |
                 MMU_READ_ONLY | MMU_ATTR_CACHED, 0);
-        kprintf("[JIT:SYS] FRF OVL -> ROM\n");
+        cache_invalidate_all(ICACHE);
+        LRU_InvalidateAll();
+        EPOCH++;
+        kprintf("[JIT:SYS] FRF OVL -> ROM + JIT epoch %u\n", EPOCH);
     } else if (aga_chip_base && aga_chip_size) {
+        /* FRF v0.10.15 COHERENT-MMU:
+           FRF_VIRTUAL_AGA selects aga_use_mmu=1 on the Pi3.  The previous
+           OVLTRAP lineage nevertheless UNMAPPED address zero while the
+           abort-handler redirect was armed only for !aga_use_mmu.  That left
+           the CPU and software AGA DMA able to observe different Chip-RAM
+           backings.  Restore the known-good Pi3 model: map the same virtual
+           Chip-RAM allocation used by Alice/Paula directly at 68k address 0. */
         mmu_map(aga_chip_base, 0x000000u, aga_chip_size,
                 MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 |
                 MMU_ATTR_CACHED, 0);
-        kprintf("[JIT:SYS] FRF OVL -> CHIP (%u KB)\n", aga_chip_size >> 10);
+
+        extern void aga_machine_code_overlay(int rom_on);
+        aga_machine_code_overlay(0);
+
+        /* Address identity changed ROM -> RAM: translated ROM blocks must not
+           survive even though the RAM is now directly mapped. */
+        cache_invalidate_all(ICACHE);
+        LRU_InvalidateAll();
+        EPOCH++;
+        __asm__ volatile("dsb ish; isb" ::: "memory");
+
+        kprintf("[JIT:SYS] FRF OVL -> COHERENT CHIP MMU + JIT epoch %u (%u KB)\n",
+                EPOCH, aga_chip_size >> 10);
     }
     __asm__ volatile("dsb ish; isb" ::: "memory");
 }
 
+
 static unsigned frf_vcia_timer_advance(uint16_t *counter, uint16_t latch,
                                        uint8_t *cr, uint64_t ticks)
 {
-    unsigned underflows = 0;
+    /* Do not discard E-clock ticks after 1025 underflows.  The original
+       bounded loop left virtual CIA time behind host time after a long
+       scheduling gap or small-latch timer.  Analytic periodic advancement
+       preserves the final counter and interrupt occurrence. */
     if (((*cr) & 0x21u) != 0x01u || !ticks) return 0;
-    while (ticks) {
-        uint64_t span = (uint64_t)(*counter) + 1u;
-        if (ticks < span) {
-            *counter = (uint16_t)((uint64_t)(*counter) - ticks);
-            break;
-        }
-        ticks -= span;
-        underflows++;
-        *counter = latch;
-        if ((*cr) & 0x08u) {
-            *cr &= (uint8_t)~0x01u;
-            break;
-        }
-        if (underflows > 1024u) break;
+    uint64_t span = (uint64_t)(*counter) + 1u;
+    if (ticks < span) {
+        *counter = (uint16_t)(span - ticks - 1u);
+        return 0;
     }
-    return underflows;
+    ticks -= span;
+    *counter = latch;
+    if (*cr & 0x08u) {
+        *cr &= (uint8_t)~0x01u;
+        return 1;
+    }
+    uint64_t period = (uint64_t)latch + 1u;
+    uint64_t n = 1u + ticks / period;
+    uint64_t rem = ticks % period;
+    *counter = (uint16_t)((uint64_t)latch - rem);
+    /* Existing Timer-B-from-A code consumes an unsigned count. */
+    return n > 0xffffffffu ? 0xffffffffu : (unsigned)n;
 }
 
 static int frf_vcia_irq_active(const struct frf_vcia *c)
@@ -513,26 +550,41 @@ static void frf_vcia_publish_irq_locked(struct frf_vcia *c, int is_a)
 static void frf_vcia_keyboard_service_locked(void)
 {
     uint64_t now = frf_cntvct();
+    uint64_t freq = frf_cntfrq();
 
-    /* Reading ICR is not the keyboard acknowledgement. Do not present another
-       byte until AmigaOS has performed the CIA-A SP handshake. */
+    /* The CIA serial byte is not available until all eight keyboard clock
+       pulses have happened. The old emulator placed SDR + SP interrupt in the
+       CIA instantly, so modifier/key/release bursts arrived unrealistically
+       close together. */
+    if (frf_kbd_tx_active) {
+        if ((int64_t)(now - frf_kbd_tx_done) < 0)
+            return;
+
+        frf_ciaa.sdr = frf_kbd_tx_sdr;
+        frf_ciaa.icr |= 0x08u;
+        frf_kbd_tx_active = 0;
+        frf_kbd_wait_ack = 1;
+        frf_kbd_ack_active = 0;
+        frf_vcia_publish_irq_locked(&frf_ciaa, 1);
+        return;
+    }
+
     if (frf_kbd_wait_ack || frf_kbd_qr == frf_kbd_qw)
         return;
-
     if (frf_kbd_next_tick && (int64_t)(now - frf_kbd_next_tick) < 0)
         return;
 
     uint8_t raw = frf_kbd_q[frf_kbd_qr];
     frf_kbd_qr = (uint8_t)((frf_kbd_qr + 1u) & (FRF_KBD_QN - 1u));
-
-    /* Amiga wire format: rotate key state so release bit is transmitted last,
-       then active-low invert into CIA-A SDR. */
     uint8_t wire = (uint8_t)(((raw & 0x7fu) << 1) | ((raw >> 7) & 1u));
-    frf_ciaa.sdr = (uint8_t)~wire;
-    frf_ciaa.icr |= 0x08u;
-    frf_kbd_wait_ack = 1;
-    frf_kbd_ack_active = 0;
-    frf_vcia_publish_irq_locked(&frf_ciaa, 1);
+
+    frf_kbd_tx_sdr = (uint8_t)~wire;
+    frf_kbd_tx_active = 1;
+
+    /* 8 bits * ~60 us/bit = ~480 us. Round up so we never run faster than
+       the physical protocol. */
+    uint64_t tx = (freq * 480u + 999999u) / 1000000u;
+    frf_kbd_tx_done = now + (tx ? tx : 1u);
 }
 
 static void frf_vcia_update_chip_locked(struct frf_vcia *c, int is_a, uint64_t ticks)
@@ -542,13 +594,11 @@ static void frf_vcia_update_chip_locked(struct frf_vcia *c, int is_a, uint64_t t
     if (au) {
         c->icr |= 0x01u;
         if ((c->crb & 0x61u) == 0x41u || (c->crb & 0x61u) == 0x61u) {
-            for (unsigned n = 0; n < au; ++n) {
-                if (!(c->crb & 1u)) break;
-                if (c->tb == 0u) {
-                    c->tb = c->lb; bu++;
-                    if (c->crb & 0x08u) { c->crb &= (uint8_t)~1u; break; }
-                } else c->tb--;
-            }
+            /* Timer B counts Timer-A underflows; advance analytically.
+               Keep CRB mode bits; only propagate timer START changes. */
+            uint8_t tbcr = (uint8_t)(c->crb & (uint8_t)~0x60u);
+            bu += frf_vcia_timer_advance(&c->tb, c->lb, &tbcr, au);
+            c->crb = (uint8_t)((c->crb & (uint8_t)~1u) | (tbcr & 1u));
         }
     }
     if ((c->crb & 0x61u) == 0x01u)
@@ -572,6 +622,15 @@ void frf_vcia_service(void)
 {
     uint64_t now = frf_cntvct(), freq = frf_cntfrq();
     frf_vcia_lock();
+
+    /* WHDLoad takeover cleanup, deferred out of the AGA register hook so
+       lock ordering remains CIA -> AGA everywhere. */
+    if (__atomic_exchange_n(&frf_ciab_takeover_pending, 0u, __ATOMIC_ACQ_REL)) {
+        frf_ciab.imask = 0;
+        frf_ciab.icr = 0;
+        frf_vcia_publish_irq_locked(&frf_ciab, 0);
+    }
+
     if (!frf_vcia_last_tick) {
         frf_vcia_last_tick = now;
         frf_vcia_unlock();
@@ -611,6 +670,8 @@ static uint8_t frf_vcia_port_read_locked(struct frf_vcia *c, int is_a, unsigned 
         if (aga_virtual_disk_pra(&disk_bits))
             tmp = (uint8_t)((tmp & (uint8_t)~0x3cu) | (disk_bits & 0x3cu));
         uint8_t ext_buttons = aga_virtual_ciaa_buttons();
+        extern int frf_usb_early_startup_active(void);
+        if (frf_usb_early_startup_active()) ext_buttons &= (uint8_t)~0x40u;
         if (c->ddra & 0x40u) tmp = (uint8_t)((tmp & ~0x40u) | (c->pra & 0x40u));
         else tmp = (uint8_t)((tmp & ~0x40u) | (ext_buttons & 0x40u));
         if (c->ddra & 0x80u) tmp = (uint8_t)((tmp & ~0x80u) | (c->pra & 0x80u));
@@ -662,6 +723,20 @@ static void frf_vcia_mask_write_locked(struct frf_vcia *c, uint8_t v)
 {
     if (v & 0x80u) c->imask |= (uint8_t)(v & 0x1fu);
     else           c->imask &= (uint8_t)~(v & 0x1fu);
+}
+
+/* FRF v0.10.15: WHDLoad takeover in the standalone machine must silence the
+   VIRTUAL CIA-B, not the physical motherboard CIA.  This is equivalent to
+   writing $7f to CIAB ICR (clear all five enables) and then reading ICR to
+   drop any already-pending source.  Timers continue counting; a game or
+   KickEmu may re-enable exactly the sources it needs afterwards. */
+void frf_vcia_ciab_takeover_request(void)
+{
+    /* Called from the custom-register hook while the AGA lock is held.
+       Do not take the CIA lock here: normal CIA IRQ publication takes
+       CIA->AGA, so AGA->CIA here was an ABBA deadlock at WHDLoad takeover. */
+    __atomic_store_n(&frf_ciab_takeover_pending, 1u, __ATOMIC_RELEASE);
+    __asm__ volatile("sev" ::: "memory");
 }
 
 static void frf_vcia_write_one_locked(int is_a, unsigned r, uint8_t v)
@@ -719,17 +794,17 @@ static void frf_vcia_write_one_locked(int is_a, unsigned r, uint8_t v)
             int new_out = (newcra & 0x40u) != 0;
 
             if (!old_out && new_out) {
-                /* Host begins the keyboard SP handshake. */
                 frf_kbd_ack_active = 1;
                 frf_kbd_ack_start = frf_cntvct();
             } else if (old_out && !new_out && frf_kbd_ack_active) {
-                /* Handshake complete. Real hardware requires the line low for
-                   85 us. Emu68 can execute the guest's delay faster than wall
-                   clock, so accept the semantic transition but keep the
-                   keyboard unavailable until the 85 us boundary has elapsed. */
+                /* Treat the observed host handshake semantically, but do not
+                   permit another keyboard byte until the full 85 us physical
+                   compatibility window has elapsed. */
+                uint64_t now = frf_cntvct();
                 uint64_t freq = frf_cntfrq();
                 uint64_t min_ticks = (freq * 85u + 999999u) / 1000000u;
-                frf_kbd_next_tick = frf_kbd_ack_start + min_ticks;
+                uint64_t earliest = frf_kbd_ack_start + (min_ticks ? min_ticks : 1u);
+                frf_kbd_next_tick = ((int64_t)(earliest - now) > 0) ? earliest : now;
                 frf_kbd_wait_ack = 0;
                 frf_kbd_ack_active = 0;
             }
@@ -843,6 +918,43 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_write(far, size, value)) return 1;
+    /* FRF standalone runtime ADF commands must work with aga_mode == 1.
+     * Their interception used to be inside if(!aga_mode), unreachable in
+     * the bare-metal machine. Only the explicit $ADxx magic is claimed. */
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFF00u) == 0xAD00u) {
+        aga_disk_command((unsigned)value & 0xffu);
+        return 1;
+    }
+    /* AGA-PiStorm 1.116 CRT/gamma/aspect control, enabled in standalone
+     * machine mode. The legacy command region under if(!aga_mode) is never
+     * reached on our native virtual AGA. E3 encodes 0..7 as bits 0,2,3. */
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFFF2u) == 0x5100u) {
+        aga_video_set_mask((int)((value & 1u) | ((value >> 1) & 6u)));
+        return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFFF2u) == 0x5110u) {
+        aga_video_set_scan_shape((int)((value & 1u) | ((value >> 1) & 6u)));
+        return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFFF2u) == 0x5120u) {
+        aga_gamma((int)((value & 1u) | ((value >> 1) & 6u)));
+        return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFFF2u) == 0x5130u) {
+        aga_video_set_scale((int)((value & 1u) | ((value >> 1) & 6u)));
+        return 1;
+    }
+#endif
+#ifdef FRF_VIRTUAL_AGA
+    /* FRF v0.10.15 SYSTEMWIDE: the virtual AGA chipset is already the machine.
+       Disable legacy agaboot/sandbox/private-register commands in machine mode.
+       Real AGA $1E8-$1EE traffic must reach the chipset core unmodified. */
+    if (!aga_mode) {
 #endif
     /* AGA/ECS mode switch request from the agaboot tool, valid in both modes */
     if (far == 0xDFF1F2 && size == 2 && ((value & 0xFFFF) == 0xA6A1 || (value & 0xFFFF) == 0xEC50)) {
@@ -951,7 +1063,12 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x59E0) { aga_video_set_laced_scanlines((int)(value & 7)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x59F0) { aga_brightness((int)(value & 7)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5910) { aga_video_standard((int)(value & 1)); return 1; }
+#ifdef FRF_VIRTUAL_AGA
+    }
+#endif
+#ifndef FRF_VIRTUAL_AGA
     if (aga_enabled && far >= 0xBFD100 && far < 0xBFD102 && aga_cia_write(far, size, value)) return 1;
+#endif
     if (aga_sandbox_active && far >= 0xBF0000 && far < 0xC00000) {
         aga_diag_cia((uint32_t)far, 1);
         if (size == 1) aga_diag_cia_value((uint32_t)far, 1, (uint8_t)value);
@@ -959,8 +1076,11 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     if (aga_enabled) {
         if (far >= 0xDFF000 && far < 0xE00000)
             return aga_trap_write(far, size, value, value2);
-        if (far >= 0xC00000 && far < 0xD80000)
+        if (far >= 0xC00000 && far < 0xD80000) {
+#ifdef FRF_VIRTUAL_AGA
+#endif
             return 1;                       /* no trapdoor/slow RAM in AGA mode */
+        }
     }
     }   /* AGA_TRAP_GUARD */
 #endif
@@ -1109,10 +1229,20 @@ int SYSReadValFromAddr(uint64_t *value, uint64_t *value2, int size, uint64_t far
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_read(far, size, value)) return 1;
+    if (far == 0xDFF1F2 && size == 2) {
+        *value = (uint64_t)aga_disk_status();
+        return 1;
+    }
 #endif
+#ifdef FRF_VIRTUAL_AGA
+    if (!aga_mode && far == 0xDFF1EA && size == 2) { *value = aga_diag_read_word(); return 1; }
+#else
     if (far == 0xDFF1EA && size == 2) { *value = aga_diag_read_word(); return 1; }
+#endif
+#ifndef FRF_VIRTUAL_AGA
     if (aga_enabled && (far == 0xBFE001 || far == 0xBFE000 || far == 0xBFEC01)
         && aga_cia_read(far, size, value)) return 1;
+#endif
     if (aga_sandbox_active && far >= 0xBF0000 && far < 0xC00000) {
         aga_diag_cia((uint32_t)far, 0);
         if (size == 1) {
@@ -1162,6 +1292,8 @@ int SYSReadValFromAddr(uint64_t *value, uint64_t *value2, int size, uint64_t far
             return r;
         }
         if (far >= 0xC00000 && far < 0xD80000) {
+#ifdef FRF_VIRTUAL_AGA
+#endif
             *value = 0;
             return 1;
         }
@@ -1380,6 +1512,43 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_write(far, size, value)) return 1;
+    /* FRF standalone runtime ADF commands must work with aga_mode == 1.
+     * Their interception used to be inside if(!aga_mode), unreachable in
+     * the bare-metal machine. Only the explicit $ADxx magic is claimed. */
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFF00u) == 0xAD00u) {
+        aga_disk_command((unsigned)value & 0xffu);
+        return 1;
+    }
+    /* AGA-PiStorm 1.116 CRT/gamma/aspect control, enabled in standalone
+     * machine mode. The legacy command region under if(!aga_mode) is never
+     * reached on our native virtual AGA. E3 encodes 0..7 as bits 0,2,3. */
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFFF2u) == 0x5100u) {
+        aga_video_set_mask((int)((value & 1u) | ((value >> 1) & 6u)));
+        return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFFF2u) == 0x5110u) {
+        aga_video_set_scan_shape((int)((value & 1u) | ((value >> 1) & 6u)));
+        return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFFF2u) == 0x5120u) {
+        aga_gamma((int)((value & 1u) | ((value >> 1) & 6u)));
+        return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 &&
+        (value & 0xFFF2u) == 0x5130u) {
+        aga_video_set_scale((int)((value & 1u) | ((value >> 1) & 6u)));
+        return 1;
+    }
+#endif
+#ifdef FRF_VIRTUAL_AGA
+    /* FRF v0.10.15 SYSTEMWIDE: the virtual AGA chipset is already the machine.
+       Disable legacy agaboot/sandbox/private-register commands in machine mode.
+       Real AGA $1E8-$1EE traffic must reach the chipset core unmodified. */
+    if (!aga_mode) {
 #endif
     /* AGA/ECS mode switch request from the agaboot tool, valid in both modes */
     if (far == 0xDFF1F2 && size == 2 && ((value & 0xFFFF) == 0xA6A1 || (value & 0xFFFF) == 0xEC50)) {
@@ -1488,7 +1657,12 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x59E0) { aga_video_set_laced_scanlines((int)(value & 7)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x59F0) { aga_brightness((int)(value & 7)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5910) { aga_video_standard((int)(value & 1)); return 1; }
+#ifdef FRF_VIRTUAL_AGA
+    }
+#endif
+#ifndef FRF_VIRTUAL_AGA
     if (aga_enabled && far >= 0xBFD100 && far < 0xBFD102 && aga_cia_write(far, size, value)) return 1;
+#endif
     if (aga_sandbox_active && far >= 0xBF0000 && far < 0xC00000) {
         aga_diag_cia((uint32_t)far, 1);
         if (size == 1) aga_diag_cia_value((uint32_t)far, 1, (uint8_t)value);

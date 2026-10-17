@@ -8,6 +8,7 @@
 */
 
 #include <stdarg.h>
+#include <string.h>
 #include <stdint.h>
 #include "A64.h"
 #include "config.h"
@@ -243,8 +244,12 @@ static void draw_logo_rgb(uint32_t start_x, uint32_t start_y, uint32_t scale)
 }
 #endif
 
-#if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
-/* Boot-progress markers retained for local USB bring-up hardware tests. */
+/* Boot-stage pixels in the top-left corner, for photo-based diagnosis
+ * when no serial adapter is attached. Each square is a distinct milestone:
+ * 1 splash, 2 USB released, 3 gate completed, 4 guest input armed, 5 68k jump,
+ * 6 CPU1 released, 7 USB environment started, 8 USB init entry,
+ * 9 USB init returned, 10 USB input ready.
+ * Only written during boot before guest video takes over. */
 void frf_boot_stage(unsigned stage)
 {
     if (!framebuffer || !pitch || fb_width < 230 || fb_height < 40 ||
@@ -257,7 +262,6 @@ void frf_boot_stage(unsigned stage)
     }
     __asm__ volatile("dsb ishst" ::: "memory");
 }
-#endif
 
 void display_logo()
 {
@@ -301,7 +305,7 @@ void display_logo()
 
     /* Calculate text coordinate for version string */
     text_y = (fb_height - 16 - 5) / 16;
-    text_x = (fb_width - strlen(&VERSION_STRING[6]) * 8 - 1) / 8;
+    text_x = (fb_width - strlen("EMU68AGA Version 0.1-Alpha") * 8 - 1) / 8;
 
 #if defined(PISTORM_ANY_MODEL)
     struct EmuLogo *pistormlogo = rle_decode(logo_pistorm, logo_pistorm_len);
@@ -323,7 +327,7 @@ void display_logo()
             break;
     }
 #elif defined(PISTORM_CLASSIC)
-    text_x -= strlen("EMU68AGA BARE METAL, ");
+    /* Tester splash uses a single centered footer. */
 #endif
 #endif
 
@@ -419,11 +423,11 @@ void display_logo()
             break;
     }
 #elif defined(PISTORM_CLASSIC)
-    kprintf_pc(__putc, NULL, "EMU68AGA BARE METAL, ");
+    /* Tester splash: label printed below instead. */
 #endif
 #endif
     /* Print EMu68 version number and git sha. */
-    kprintf_pc(__putc, NULL, &VERSION_STRING[6]);
+    kprintf_pc(__putc, NULL, "EMU68AGA Version 0.1-Alpha");
     
     /* Reset test coordinates for further text printing (e.g. buptest) */
     text_x = 0;
@@ -632,6 +636,27 @@ void platform_init()
     map_pcie_mmio_window(&start_map);
 }
 
+#if defined(FRF_WIFI_GUEST_COMPAT)
+extern void frf_wifi_guest_compat(void);
+#endif
+#if defined(FRF_WIFI_HW_PROBE)
+extern void frf_wifi_hw_probe(void);
+#endif
+#if defined(FRF_WIFI_SD1_ENUM)
+extern void frf_wifi_sd1_identify(void);
+static int frf_wifi_opted_in(void)
+{
+    of_node_t *node=dt_find_node("/chosen");
+    of_property_t *prop=node?dt_find_property(node,"bootargs"):0;
+    const char opt[]="frf_armwifi=1";
+    if(!prop || !prop->op_value) return 0;
+    const char *p=(const char*)prop->op_value;
+    for(unsigned i=0;i+sizeof(opt)-1 <= prop->op_length;i++)
+       if(!memcmp(p+i,opt,sizeof(opt)-1)) return 1;
+    return 0;
+}
+#endif
+
 void platform_post_init()
 {
     void *base_vcmem;
@@ -656,9 +681,19 @@ void platform_post_init()
     }
 
     display_logo();
-#if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
-    frf_boot_stage(1);
+#if defined(FRF_WIFI_GUEST_COMPAT)
+    frf_wifi_guest_compat();
 #endif
+#if defined(FRF_WIFI_HW_PROBE)
+    frf_wifi_hw_probe();
+#endif
+#if defined(FRF_WIFI_SD1_ENUM)
+    if(frf_wifi_opted_in())
+        frf_wifi_sd1_identify();
+    else
+        kprintf("[FRFNET] ARM SD1 hardware initialization DISABLED. Add frf_armwifi=1 to bootargs for experimental test.\n");
+#endif
+    frf_boot_stage(1);
 
 #ifdef PISTORM_ANY_MODEL
 #ifndef FRF_VIRTUAL_AGA

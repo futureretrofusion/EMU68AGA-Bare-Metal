@@ -48,11 +48,11 @@
  * kind as RGB2RTG's port of this file (a moving HDMI picture, and on a Pi 3
  * the HSM), whose reviewers found what they close; the detail differs (its
  * Pi 4 guard is a blank its own HVS poll saw, and its aga.hdmiforce skips the
- * Pi 3 check, where mine only waives the source). Two gaps remain. On a Pi 4
- * a moving picture stands in for a running HSM, which nothing here can read
- * after boot: an assumption, not yet tested on hardware (unplug while sound
- * plays, with and without hdmi_force_hotplug). And the clock can still stop
- * between the guard's reads and the register access, a window of at most
+ * Pi 3 check, where mine only waives the source). Two gaps remain, damn it.
+ * On a Pi 4 a moving picture stands in for a running HSM, which nothing here
+ * can read after boot: an assumption, not yet tested on hardware (unplug while
+ * sound plays, with and without hdmi_force_hotplug). And the clock can still
+ * stop between the guard's reads and the register access, a window of at most
  * about 100 microseconds (200 ms in the first port of the fixes). The link
  * counts as lost only after 200 ms with no change; until then a look just
  * waits for the picture. A Pi
@@ -620,7 +620,7 @@ static int dma_pick(void)
    first, and reset once its last write to MAI_DATA is answered (TI's
    WAIT_RESP), as Linux 6.6's bcm2835_dma_abort waits for
    WAITING_FOR_OUTSTANDING_WRITES - 50 us at most, for a peripheral that
-   never answers. */
+   never damn well answers. */
 static void dma_stop(void)
 {
     int c = dma_ch;
@@ -638,8 +638,8 @@ static void dma_stop(void)
    channel that runs someone else's control block (a 68k driver took it after
    I did) leaves dma_mask for the rest of the boot: between that driver's
    transfers it looks free, and the retry would take it back from that driver
-   over and over. CONBLK_AD 0 there is only an idle channel and stays in the
-   mask. With reg_lock held, behind the guards. */
+   over and over, for fuck's sake. CONBLK_AD 0 there is only an idle channel
+   and stays in the mask. With reg_lock held, behind the guards. */
 static void dma_lost(int c)
 {
     uint32_t cb = rd(DMA_CB(c));
@@ -965,11 +965,13 @@ void aga_hdmi_volume(int i) { if (i >= 0 && i < 5) hdmi_gain16 = (int32_t)((mix_
    rings, bit 1 one is on, bit 2 HDMI sound plays, bit 3 the screen takes 24
    bits, bits 4-9 the rates it takes (rate_hz's order; the driver offers
    those), bits 10-12 the rate HDMI runs at, bit 13 the ring's frames are 32
-   bits, bit 14 Paula band-limited; bits 16-23 the frames waiting / 64, bits
+   bits, bit 14 Paula band-limited, bit 15 it knows AHI_LOWLAT (1.116);
+   bits 16-23 the frames waiting / 64, bits
    24-31 the times the ring ran dry (at most 255). */
 extern uintptr_t mmu_virt2phys(uintptr_t virt);
 #define AHI_MAGIC 0x41484931u                    /* "AHI1" */
 #define AHI_S32   1u                             /* flags: 32-bit samples */
+#define AHI_LOWLAT 2u                            /* ... low latency: a 10 ms start buffer (1.116, driver 6.2) */
 struct ahi_hdr { uint32_t magic, frames, wr, rd, rate, flags, res[2]; };
 static struct ahi_hdr *volatile ahi_live __attribute__((aligned(64)));   /* its own line: core 3 polls it parked */
 static uint32_t ahi_latch;
@@ -978,6 +980,20 @@ static uint32_t ahi_rd, ahi_mask, ahi_under;
 static const int16_t *ahi_pcm;
 static const int32_t *ahi_pcm32;                 /* ... when its frames are 32-bit */
 static int ahi_seen;                             /* the driver has written something */
+/* The start buffer (1.116, RGB2RTG's 0.75-dev53): a ring is played once the
+   driver is 40 ms ahead, or 100 ms after its first frame came - new, or
+   after it ran dry. Read at once, a player that stalled right after its
+   first buffer (one opening a file on the SD card, whose driver spins
+   while it reads) left holes, heard as shitty crackling; held, its start comes
+   40 ms later, whole. A ring that runs dry waits the same way: one gap,
+   not a crackle of many. 40 ms: driver 6.2 keeps 42 ms more than its
+   buffers; an older one, never that far ahead with small buffers, starts
+   after the 100 ms. A low latency ring (AHI_LOWLAT, driver 6.2's low
+   latency modes, about a buffer and 12 ms) starts at 10 ms: a game's
+   sound effects heard sooner, a stall of the 68k past that margin a gap. */
+static int ahi_primed;                           /* the feed plays the ring */
+static uint64_t ahi_wait_t0;                     /* the first frame of the wait came (0 none yet) */
+static int ahi_lowlat;                           /* the ring has AHI_LOWLAT */
 static volatile int paula_bl;                    /* Paula on HDMI band-limited (below) */
 
 static void ahi_report(uint32_t fill)
@@ -987,6 +1003,7 @@ static void ahi_report(uint32_t fill)
     aga_diag_set(AGA_D_AHI, 1u | (h ? 2u : 0u) | (state == H_RUNNING ? 4u : 0u) | (out_24() ? 8u : 0u)
                             | (offer_rates() & 0x3F) << 4 | (uint32_t)rate_i << 10
                             | (h && (h->flags & AHI_S32) ? 1u << 13 : 0u) | (paula_bl ? 1u << 14 : 0u)
+                            | 1u << 15                    /* 1.116: it knows AHI_LOWLAT */
                             | (fill / 64 > 255 ? 255u : fill / 64) << 16 | u << 24);
 }
 
@@ -1092,7 +1109,7 @@ void aga_hdmi_ahi(int on)
         if (h->rate == rate_hz[i] && (offer_rates() & (1u << i))) ri = i;
     uint32_t fsize = !why && (h->flags & AHI_S32) ? 8 : 4;
     if (!why) why = h->magic != AHI_MAGIC ? 5 : ri < 0 ? 6 : (n < 256 || n > 65536 || (n & (n - 1))) ? 7
-                  : !ahi_mapped(a, sizeof(struct ahi_hdr) + n * fsize) ? 8 : (h->flags & ~AHI_S32) ? 9 : 0;
+                  : !ahi_mapped(a, sizeof(struct ahi_hdr) + n * fsize) ? 8 : (h->flags & ~(AHI_S32 | AHI_LOWLAT)) ? 9 : 0;
     if (why) {
         /* "[AGA] AHI: ring at XXXXXXXX refused (N)": 1 chip RAM, 2 alignment, 3 range,
            4 not mapped, 5 magic, 6 a rate the screen does not take, 7 size, 8 the
@@ -1120,6 +1137,7 @@ struct feed {
     int32_t gain16, ppm;
     struct ahi_hdr *ah;
     uint32_t ahi_wr;
+    int ahi_hold;                        /* the ring ran dry and waits: these frames are holes */
 };
 
 /* A feed's start: 0 when it may not run now. Counts itself in, resyncs on a
@@ -1183,11 +1201,29 @@ static int feed_begin(struct feed *f)
             ahi_pcm32 = (ah->flags & AHI_S32) ? (const int32_t *)(ah + 1) : 0;
             ahi_seen = 0;
             ahi_under = 0;
+            ahi_primed = 0;
+            ahi_wait_t0 = 0;
+            ahi_lowlat = (ah->flags & AHI_LOWLAT) != 0;
         }
     }
     f->ah = ah;
     f->ahi_wr = ah ? __atomic_load_n(&ah->wr, __ATOMIC_ACQUIRE) : 0;
     if (ah && f->ahi_wr - ahi_rd > ahi_mask + 1) ahi_rd = f->ahi_wr - (ahi_mask + 1) / 2;   /* I fell a lap behind: half a ring */
+    f->ahi_hold = 0;
+    if (ah && !ahi_primed) {                             /* the start buffer */
+        uint64_t at = cntvct();
+        uint32_t fill = f->ahi_wr - ahi_rd;
+        if (!fill)
+            ahi_wait_t0 = 0;
+        else if (!ahi_wait_t0)
+            ahi_wait_t0 = at;
+        if (fill >= at_rate(ahi_lowlat ? 480 : 1920) || (fill && at - ahi_wait_t0 >= cntfrq() / 10)) {
+            ahi_primed = 1;
+        } else {
+            f->ah = 0;                                   /* not yet: Paula alone, the ring kept */
+            f->ahi_hold = ahi_seen;                      /* after it ran dry: a hole */
+        }
+    }
     if (f->fm != filt_seen) {                            /* a new model starts from silence */
         for (int c2 = 0; c2 < 2; c2++)
             for (int k = 0; k < 5; k++) filt[c2].rc[k] = 0;
@@ -1217,9 +1253,15 @@ static inline void feed_emit(struct feed *f, int32_t pl, int32_t pr)
             ahi_seen = 1;
         } else if (ahi_seen) {
             ahi_under++;
+            if (ahi_primed) {                            /* dry: the start buffer again */
+                ahi_primed = 0;
+                ahi_wait_t0 = 0;
+            }
         }
         l = clamp24(l);
         r = clamp24(r);
+    } else if (f->ahi_hold) {
+        ahi_under++;
     }
     put_frame(wpos, l, r);
     if (++wpos >= ring_frames) wpos = 0;

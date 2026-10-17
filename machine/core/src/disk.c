@@ -188,6 +188,11 @@ int aga_disk_inserted(const aga_t *a, int drive)
 int aga_disk_active(const aga_t *a)
 {
     if (!a->dsk) return 0;
+#ifdef FRF_VIRTUAL_AGA
+    /* Standalone virtual machine: DF0 is a physical drive even if empty.
+     * CIA RDY/CHNG/TK0 must stay functional; no fake blank ADF. */
+    return 1;
+#endif
     for (int i = 0; i < AGA_MAX_DRIVES; i++)
         if (a->dsk->drv[i].inserted) return 1;
     return 0;
@@ -223,7 +228,12 @@ void aga_disk_cia_prb(aga_t *a, uint8_t prb)
         disk_drive_t *dr = &d->drv[i];
         int sel_bit = 0x08 << i;
         int sel = !(prb & sel_bit), was_sel = !(old & sel_bit);
+#ifdef FRF_VIRTUAL_AGA
+        /* DF0 exists without media. Other DF drives remain absent. */
+        if (sel && !dr->inserted && i != 0) continue;
+#else
         if (sel && !dr->inserted) continue;
+#endif
         if (sel && d->selected < 0) d->selected = i;
         if (sel && !was_sel)
             dr->motor = !(prb & 0x80);                       /* MTR is latched on the SEL falling edge */
@@ -370,9 +380,9 @@ void dsk_line_tick(aga_t *a)
     /* NOT cur_drive(): that returns NULL the moment the drive is deselected,
        and d->selected is reset to -1 on every CIA-B port B write. A real drive
        keeps spinning once its motor is on, whether or not /SEL is asserted -
-       damn Kickstart routinely deselects while it sets Paula's DMA up.
-       Stopping rotation there froze the disk mid-sector, which is why booting
-       an ADF left the machine polling a drive that never came ready. */
+       Kickstart routinely deselects while it sets Paula's DMA up. Stopping
+       rotation there froze the disk mid-sector, which is why booting an ADF
+       left the machine polling a drive that never came ready. */
     disk_drive_t *dr = NULL;
     for (int i = 0; i < AGA_MAX_DRIVES; i++) {
         disk_drive_t *c = &a->dsk->drv[i];

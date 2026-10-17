@@ -916,6 +916,11 @@ static void go(void)
 /* Sandbox entry, with the chipset loop confirmed running */
 void aga_rgbout_start(uint32_t chip_real)
 {
+#ifdef FRF_VIRTUAL_AGA
+    (void)chip_real;
+    aga_diag_set(AGA_D_RGB_STATE, 0);
+    return;
+#endif
     uint32_t b = rgb_block;
     rgb_hdmi_off = 0;
     if (rgb_run) aga_rgbout_stop();                   /* a Position frame left up */
@@ -946,6 +951,10 @@ void aga_rgbout_start(uint32_t chip_real)
    own display back afterwards (copper list and DMA, then RethinkDisplay). */
 void aga_rgbout_calibrate(int on)
 {
+#ifdef FRF_VIRTUAL_AGA
+    (void)on;
+    return;
+#endif
     if (aga_sandbox_active) return;
     if (on) {
         if (rgb_run || !rgb_block || !rgb_core) return;
@@ -962,6 +971,13 @@ void aga_rgbout_calibrate(int on)
    lands there. Also the end of a Position frame. */
 void aga_rgbout_stop(void)
 {
+#ifdef FRF_VIRTUAL_AGA
+    rgb_run = 0;
+    rgb_calib = 0;
+    rgb_hdmi_off = 0;
+    rgb_block = 0;
+    return;
+#endif
     int was = rgb_run;
     rgb_run = 0;
     rgb_gen++;
