@@ -1972,22 +1972,11 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
             if (aga_beam_mode == 2) { if (add > 0xFFFF) add = 0xFFFF; }
             else {
                 if (add > BEAM_LEAD_CCK) add = BEAM_LEAD_CCK;
-                /* ...and never past the end of the line the core is on. A
-                   program that waits for the beam to leave line Y and then
-                   draws over line Y's data expects line Y to be on screen;
-                   here it is rendered when the core FINISHES the line, so a
-                   reported beam that crosses into line Y+1 a few clocks early
-                   lets the program overwrite data I have not drawn yet.
-                   Nexus 7's Gouraud scene kept its cut line with the 8-clock
-                   lead alone and lost it only with no lead at all (BEAM EXACT). */
-                int h = aga_get_hpos(aga), mh = aga_cycles_per_line(aga);
-                if (mh > 0 && h >= 0) {
-                    if (h >= mh - 1) add = 0;                         /* between lines: the line is being rendered NOW */
-                    else if ((uint64_t)h + add >= (uint64_t)mh) add = (uint64_t)(mh - 1 - h);
-                }
+                /* v1.117: clamp by the SAME packed snapshot used to
+                   calculate the beam value, in aga_peek_beam_at(). */
             }
         }
-        *value = aga_peek_beam_at(aga, reg, size, (uint32_t)add);
+        *value = aga_peek_beam_at(aga, reg, size, (uint32_t)add, aga_beam_mode != 2);
         aga_diag_beam_value((uint16_t)*value);   /* the values a raster wait keeps seeing */
 #ifdef AGA_PROBES
         /* A game that waits for one exact raster line does it in one of two
@@ -2028,13 +2017,13 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
                    interpolation lands on */
                 aga_diag_beam_byte((uint8_t)*value, gap, reg == 0x007);
             } else {
-                uint32_t both = aga_peek_beam_at(aga, VPOSR, 4, (uint32_t)add);
+                uint32_t both = aga_peek_beam_at(aga, VPOSR, 4, (uint32_t)add, aga_beam_mode != 2);
                 pair_line0 = (((both >> 16) & 7) << 8) | ((both >> 8) & 0xFF);
                 pair_t0 = now2; pair_hi = (uint16_t)*value; pair_open = 1;
             }
             if (reg == 0x006 && pair_open) {
                 aga_diag_beam_line((uint16_t)(((pair_hi & 7) << 8) | (*value & 0xFF)), gap);
-                uint32_t both = aga_peek_beam_at(aga, VPOSR, 4, (uint32_t)add);
+                uint32_t both = aga_peek_beam_at(aga, VPOSR, 4, (uint32_t)add, aga_beam_mode != 2);
                 uint32_t line_now = (((both >> 16) & 7) << 8) | ((both >> 8) & 0xFF);
                 aga_diag_inc(AGA_D_BEAM_PAIRS);
                 if (line_now != pair_line0) aga_diag_inc(AGA_D_BEAM_PAIR_SKIPS);

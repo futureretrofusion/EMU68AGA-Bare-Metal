@@ -217,6 +217,7 @@ void aga_reset(aga_t *a)
     a->lof = 1;
     a->hpos = 0;
     a->vpos = 0;
+        beam_publish(a);
 
     /* Which chipset I present is a property of the game about to run, not
        of the chipset state, so it has to outlive the memset above - the
@@ -479,9 +480,11 @@ void aga_custom_wput(aga_t *a, uint32_t reg, uint16_t v)
             set_line_length(a);
         }
         a->vpos = (a->vpos & 0xFF) | ((v & 7) << 8);
+        beam_publish(a);
         break;
     case VHPOSW:
         a->vpos = (a->vpos & 0x700) | (v >> 8);
+        beam_publish(a);
         break;
     case COPCON:
         a->copcon = v;
@@ -745,6 +748,7 @@ void aga_run_cycles(aga_t *a, int cck)
             set_line_length(a);
             start_of_line(a);
         }
+        beam_publish(a);
     }
 }
 
@@ -832,17 +836,22 @@ int aga_is_beam_reg(uint32_t reg) { reg &= 0x1FE; return reg == VPOSR || reg == 
  * times the work. Interpolating at the point of the read costs a divide, and
  * the pacing is against the same clock, so the answer is right.
  */
-uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_cck)
+uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_cck, int same_line)
 {
-    uint32_t vpos = (uint32_t)a->vpos, hpos = (uint32_t)a->hpos;
-    int lol = a->lol;
+    uint32_t bw=__atomic_load_n(&a->beam_word,__ATOMIC_ACQUIRE);
+    uint32_t vpos=(bw>>16)&0x7FFu, hpos=bw&0x1FFu;
+    int lol=(int)((bw>>30)&1u), lof=(int)(bw>>31);
     if (add_cck) {
         /* line by line: NTSC's alternate 228 and 227 colour clocks, so one
            divide by the line length no longer says where the beam is */
         uint32_t base = a->ntsc ? AGA_NTSC_HPOS : AGA_PAL_HPOS;
-        uint32_t maxv = (uint32_t)a->maxvpos + (a->lof ? 1 : 0);
+        uint32_t maxv = (uint32_t)a->maxvpos + (lof ? 1 : 0);
         if (!maxv) maxv = 313;
-        uint32_t cur = a->maxhpos > 0 ? (uint32_t)a->maxhpos : base;
+        uint32_t cur = base + (uint32_t)lol;
+        if (same_line) {
+            if (hpos + 1 >= cur) add_cck=0;
+            else if (hpos + add_cck >= cur) add_cck=cur-1-hpos;
+        }
         hpos += add_cck;
         if (hpos < cur) {
             /* still on this line */
@@ -869,7 +878,7 @@ uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_c
         if (vpos >= maxv) vpos %= maxv;
     }
     uint16_t vposr  = (uint16_t)((a->ntsc_strap ? VPOSR_ID_AGA_NTSC : VPOSR_ID_AGA_PAL)
-                                 | (a->lof ? 0x8000 : 0) | (lol ? VPOSR_LOL : 0) | ((vpos >> 8) & 7));
+                                 | (lof ? 0x8000 : 0) | (lol ? VPOSR_LOL : 0) | ((vpos >> 8) & 7));
     uint16_t vhposr = (uint16_t)(((vpos & 0xFF) << 8) | (hpos & 0xFF));
     uint16_t w = ((reg & 0x1FE) == VPOSR) ? vposr : vhposr;
     switch (size) {
@@ -881,9 +890,11 @@ uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_c
 
 uint32_t aga_peek_beam(const aga_t *a, uint32_t reg, int size)
 {
-    uint32_t vpos = (uint32_t)a->vpos, hpos = (uint32_t)a->hpos;
+    uint32_t bw=__atomic_load_n(&a->beam_word,__ATOMIC_ACQUIRE);
+    uint32_t vpos=(bw>>16)&0x7FFu, hpos=bw&0x1FFu;
+    int lof=(int)(bw>>31), lol=(int)((bw>>30)&1u);
     uint16_t vposr  = (uint16_t)((a->ntsc_strap ? VPOSR_ID_AGA_NTSC : VPOSR_ID_AGA_PAL)
-                                 | (a->lof ? 0x8000 : 0) | (a->lol ? VPOSR_LOL : 0) | ((vpos >> 8) & 7));
+                                 | (lof ? 0x8000 : 0) | (lol ? VPOSR_LOL : 0) | ((vpos >> 8) & 7));
     uint16_t vhposr = (uint16_t)(((vpos & 0xFF) << 8) | (hpos & 0xFF));
     uint16_t w = ((reg & 0x1FE) == VPOSR) ? vposr : vhposr;
     switch (size) {

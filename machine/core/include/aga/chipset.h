@@ -255,7 +255,7 @@ int      aga_is_beam_reg(uint32_t reg);
 uint32_t aga_peek_beam(const aga_t *a, uint32_t reg, int size);
 /* same, plus the colour clocks elapsed since the chipset thread last stepped,
    so a beam wait sees every position and not only multiples of the step */
-uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_cck);
+uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_cck, int same_line);
 uint16_t aga_peek_reg(const aga_t *a, uint32_t reg);
 uint16_t aga_peek_dmacon(const aga_t *a);   /* the live DMACON, not an accumulation */
 uint32_t aga_peek_dmacon_log(const aga_t *a, int i);  /* the last 8 writes, oldest first */

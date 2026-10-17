@@ -245,6 +245,7 @@ struct aga {
 
     /* beam */
     int hpos, vpos, lof, maxhpos, maxvpos, ntsc;
+    uint32_t beam_word;  /* v1.117 atomic beam snapshot: vpos hpos LOL LOF */
     int lol;                    /* this line is a long one (NTSC, 228 cck): maxhpos includes it */
     int ntsc_strap;             /* the Alice's PAL/NTSC strap, VPOSR's ID: cfg.ntsc at the reset */
     int vblank_end;
@@ -412,6 +413,14 @@ struct aga {
     int trace_cur, trace_done;
 #endif
 };
+
+static inline void beam_publish(aga_t *a)
+{
+    uint32_t w = ((uint32_t)(a->vpos & 0x7FF) << 16)
+       | ((uint32_t)a->hpos & 0x1FF)
+       | (a->lol ? 1u<<30 : 0) | (a->lof ? 1u<<31 : 0);
+    __atomic_store_n(&a->beam_word,w,__ATOMIC_RELEASE);
+}
 
 /* Record a DMA slot. Compiled out entirely unless AGA_TRACE is defined. */
 static inline void aga_trace_at(aga_t *a, int hpos, uint8_t type, uint16_t reg, uint32_t addr)
