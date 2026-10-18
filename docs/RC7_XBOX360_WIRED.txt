@@ -1,0 +1,38 @@
+EMU68AGA Pi3 RC7 - Xbox360 wired 045E:028E / Generic HID joypad
+18 October 2026 -- TEST RELEASE (hardware NOT yet verified).
+
+RC6+RC5 AGA v1.117 baseline retained, including USB0 diagnostics,
+the boot POST panel, bounded gamepad USB retries, and keyboard stability.
+
+WHAT CHANGED:
+- USB factory binds exact 045E:028E (Microsoft wired Xbox360) by VID:PID.
+- Xbox360 is vendor interface 0xFF/0x5D/0x01, not generic USB HID.
+- New configure route skips HID descriptor lookup, scans interrupt IN,
+  creates the gamepad instance and starts interrupt-in polling.
+- Microsoft wired 0x00 0x14 report is decoded from 20-byte input:
+  Dpad bits 0..3, A/B/X/Y, LB/RB, Start/Back, sticks/Guide,
+  4 signed 16-bit analog axes, triggers (not yet mapped to Amiga).
+- Normal Logitech and other HID gamepads continue on the existing driver.
+- Telemetry now recognizes both XInput 20-byte and HID report formats.
+- Does NOT add Xbox One, wireless Xbox 360 adapter or GIP support.
+- Haptic rumble / player LED output unimplemented.
+
+TEST:
+  1. Back up Pi3 boot kernel8.img and retain your known-working RC6.
+  2. Replace ONLY kernel8.img from this archive. No config.txt or
+     Kickstart/floppy/other partitions changes required.
+  3. Boot with the Xbox360 *wired* controller connected beforehand.
+  4. Observe POST panel in the top-right:
+     USB GP count should be >=1; GP RX should increase.
+     HOLD D-pad and press A while POST is visible; observe
+     DECODE / JOY1 / FIRE / EV signals.
+  5. After boot, copy the included Amiga/C/usbpad-info to C:
+     and run it while trying directions and fire. Provide its output.
+  6. Test an Amiga joystick-port-2 game with A/button and D-pad.
+  7. Repeat using Logitech Dual Action 046D:C216 as regression check:
+     verify keyboard and gamepad remain responsive.
+  8. If startup fails, restore the RC6 kernel immediately.
+
+This build is source/code-compiled and ZIP-CRC-verified. Controller behaviour
+is not yet physically confirmed and may require device-specific refinement.
+Report results: futureretrofusion1984@gmail.com

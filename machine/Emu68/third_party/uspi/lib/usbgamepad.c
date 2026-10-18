@@ -97,6 +97,7 @@ void USBGamePadDevice (TUSBGamePadDevice *pThis, TUSBFunction *pDevice)
 	pThis->m_usReportDescriptorLength = 0;
     pThis->m_nReportSize = 0;
     pThis->m_fShanWan2563 = 0;
+    pThis->m_fXbox360 = 0;
     pThis->m_GamePadReportID = 0;
     pThis->m_RetryPending = 0;
     pThis->m_FailureCount = 0;
@@ -206,6 +207,51 @@ static boolean GamePadDecodeShanWan(TUSBGamePadDevice *p, unsigned bytes)
         s->axes[i].value=b[4+i];
         s->axes[i].minimum=0;
         s->axes[i].maximum=255;
+    }
+    return TRUE;
+}
+
+/* Original 045E:028E USB wired Xbox360 input protocol, Linux xpad.c:
+ * report 0x00, size 0x14 (20 bytes); buttons b[2:3],
+ * triggers b[4:5], stick axes little-endian signed b[6:13].
+ * Not a HID report and requires no HID descriptor.
+ */
+static boolean GamePadDecodeXbox360(TUSBGamePadDevice *p,unsigned bytes)
+{
+    if (!p || bytes < 14u) return FALSE;
+    const u8 *b=p->m_pReportBuffer;
+    if (b[0]!=0x00u || b[1]!=0x14u) return FALSE;
+    USPiGamePadState *s=&p->m_State;
+    const unsigned dp=b[2] & 15u;
+    /* The built-in Amiga translator expects a clockwise 0..7 HID hat,
+     * where 8 means neutral. Reject contradictory D-pad presses. */
+    unsigned up=!!(dp&1u),down=!!(dp&2u);
+    unsigned left=!!(dp&4u),right=!!(dp&8u);
+    if (up && down) up=down=0;
+    if (left && right) left=right=0;
+    unsigned hat=8u;
+    if (up) hat=right?1u:left?7u:0u;
+    else if (down) hat=right?3u:left?5u:4u;
+    else if (right) hat=2u;
+    else if (left) hat=6u;
+    s->nhats=1; s->hats[0]=(int)hat;
+    s->nbuttons=12;
+    /* A/B/X/Y to bits 0..3, LB/RB to 4..5,
+       Start/Back to 6..7, sticks to 8..9 and Xbox Guide to 10. */
+    s->buttons=(u32)((b[3]>>4)&15u)
+             | ((u32)(b[3]&3u)<<4)
+             | ((u32)(b[2]&0x30u)<<2)
+             | ((u32)(b[2]&0xc0u)<<2)
+             | ((u32)(b[3]&4u)<<8);
+    s->naxes=4;
+    for (unsigned i=0;i<4;i++) {
+        unsigned o=6u+i*2u;
+        s32 val=(s16)((u16)b[o]|((u16)b[o+1]<<8));
+        /* Xbox analog Y positive is UP. HID and Amiga positive Y is DOWN. */
+        if (i&1u) val=-val;
+        s->axes[i].minimum=-32768;
+        s->axes[i].maximum=32767;
+        s->axes[i].value=val;
     }
     return TRUE;
 }
@@ -378,6 +424,54 @@ boolean USBGamePadDeviceConfigure (TUSBFunction *pUSBFunction)
 		return FALSE;
 	}
 
+    TUSBDeviceDescriptor *hw=USBFunctionGetDevice(pUSBFunction)->m_pDeviceDesc;
+    pThis->m_fXbox360=(hw && hw->idVendor==0x045eu &&
+                        hw->idProduct==0x028eu &&
+                        USBFunctionGetInterfaceClass(&pThis->m_USBFunction)==0xffu &&
+                        USBFunctionGetInterfaceSubClass(&pThis->m_USBFunction)==0x5du &&
+                        USBFunctionGetInterfaceProtocol(&pThis->m_USBFunction)==0x01u);
+    if (pThis->m_fXbox360) {
+        /* XInput wired devices do not expose a USB HID report descriptor.
+         * Locate interrupt-IN without allocating/describing HID fields.
+         * Ignore audio/media interfaces on this composite controller. */
+        const TUSBEndpointDescriptor *ep;
+        while ((ep=(const TUSBEndpointDescriptor*)USBFunctionGetDescriptor(
+                            &pThis->m_USBFunction,DESCRIPTOR_ENDPOINT))!=0) {
+            if ((ep->bmAttributes & 3u)==3u && (ep->bEndpointAddress&0x80u) &&
+                !pThis->m_pEndpointIn) {
+                pThis->m_pEndpointIn=(TUSBEndpoint*)malloc(sizeof(TUSBEndpoint));
+                assert(pThis->m_pEndpointIn);
+                USBEndpoint2(pThis->m_pEndpointIn,
+                             USBFunctionGetDevice(&pThis->m_USBFunction),ep);
+            }
+        }
+        if (!pThis->m_pEndpointIn) {
+            USBFunctionConfigurationError(&pThis->m_USBFunction,FromUSBPad);
+            return FALSE;
+        }
+        pThis->m_nReportSize=32u; /* interrupt IN MPS=32; normal report 20 bytes */
+        pThis->m_State.naxes=4u;
+        pThis->m_State.nhats=1u;
+        pThis->m_State.hats[0]=8;
+        pThis->m_State.nbuttons=12u;
+        for (unsigned i=0;i<4;i++) {
+            pThis->m_State.axes[i].minimum=-32768;
+            pThis->m_State.axes[i].maximum=32767;
+            pThis->m_State.axes[i].value=0;
+        }
+        if (!USBFunctionConfigure(&pThis->m_USBFunction)) {
+            USBFunctionConfigurationError(&pThis->m_USBFunction,FromUSBPad);
+            return FALSE;
+        }
+        pThis->m_nDeviceIndex=s_nDeviceNumber++;
+        TString name;String(&name);
+        StringFormat(&name,"upad%u",pThis->m_nDeviceIndex);
+        DeviceNameServiceAddDevice(DeviceNameServiceGet(),StringGet(&name),pThis,FALSE);
+        _String(&name);
+        LogWrite(FromUSBPad,LOG_NOTICE,
+                 "FRF Xbox360 wired 045e:028e XInput interrupt-IN 32B enabled");
+        return USBGamePadDeviceStartRequest(pThis);
+    }
     TUSBHIDDescriptor *pHIDDesc = (TUSBHIDDescriptor *) USBFunctionGetDescriptor (&pThis->m_USBFunction, DESCRIPTOR_HID);
     if (   pHIDDesc == 0
         || pHIDDesc->wReportDescriptorLength == 0)
@@ -447,7 +541,6 @@ boolean USBGamePadDeviceConfigure (TUSBFunction *pUSBFunction)
     //DebugHexdump (pThis->m_pHIDReportDescriptor, pHIDDesc->wReportDescriptorLength, "hid");
 
     pThis->m_pReportBuffer[0] = 0;
-    TUSBDeviceDescriptor *hw=USBFunctionGetDevice (pUSBFunction)->m_pDeviceDesc;
     pThis->m_fShanWan2563=(hw && hw->idVendor==0x2563u &&
                             hw->idProduct==0x0576u);
     if (pThis->m_fShanWan2563) {
@@ -540,10 +633,13 @@ void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *p
             (void)id;
         }
         pThis->m_FailureCount=0;
-        if (pThis->m_pStatusHandler && pThis->m_pHIDReportDescriptor &&
+        if (pThis->m_pStatusHandler &&
+            (pThis->m_pHIDReportDescriptor || pThis->m_fXbox360) &&
             bytes>0 && bytes<=pThis->m_nReportSize) {
             boolean valid=FALSE;
-            if (pThis->m_fShanWan2563)
+            if (pThis->m_fXbox360)
+                valid=GamePadDecodeXbox360(pThis,bytes);
+            else if (pThis->m_fShanWan2563)
                 valid=GamePadDecodeShanWan(pThis,bytes);
             else if (!pThis->m_GamePadReportID ||
                      pThis->m_pReportBuffer[0]==pThis->m_GamePadReportID) {
@@ -567,8 +663,12 @@ void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *p
     {
         unsigned valid=success && bytes==10u &&
              pThis->m_fShanWan2563 && pThis->m_pReportBuffer[0]==1u;
+        if (success && pThis->m_fXbox360 && bytes>=14u)
+            valid=pThis->m_pReportBuffer[0]==0u &&
+                  pThis->m_pReportBuffer[1]==0x14u;
         /* generic report decoders count their input as valid when delivered */
-        if (success && !pThis->m_fShanWan2563 && bytes>0) valid=1u;
+        if (success && !pThis->m_fShanWan2563 &&
+            !pThis->m_fXbox360 && bytes>0) valid=1u;
         frf_pad_diag_rx(success,bytes,
                          bytes ? pThis->m_pReportBuffer[0] : 0u,
                          valid,pThis->m_pReportBuffer);

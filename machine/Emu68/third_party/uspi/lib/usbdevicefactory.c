@@ -88,6 +88,16 @@ else if (StringCompare (pName, "ven424-7800") == 0)
 		pResult = (TUSBFunction *) pDevice;
 	}
 #endif
+    /* Original Microsoft Xbox 360 wired controller (045e:028e).
+     * Vendor interface FF/5D/01, NOT USB HID. Bind only exact VID/PID
+     * so unsupported vendor-specific devices are never captured. */
+    else if (StringCompare (pName, "ven45e-28e") == 0)
+    {
+        TUSBGamePadDevice *pDevice = (TUSBGamePadDevice *) malloc (sizeof (TUSBGamePadDevice));
+        assert (pDevice != 0);
+        USBGamePadDevice (pDevice, pParent);
+        pResult = (TUSBFunction *) pDevice;
+    }
     else if (StringCompare (pName, "int3-0-0") == 0)
     {
         TUSBGamePadDevice *pDevice = (TUSBGamePadDevice *) malloc (sizeof (TUSBGamePadDevice));
