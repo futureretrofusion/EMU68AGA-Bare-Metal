@@ -30,5 +30,7 @@ struct frf_pad_diag {
     uint32_t storage_last_cmd;
     uint32_t storage_last_lba;
     uint32_t storage_last_result;
+    uint32_t pad_submit_deferred;
+    uint32_t pad_submit_recovered;
 };
 #endif

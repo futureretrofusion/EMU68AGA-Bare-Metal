@@ -79,7 +79,9 @@ static const char FromUSBPad[] = "usbpad";
 
 extern void frf_pad_diag_rx(unsigned success, unsigned len, unsigned id,
                             unsigned valid, const unsigned char *b);
-static boolean USBGamePadDeviceStartRequest (TUSBGamePadDevice *pThis);
+static boolean USBGamePadDeviceStartRequest(TUSBGamePadDevice *pThis);
+static boolean USBGamePadDeviceStartOrDefer(TUSBGamePadDevice *pThis);
+extern void frf_pad_diag_deferred(unsigned recovered);
 static void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *pContext);
 static void USBGamePadDevicePS3Configure (TUSBGamePadDevice *pThis);
 
@@ -555,7 +557,9 @@ boolean USBGamePadDeviceConfigure (TUSBFunction *pUSBFunction)
         else
             LogWrite(FromUSBPad,LOG_NOTICE,
                      "RC8 Xbox360 XInput FF/5D/01 interrupt-IN enabled");
-        return USBGamePadDeviceStartRequest(pThis);
+        /* Important: a transient lack of host channels must not discard the
+     * enumerated gamepad. Leave it registered and let CPU1 retry later. */
+    return USBGamePadDeviceStartOrDefer(pThis);
     }
     TUSBHIDDescriptor *pHIDDesc = (TUSBHIDDescriptor *) USBFunctionGetDescriptor (&pThis->m_USBFunction, DESCRIPTOR_HID);
     if (   pHIDDesc == 0
@@ -676,7 +680,7 @@ boolean USBGamePadDeviceConfigure (TUSBFunction *pUSBFunction)
 
 	_String (&DeviceName);
 
-	return USBGamePadDeviceStartRequest (pThis);
+	return USBGamePadDeviceStartOrDefer(pThis);
 }
 
 void USBGamePadDeviceRegisterStatusHandler (TUSBGamePadDevice *pThis, TGamePadStatusHandler *pStatusHandler)
@@ -684,6 +688,21 @@ void USBGamePadDeviceRegisterStatusHandler (TUSBGamePadDevice *pThis, TGamePadSt
     assert (pThis != 0);
     assert (pStatusHandler != 0);
     pThis->m_pStatusHandler = pStatusHandler;
+}
+
+/* An initial host-channel allocation miss must not make USPi discard a
+ * discovered gamepad. Retry asynchronously from the CPU1 service loop.
+ * No USB bus reinitialisation, keyboard disruption or busy waiting. */
+static boolean USBGamePadDeviceStartOrDefer(TUSBGamePadDevice *pThis)
+{
+    if (USBGamePadDeviceStartRequest(pThis)) return TRUE;
+    pThis->m_FailureCount=1u;
+    pThis->m_RetryAfter=GamePadNow()+GamePadFreq()/2u;
+    pThis->m_RetryPending=1u;
+    frf_pad_diag_deferred(0u);
+    LogWrite(FromUSBPad,LOG_WARNING,
+             "RC9 initial interrupt IN submission failed; deferred retry 500ms");
+    return TRUE;
 }
 
 boolean USBGamePadDeviceStartRequest (TUSBGamePadDevice *pThis)
@@ -799,9 +818,15 @@ void USBGamePadDeviceService(TUSBGamePadDevice *p)
     if ((s64)(GamePadNow()-p->m_RetryAfter)<0) return;
     p->m_RetryPending=0;
     if (!USBGamePadDeviceStartRequest(p)) {
+        frf_pad_diag_deferred(0u);
         if (p->m_FailureCount<8) p->m_FailureCount++;
         p->m_RetryAfter=GamePadNow()+GamePadFreq()*3u;
         p->m_RetryPending=1;
+    } else {
+        frf_pad_diag_deferred(1u);
+        p->m_FailureCount=0;
+        LogWrite(FromUSBPad,LOG_NOTICE,
+                 "RC9 deferred gamepad interrupt IN submission recovered");
     }
 }
 

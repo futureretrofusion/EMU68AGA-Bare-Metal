@@ -1,0 +1,47 @@
+EMU68AGA Pi3 RC9 - DYONDER ShanWan initial gamepad interrupt retry
+Build completed 18 Oct 2026. Hardware test pending.
+Base: RC8 AGA-v1.117 Pi3 with RC6 preboot POST.
+
+FIX:
+- USB gamepad registration is retained if the FIRST interrupt-IN
+  request cannot be submitted because there is no host channel.
+  This affected both Xbox and USB HID devices, including DYONDER
+  2563:0576. Previous Configure() returned FALSE, discarding gamepad.
+- Failure now sets a 500ms backoff and retries in CPU1 service loop.
+- Later failures use the existing bounded retry logic, without
+  resetting hub or interrupting keyboard, mouse, or USB storage.
+- Amiga usbpad-info shows "Gamepad initial/retry submit failures"
+  and "recoveries" in addition to actual HID/joystick counters.
+
+CONSTRAINTS:
+- Initial retry repair is real and cross-compiles, but not proof it is
+  the only reason DYONDER failed in this physical setup.
+- The receiver was observed by Linux alternating USB IDs 2563:0575
+  and 2563:0576, possibly through mode-switch/reconnect.
+  Runtime USB re-enumeration after such a switch is NOT IMPLEMENTED.
+- It is safe to install only for diagnostic testing. Back up RC8.
+
+INSTALL:
+1. Back up existing Pi3 FAT kernel8.img. Keep working config, ROM,
+   floppy, existing Amiga storage/usbmass.device and DOSDrivers.
+2. Replace ONLY kernel8.img with this file. Boot Pi3 with DYONDER
+   receiver connected, preferably already in its working gamepad mode.
+3. Copy Amiga/C/usbpad-info to Amiga's C: (replaces diagnostic only).
+4. Move D-pad and press buttons during the top-right preboot POST.
+5. Run C:usbpad-info twice in AmigaShell: once after boot, then
+   again after pressing joystick directions.
+6. Send exact output and POST photo, especially:
+   Receivers, Reports OK/Bad/Fail, Decoded, JOY1DAT, updates,
+   submit failures and recoveries.
+7. Check with Logitech Dual Action as a regression test.
+
+Interpretation:
+- Receiver count=0: enum/config still failed (or switched modes).
+- Receiver>0; GP RX=0; submit failures>0: USB endpoint scheduler issue.
+- Receiver>0; GP RX=0; submit failures=0: outstanding async IN never completes.
+- GP RX rises, decoded=0: report decoder mismatch.
+- Decoded and JOY1DAT change: bare-metal USB pad input works,
+  investigate game-side port/button interface if necessary.
+
+No USB mass-storage write logic modified in RC9.
+This has not been physically tested on Pi3.

@@ -39,5 +39,8 @@ int main(void) {
         (unsigned long)p->storage_reads,(unsigned long)p->storage_writes,
         (unsigned long)p->storage_write_fail,(unsigned long)p->storage_last_cmd,
         (unsigned long)p->storage_last_lba,(long)p->storage_last_result);
+    printf("Gamepad initial/retry submit failures=%lu recoveries=%lu\n",
+           (unsigned long)p->pad_submit_deferred,
+           (unsigned long)p->pad_submit_recovered);
     CloseLibrary(lib);return 0;
 }

@@ -30,6 +30,11 @@ static volatile uint32_t q_w, q_r, q_drop;
 /* Producer and consumer are CPU1; publish to the Z2 uncached board at 10Hz.
  * Avoid doing slow shared-memory writes in the USB interrupt callback. */
 static struct frf_pad_diag pd = { .magic = FRF_PAD_DIAG_MAGIC };
+void frf_pad_diag_deferred(unsigned recovered)
+{
+    if (recovered) pd.pad_submit_recovered++;
+    else pd.pad_submit_deferred++;
+}
 void frf_pad_diag_rx(unsigned success, unsigned len, unsigned id,
                      unsigned valid, const unsigned char *b)
 {
