@@ -6,6 +6,9 @@
 #include <string.h>
 #include "support.h"
 #include "frf_usb.h"
+#include "frf_usb_mass.h"
+#include "frf_pad_diag.h"
+extern volatile struct frf_um_shared *frf_um_host;
 #include <uspi/types.h>
 #include <uspi.h>
 
@@ -19,6 +22,46 @@ extern void aga_virtual_mouse_update(int dx, int dy, unsigned buttons);
 #define QN 64u
 static struct frf_usb_event q[QN];
 static volatile uint32_t q_w, q_r, q_drop;
+/* Producer and consumer are CPU1; publish to the Z2 uncached board at 10Hz.
+ * Avoid doing slow shared-memory writes in the USB interrupt callback. */
+static struct frf_pad_diag pd = { .magic = FRF_PAD_DIAG_MAGIC };
+void frf_pad_diag_rx(unsigned success, unsigned len, unsigned id,
+                     unsigned valid, const unsigned char *b)
+{
+    if (!success) { pd.rx_fail++; return; }
+    pd.rx_ok++;
+    if (!valid) pd.rx_bad++;
+    pd.rx_len=len; pd.rx_id=id;
+    uint32_t a=0,bv=0;
+    for (unsigned i=0;i<4;i++) a=(a<<8) | ((b && len>i) ? b[i] : 0u);
+    for (unsigned i=4;i<8;i++) bv=(bv<<8) | ((b && len>i) ? b[i] : 0u);
+    pd.sample_a=a; pd.sample_b=bv;
+    if (valid) pd.reports_decoded++;
+}
+void frf_pad_diag_storage(unsigned cmd,unsigned lba,int rc)
+{
+    if (cmd == FRF_UM_READ) pd.storage_reads++;
+    if (cmd == FRF_UM_WRITE) {
+        pd.storage_writes++;
+        if (rc < 0) pd.storage_write_fail++;
+    }
+    pd.storage_last_cmd=cmd;
+    pd.storage_last_lba=lba;
+    pd.storage_last_result=(uint32_t)rc;
+}
+static void frf_pad_diag_publish(void)
+{
+    volatile struct frf_um_shared *s=
+        __atomic_load_n(&frf_um_host,__ATOMIC_ACQUIRE);
+    if (!s || s->magic!=FRF_UM_MAGIC) return;
+    volatile uint32_t *d=(volatile uint32_t*)((volatile uint8_t*)s+FRF_PAD_DIAG_OFF);
+    const uint32_t *v=(const uint32_t*)&pd;
+    /* Publish magic last so a reader never accepts an uninitialized record. */
+    for (unsigned i=1;i<sizeof(pd)/4;i++) d[i]=v[i];
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    d[0]=FRF_PAD_DIAG_MAGIC;
+}
+
 
 static inline uint64_t nowtick(void)
 {
@@ -300,8 +343,25 @@ static void pad_status(unsigned index, const USPiGamePadState *s)
     if ((left != 0) ^ (up != 0))    joy |= 0x0100u;
     if ((right != 0) ^ (down != 0)) joy |= 0x0001u;
 
-    if (index == 0)
-        aga_virtual_joy_set(1, joy, (s->buttons & 0x0fu) != 0);
+    if (index == 0) {
+        static uint16_t prior_joy=0xffff;
+        static uint32_t prior_buttons=~0u;
+        static unsigned transitions=0;
+        uint32_t fire=s->buttons & 0x0fu;
+        if ((joy!=prior_joy || fire!=prior_buttons) && transitions++<32u)
+            kprintf("[PAD-RC4] decoded gamepad transition joy1=%04x buttons=%08x hat=%d axes=%d/%d\n",
+                    joy, s->buttons, s->nhats?s->hats[0]:-1, s->axes[0].value, s->axes[1].value);
+        prior_joy=joy;
+        prior_buttons=fire;
+        aga_virtual_joy_set(1, joy, fire != 0);
+        pd.pad_buttons=s->buttons;
+        pd.pad_hat=s->nhats ? (uint32_t)s->hats[0] : 0xffffffffu;
+        pd.pad_axis01=((uint32_t)(uint16_t)s->axes[0].value << 16)
+                    | (uint16_t)s->axes[1].value;
+        pd.joy1dat=joy;
+        pd.fire=fire!=0;
+        pd.updates++;
+    }
 
     uint32_t axis01 = 0, hats = 0;
     if (s->naxes > 0) axis01 = (uint16_t)s->axes[0].value;
@@ -340,6 +400,7 @@ void frf_usb_main(void)
     int kb = USPiKeyboardAvailable();
     int ms = USPiMouseAvailable();
     int gp = USPiGamePadAvailable();
+    pd.receivers=(uint32_t)gp;
 
     kprintf("[USB] enumeration complete: keyboard=%d mouse=%d gamepads=%d\n",
             kb, ms, gp);
@@ -378,11 +439,19 @@ void frf_usb_main(void)
     kprintf("[USB] Amiga input active: keyboard=CIA-A mouse=port1 gamepad0=port2 boot-buttons=%02x\n",
             (unsigned)frf_usb_mouse_buttons);
 
+    uint64_t pad_diag_next=nowtick();
     for (;;) {
         frf_uspi_poll();
         frf_uspi_timer_service();
         USPiGamePadService();
         frf_um_service();
+        uint64_t diag_now=nowtick();
+        if ((int64_t)(diag_now-pad_diag_next)>=0) {
+            uint64_t hz;
+            __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz));
+            pad_diag_next=diag_now+hz/10u;
+            frf_pad_diag_publish();
+        }
 
         if (kb && lock_led_pending) {
             uint8_t leds = lock_led_mask;

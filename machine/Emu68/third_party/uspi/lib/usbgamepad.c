@@ -77,6 +77,8 @@ static unsigned s_nDeviceNumber = 1;
 
 static const char FromUSBPad[] = "usbpad";
 
+extern void frf_pad_diag_rx(unsigned success, unsigned len, unsigned id,
+                            unsigned valid, const unsigned char *b);
 static boolean USBGamePadDeviceStartRequest (TUSBGamePadDevice *pThis);
 static void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *pContext);
 static void USBGamePadDevicePS3Configure (TUSBGamePadDevice *pThis);
@@ -527,7 +529,16 @@ void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *p
     (void)pParam;
     boolean success=USBRequestGetStatus(pURB)!=0;
     unsigned bytes=USBRequestGetResultLength(pURB);
+    /* RC4: bounded, receiver-side evidence rather than silent HID drops. */
+    static u32 ok_count, bad_count, fail_count, last_sig;
     if (success) {
+        ++ok_count;
+        if (ok_count <= 8 || (ok_count & 1023u)==0) {
+            unsigned id=bytes ? pThis->m_pReportBuffer[0] : 0u;
+            LogWrite(FromUSBPad,LOG_NOTICE,
+                     "RC4 HID transfer OK (inspect length/ID in callback counters)");
+            (void)id;
+        }
         pThis->m_FailureCount=0;
         if (pThis->m_pStatusHandler && pThis->m_pHIDReportDescriptor &&
             bytes>0 && bytes<=pThis->m_nReportSize) {
@@ -539,9 +550,28 @@ void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *p
                 USBGamePadDeviceDecodeReport(pThis);
                 valid=TRUE;
             }
-            if (valid)
+            if (!valid && (++bad_count<=8u || (bad_count&1023u)==0))
+                LogWrite(FromUSBPad,LOG_WARNING,"RC4 HID transfer OK but report ignored (unexpected ID or length)");
+            if (valid) {
+                u32 sig=pThis->m_State.buttons ^ ((u32)pThis->m_State.hats[0]<<16)
+                         ^ ((u32)(pThis->m_State.axes[0].value&255)<<24);
+                if (sig!=last_sig && ok_count<128u)
+                    LogWrite(FromUSBPad,LOG_NOTICE,"RC4 gamepad decoded state changed -> Amiga callback");
+                last_sig=sig;
                 (*pThis->m_pStatusHandler)(pThis->m_nDeviceIndex-1,&pThis->m_State);
+            }
         }
+    }
+    /* Genuine HID telemetry: successful USB != valid gamepad report.
+     * This always runs, even if the Amiga pad callback was not registered. */
+    {
+        unsigned valid=success && bytes==10u &&
+             pThis->m_fShanWan2563 && pThis->m_pReportBuffer[0]==1u;
+        /* generic report decoders count their input as valid when delivered */
+        if (success && !pThis->m_fShanWan2563 && bytes>0) valid=1u;
+        frf_pad_diag_rx(success,bytes,
+                         bytes ? pThis->m_pReportBuffer[0] : 0u,
+                         valid,pThis->m_pReportBuffer);
     }
     _USBRequest(&pThis->m_URB);
     if (success) {
@@ -549,6 +579,8 @@ void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *p
         if (!USBGamePadDeviceStartRequest(pThis)) success=FALSE;
     }
     if (!success) {
+        if (++fail_count<=8 || (fail_count&1023u)==0)
+            LogWrite(FromUSBPad,LOG_WARNING,"RC4 gamepad USB transfer failed");
         /* Never hot-loop failing full-speed split transactions behind a hub.
          * CPU1 retries after a bounded delay; stop after 8 failures so
          * keyboard/mouse and USB storage still run. */
@@ -559,9 +591,12 @@ void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *p
             pThis->m_RetryAfter=GamePadNow()+(hz/1000u)*millis;
             pThis->m_RetryPending=1;
         } else {
-            pThis->m_RetryPending=0;
-            LogWrite(FromUSBPad,LOG_ERROR,
-                     "Gamepad stopped after repeated errors; USB keyboard protected");
+            /* Recovery instead of permanently parking a paired controller.
+             * Low-frequency retry protects keyboard and mass storage. */
+            pThis->m_RetryAfter=GamePadNow()+GamePadFreq()*3u;
+            pThis->m_RetryPending=1;
+            LogWrite(FromUSBPad,LOG_WARNING,
+                     "RC4 gamepad retrying after 3s backoff");
         }
     }
 }
@@ -574,10 +609,8 @@ void USBGamePadDeviceService(TUSBGamePadDevice *p)
     p->m_RetryPending=0;
     if (!USBGamePadDeviceStartRequest(p)) {
         if (p->m_FailureCount<8) p->m_FailureCount++;
-        if (p->m_FailureCount<8) {
-            p->m_RetryAfter=GamePadNow()+GamePadFreq()/2u;
-            p->m_RetryPending=1;
-        }
+        p->m_RetryAfter=GamePadNow()+GamePadFreq()*3u;
+        p->m_RetryPending=1;
     }
 }
 

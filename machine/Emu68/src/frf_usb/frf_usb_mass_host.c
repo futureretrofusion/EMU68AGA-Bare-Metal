@@ -8,6 +8,7 @@
 #include <support.h>
 #include "frf_usb_mass.h"
 extern volatile struct frf_um_shared *frf_um_host;
+extern void frf_pad_diag_storage(unsigned cmd,unsigned lba,int rc);
 /* CPU1 only: incremented by the USB interface class factory during boot. */
 volatile unsigned frf_um_msc_interface_seen;
 
@@ -76,6 +77,7 @@ void frf_um_service(void)
                 (void*)s->data,bytes,0);
         }
     }
+    frf_pad_diag_storage(cmd,lba,rc);
     s->result=(uint32_t)rc;
     s->completed=seq;
     __atomic_thread_fence(__ATOMIC_RELEASE);
