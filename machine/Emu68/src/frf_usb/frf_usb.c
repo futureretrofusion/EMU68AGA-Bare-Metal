@@ -16,6 +16,11 @@ extern void frf_vcia_keyboard_raw(uint8_t raw);
 extern void frf_uspi_poll(void);
 extern void frf_um_init(void);
 extern void frf_um_service(void);
+extern void frf_post_usb_devices(unsigned kb,unsigned ms,unsigned gp,unsigned msc);
+extern void frf_post_pad_sample(unsigned rx,unsigned bad,unsigned err,
+                                unsigned id,unsigned len,unsigned raw0,unsigned raw1,
+                                unsigned decoded,unsigned events,unsigned joy,unsigned fire);
+
 extern void aga_virtual_joy_set(int port, uint16_t joydat, int fire);
 extern void aga_virtual_mouse_update(int dx, int dy, unsigned buttons);
 
@@ -309,6 +314,8 @@ static int axis_dir(const USPiGamePadState *s, int i)
     return v < mid - dead ? -1 : v > mid + dead ? 1 : 0;
 }
 
+/* Real input transitions, excluding the initial idle report. */
+static uint32_t pad_input_edges;
 static void pad_status(unsigned index, const USPiGamePadState *s)
 {
     if (!s) return;
@@ -351,6 +358,9 @@ static void pad_status(unsigned index, const USPiGamePadState *s)
         if ((joy!=prior_joy || fire!=prior_buttons) && transitions++<32u)
             kprintf("[PAD-RC4] decoded gamepad transition joy1=%04x buttons=%08x hat=%d axes=%d/%d\n",
                     joy, s->buttons, s->nhats?s->hats[0]:-1, s->axes[0].value, s->axes[1].value);
+        if (prior_joy!=0xffffu &&
+            (joy!=prior_joy || fire!=prior_buttons))
+            pad_input_edges++;
         prior_joy=joy;
         prior_buttons=fire;
         aga_virtual_joy_set(1, joy, fire != 0);
@@ -400,6 +410,9 @@ void frf_usb_main(void)
     int kb = USPiKeyboardAvailable();
     int ms = USPiMouseAvailable();
     int gp = USPiGamePadAvailable();
+    int msc=USPiMassStorageDeviceAvailable();
+    frf_post_usb_devices(kb,ms,gp,msc);
+
     pd.receivers=(uint32_t)gp;
 
     kprintf("[USB] enumeration complete: keyboard=%d mouse=%d gamepads=%d\n",
@@ -451,6 +464,9 @@ void frf_usb_main(void)
             __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz));
             pad_diag_next=diag_now+hz/10u;
             frf_pad_diag_publish();
+            frf_post_pad_sample(pd.rx_ok,pd.rx_bad,pd.rx_fail,pd.rx_id,
+                                pd.rx_len,pd.sample_a,pd.sample_b,
+                                pd.reports_decoded,pad_input_edges,pd.joy1dat,pd.fire);
         }
 
         if (kb && lock_led_pending) {

@@ -244,23 +244,184 @@ static void draw_logo_rgb(uint32_t start_x, uint32_t start_y, uint32_t scale)
 }
 #endif
 
-/* Boot-stage pixels in the top-left corner, for photo-based diagnosis
- * when no serial adapter is attached. Each square is a distinct milestone:
- * 1 splash, 2 USB released, 3 gate completed, 4 guest input armed, 5 68k jump,
- * 6 CPU1 released, 7 USB environment started, 8 USB init entry,
- * 9 USB init returned, 10 USB input ready.
- * Only written during boot before guest video takes over. */
+/* EMU68AGA RC6 pre-boot POST overlay.
+ * Replaces the non-descriptive milestone squares. This framebuffer is
+ * exclusively a boot splash: never paint again after the 68k handoff.
+ * CPU0/CPU1 callbacks may race during boot; a nonblocking lock protects
+ * rectangle drawing and keeps USB callbacks responsive.
+ */
+static volatile uint32_t post_flags;
+static volatile uint32_t post_lock, post_stop;
+static volatile uint32_t post_kb=~0u, post_ms=~0u, post_gp=~0u, post_storage=~0u;
+static volatile uint32_t post_rx, post_bad, post_err, post_id, post_len;
+static volatile uint32_t post_raw0, post_raw1, post_joy, post_fire, post_events;
+static volatile uint32_t post_decoded;
+
+static void post_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c)
+{
+    if (!framebuffer || x>=fb_width || y>=fb_height) return;
+    if (w>fb_width-x) w=fb_width-x;
+    if (h>fb_height-y) h=fb_height-y;
+    c=LE16(c);
+    for (uint32_t yy=0;yy<h;yy++) {
+        uint16_t *p=(uint16_t*)((uintptr_t)framebuffer+pitch*(y+yy))+x;
+        for (uint32_t xx=0;xx<w;xx++) p[xx]=c;
+    }
+}
+static void post_char(uint32_t x,uint32_t y,uint8_t c,uint16_t fg)
+{
+    if (c<32 || c>=127 || x+8>fb_width || y+16>fb_height) return;
+    uint32_t loc=(topaz8_charloc[c-32]>>16)>>3;
+    const uint8_t *data=&topaz8_chardata[loc];
+    uint16_t color=LE16(fg);
+    for (unsigned yy=0;yy<16;yy++) {
+        uint8_t bits=*data;
+        uint16_t *p=(uint16_t*)((uintptr_t)framebuffer+pitch*(y+yy))+x;
+        for (unsigned xx=0;xx<8;xx++)
+            if (bits&(0x80u>>xx)) p[xx]=color;
+        if (yy&1u) data+=192;
+    }
+}
+static void post_text(uint32_t x,uint32_t y,const char *str,uint16_t fg)
+{
+    while (*str && x+8<=fb_width) {
+        post_char(x,y,(uint8_t)*str++,fg);
+        x+=8;
+    }
+}
+static void post_dec(uint32_t x,uint32_t y,uint32_t n,unsigned digits,uint16_t col)
+{
+    char buf[12];
+    if (digits>10) digits=10;
+    for (unsigned i=0;i<digits;i++) {
+        buf[digits-1-i]='0'+(n%10u);
+        n/=10u;
+    }
+    buf[digits]=0;
+    post_text(x,y,buf,col);
+}
+static void post_hex(uint32_t x,uint32_t y,uint32_t n,unsigned digits,uint16_t col)
+{
+    const char hex[]="0123456789ABCDEF";
+    char buf[9];
+    if (digits>8) digits=8;
+    for (unsigned i=0;i<digits;i++) {
+        buf[digits-1-i]=hex[n&15u];
+        n>>=4;
+    }
+    buf[digits]=0;
+    post_text(x,y,buf,col);
+}
+static void post_row(uint32_t x,uint32_t y,const char *name,
+                     const char *state,uint16_t color)
+{
+    post_text(x,y,name,0xbdf7u);
+    post_text(x+152u,y,state,color);
+}
+static void frf_post_draw(void)
+{
+    if (__atomic_load_n(&post_stop,__ATOMIC_ACQUIRE)) return;
+    if (!framebuffer || pitch<fb_width*2u || fb_width<340u ||
+        fb_height<246u) return;
+    if (__atomic_exchange_n(&post_lock,1u,__ATOMIC_ACQUIRE)) return;
+
+    const uint32_t w=310u, h=227u, x=fb_width-w-12u, y=12u;
+    const uint16_t white=0xe71cu, green=0x27e4u, amber=0xfd40u, cyan=0x3e19u;
+    const uint32_t flags=__atomic_load_n(&post_flags,__ATOMIC_ACQUIRE);
+    post_rect(x,y,w,h,0x0822u);
+    post_rect(x,y,w,2,cyan);
+    post_rect(x,y,2,h,cyan);
+    post_rect(x+w-2,y,2,h,cyan);
+    post_rect(x,y+h-2,w,2,cyan);
+    post_text(x+10,y+7,"EMU68AGA  SYSTEM POST",white);
+    post_text(x+10,y+25,"PI3 BARE METAL / RC6",cyan);
+    post_rect(x+8,y+44,w-16,1,0x2965u);
+
+    post_row(x+10,y+50,"AGA VIDEO",(flags&(1u<<1))?"READY":"WAIT ",
+             (flags&(1u<<1))?green:amber);
+    post_row(x+10,y+67,"ROM + MEMORY",(flags&(1u<<2))?"READY":"WAIT ",
+             (flags&(1u<<2))?green:amber);
+    post_row(x+10,y+84,"USB HOST",(flags&(1u<<9))?"READY":"WAIT ",
+             (flags&(1u<<9))?green:amber);
+
+    post_rect(x+8,y+106,w-16,1,0x2965u);
+    post_text(x+10,y+111,"USB KB/MS/GP/MSC:",white);
+    uint32_t a=__atomic_load_n(&post_kb,__ATOMIC_RELAXED);
+    uint32_t b=__atomic_load_n(&post_ms,__ATOMIC_RELAXED);
+    uint32_t c=__atomic_load_n(&post_gp,__ATOMIC_RELAXED);
+    uint32_t d=__atomic_load_n(&post_storage,__ATOMIC_RELAXED);
+    const uint32_t counts[4]={a,b,c,d};
+    for (unsigned i=0;i<4;i++)
+        if (counts[i]==~0u)
+            post_text(x+169+i*30,y+111,"-",amber);
+        else post_dec(x+169+i*30,y+111,counts[i]%10u,1,
+                      counts[i]?green:amber);
+
+    post_text(x+10,y+129,"GP RX:",white);
+    post_dec(x+66,y+129,post_rx%100000u,5,post_rx?green:amber);
+    post_text(x+130,y+129,"BAD:",white);
+    post_dec(x+171,y+129,post_bad%10000u,4,post_bad?amber:green);
+    post_text(x+215,y+129,"ERR:",white);
+    post_dec(x+257,y+129,post_err%1000u,3,post_err?amber:green);
+
+    post_text(x+10,y+147,"HID ID:",white);
+    post_hex(x+74,y+147,post_id,2,cyan);
+    post_text(x+106,y+147,"LEN:",white);
+    post_dec(x+146,y+147,post_len%100u,2,cyan);
+    post_text(x+178,y+147,"DECODE:",white);
+    post_dec(x+242,y+147,post_decoded%1000u,3,post_decoded?green:amber);
+
+    post_text(x+10,y+165,"RAW:",white);
+    post_hex(x+50,y+165,post_raw0,8,cyan);
+    post_text(x+130,y+165,"/",white);
+    post_hex(x+146,y+165,post_raw1,8,cyan);
+
+    post_text(x+10,y+183,"JOY1:",white);
+    post_hex(x+58,y+183,post_joy,4,green);
+    post_text(x+106,y+183,"FIRE:",white);
+    post_dec(x+154,y+183,post_fire?1u:0u,1,post_fire?green:amber);
+    post_text(x+178,y+183,"EV:",white);
+    post_dec(x+210,y+183,post_events%100000u,5,post_events?green:amber);
+
+    post_rect(x+8,y+204,w-16,1,0x2965u);
+    if (post_joy || post_fire)
+        post_text(x+10,y+207,"PAD INPUT ACTIVE",green);
+    else if (post_events)
+        post_text(x+10,y+207,"PAD INPUT CHANGE SEEN",green);
+    else if (c>0 && c!=~0u && post_rx==0)
+        post_text(x+10,y+207,"PAD FOUND - AWAITING HID",amber);
+    else if (c==0u)
+        post_text(x+10,y+207,"NO GAMEPAD ENUMERATED",amber);
+    else if (post_rx>0)
+        post_text(x+10,y+207,"HID RX - TEST BUTTONS",amber);
+    else
+        post_text(x+10,y+207,"TEST PAD DURING BOOT",cyan);
+
+    __asm__ volatile("dsb ishst" ::: "memory");
+    __atomic_store_n(&post_lock,0u,__ATOMIC_RELEASE);
+}
+void frf_post_usb_devices(unsigned kb,unsigned ms,unsigned gp,unsigned msc)
+{
+    post_kb=kb;post_ms=ms;post_gp=gp;post_storage=msc;
+    frf_post_draw();
+}
+void frf_post_pad_sample(unsigned rx,unsigned bad,unsigned err,
+                         unsigned id,unsigned len,unsigned raw0,unsigned raw1,
+                         unsigned decoded,unsigned events,unsigned joy,unsigned fire)
+{
+    /* Called from the bounded 10Hz USB service loop, never USB IRQ context. */
+    post_rx=rx;post_bad=bad;post_err=err;post_id=id;post_len=len;
+    post_raw0=raw0;post_raw1=raw1;
+    post_decoded=decoded;post_events=events;post_joy=joy;post_fire=fire;
+    frf_post_draw();
+}
 void frf_boot_stage(unsigned stage)
 {
-    if (!framebuffer || !pitch || fb_width < 230 || fb_height < 40 ||
-        stage < 1 || stage > 10) return;
-    const uint32_t x0 = 6u + (stage - 1u) * 21u;
-    const uint16_t color = LE16(stage <= 5 ? 0x07e0u : 0xFFE0u);
-    for (uint32_t y = 6; y < 18; ++y) {
-        uint16_t *row = (uint16_t *)((uintptr_t)framebuffer + pitch*y);
-        for (uint32_t x = x0; x < x0 + 15u; ++x) row[x] = color;
-    }
-    __asm__ volatile("dsb ishst" ::: "memory");
+    if (stage<1u || stage>10u || __atomic_load_n(&post_stop,__ATOMIC_ACQUIRE)) return;
+    __atomic_fetch_or(&post_flags,1u<<stage,__ATOMIC_ACQ_REL);
+    frf_post_draw();
+    /* Stop all CPU1 framebuffer writes before Amiga owns video memory. */
+    if (stage==5u) __atomic_store_n(&post_stop,1u,__ATOMIC_RELEASE);
 }
 
 void display_logo()
