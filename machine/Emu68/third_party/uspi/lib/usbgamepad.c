@@ -98,6 +98,7 @@ void USBGamePadDevice (TUSBGamePadDevice *pThis, TUSBFunction *pDevice)
     pThis->m_nReportSize = 0;
     pThis->m_fShanWan2563 = 0;
     pThis->m_fXbox360 = 0;
+    pThis->m_fXboxOne = 0;
     pThis->m_GamePadReportID = 0;
     pThis->m_RetryPending = 0;
     pThis->m_FailureCount = 0;
@@ -216,6 +217,42 @@ static boolean GamePadDecodeShanWan(TUSBGamePadDevice *p, unsigned bytes)
  * triggers b[4:5], stick axes little-endian signed b[6:13].
  * Not a HID report and requires no HID descriptor.
  */
+/* Xbox One wired Game Input Protocol, Linux xpad GIP_CMD_INPUT 0x20.
+ * Offsets are packet-relative; input payload begins at b[4]. */
+static boolean GamePadDecodeXboxOne(TUSBGamePadDevice *p,unsigned bytes)
+{
+    if (!p || bytes<18u) return FALSE;
+    const u8 *b=p->m_pReportBuffer;
+    if (b[0]!=0x20u) return FALSE; /* ignore announce/firmware/guide packets */
+    USPiGamePadState *s=&p->m_State;
+    const unsigned dp=b[5]&15u;
+    unsigned up=!!(dp&1u), down=!!(dp&2u);
+    unsigned left=!!(dp&4u), right=!!(dp&8u);
+    if (up && down) up=down=0;
+    if (left && right) left=right=0;
+    unsigned hat=8u;
+    if (up) hat=right?1u:left?7u:0u;
+    else if (down) hat=right?3u:left?5u:4u;
+    else if (right) hat=2u;
+    else if (left) hat=6u;
+    s->nhats=1;s->hats[0]=(int)hat;
+    s->nbuttons=12;
+    s->buttons=((u32)(b[4]>>4)&15u) |
+       ((u32)(b[5]>>4)&3u)<<4 |
+       ((u32)(b[4]>>2)&3u)<<6 |
+       ((u32)(b[5]>>6)&3u)<<8;
+    s->naxes=4;
+    for (unsigned i=0;i<4;i++) {
+        unsigned o=10u+i*2u;
+        s32 val=(s16)((u16)b[o]|((u16)b[o+1]<<8));
+        if (i&1u) val=-(val+1); /* Linux xpad Y complement; avoid overflow */
+        s->axes[i].minimum=-32768;
+        s->axes[i].maximum=32767;
+        s->axes[i].value=val;
+    }
+    return TRUE;
+}
+
 static boolean GamePadDecodeXbox360(TUSBGamePadDevice *p,unsigned bytes)
 {
     if (!p || bytes < 14u) return FALSE;
@@ -425,12 +462,19 @@ boolean USBGamePadDeviceConfigure (TUSBFunction *pUSBFunction)
 	}
 
     TUSBDeviceDescriptor *hw=USBFunctionGetDevice(pUSBFunction)->m_pDeviceDesc;
-    pThis->m_fXbox360=(hw && hw->idVendor==0x045eu &&
-                        hw->idProduct==0x028eu &&
+    pThis->m_fXbox360=(hw &&
+                        (hw->idVendor==0x045eu || hw->idVendor==0x146bu ||
+                         hw->idVendor==0x2dc8u) &&
                         USBFunctionGetInterfaceClass(&pThis->m_USBFunction)==0xffu &&
                         USBFunctionGetInterfaceSubClass(&pThis->m_USBFunction)==0x5du &&
                         USBFunctionGetInterfaceProtocol(&pThis->m_USBFunction)==0x01u);
-    if (pThis->m_fXbox360) {
+    pThis->m_fXboxOne=(hw &&
+                        (hw->idVendor==0x045eu || hw->idVendor==0x2dc8u) &&
+                        USBFunctionGetInterfaceClass(&pThis->m_USBFunction)==0xffu &&
+                        USBFunctionGetInterfaceSubClass(&pThis->m_USBFunction)==0x47u &&
+                        USBFunctionGetInterfaceProtocol(&pThis->m_USBFunction)==0xd0u &&
+                        USBFunctionGetInterfaceNumber(&pThis->m_USBFunction)==0);
+    if (pThis->m_fXbox360 || pThis->m_fXboxOne) {
         /* XInput wired devices do not expose a USB HID report descriptor.
          * Locate interrupt-IN without allocating/describing HID fields.
          * Ignore audio/media interfaces on this composite controller. */
@@ -444,12 +488,24 @@ boolean USBGamePadDeviceConfigure (TUSBFunction *pUSBFunction)
                 USBEndpoint2(pThis->m_pEndpointIn,
                              USBFunctionGetDevice(&pThis->m_USBFunction),ep);
             }
+            else if ((ep->bmAttributes & 3u)==3u &&
+                     !(ep->bEndpointAddress&0x80u) && !pThis->m_pEndpointOut) {
+                pThis->m_pEndpointOut=(TUSBEndpoint*)malloc(sizeof(TUSBEndpoint));
+                assert(pThis->m_pEndpointOut);
+                USBEndpoint2(pThis->m_pEndpointOut,
+                             USBFunctionGetDevice(&pThis->m_USBFunction),ep);
+            }
         }
         if (!pThis->m_pEndpointIn) {
             USBFunctionConfigurationError(&pThis->m_USBFunction,FromUSBPad);
             return FALSE;
         }
-        pThis->m_nReportSize=32u; /* interrupt IN MPS=32; normal report 20 bytes */
+        if (pThis->m_fXboxOne && !pThis->m_pEndpointOut) {
+            USBFunctionConfigurationError(&pThis->m_USBFunction,FromUSBPad);
+            return FALSE;
+        }
+        pThis->m_nReportSize=pThis->m_fXboxOne ? 64u : 32u;
+        /* Xbox360 packets 20B; Xbox One GIP packets up to 64B. */
         pThis->m_State.naxes=4u;
         pThis->m_State.nhats=1u;
         pThis->m_State.hats[0]=8;
@@ -463,13 +519,42 @@ boolean USBGamePadDeviceConfigure (TUSBFunction *pUSBFunction)
             USBFunctionConfigurationError(&pThis->m_USBFunction,FromUSBPad);
             return FALSE;
         }
+        if (pThis->m_fXboxOne) {
+            /* Linux xpad initialises post-2015 Xbox One S hardware using
+             * GIP power-on + 02ea additional init. These are USB interrupt
+             * OUT, NOT USB control SET_REPORT requests.
+             * Keep synchronous writes on CPU1 only, before async reads. */
+            u8 poweron[5] __attribute__((aligned(16)))={0x05,0x20,0x00,0x01,0x00};
+            u8 one_s[5] __attribute__((aligned(16)))={0x05,0x20,0x01,0x0f,0x06};
+            u8 led[7] __attribute__((aligned(16)))={0x0a,0x20,0x02,0x03,0x00,0x01,0x14};
+            u8 auth[6] __attribute__((aligned(16)))={0x06,0x20,0x03,0x02,0x01,0x00};
+            TUSBHostController *host=USBFunctionGetHost(&pThis->m_USBFunction);
+            int rc=DWHCIDeviceTransfer(host,pThis->m_pEndpointOut,poweron,sizeof(poweron));
+            if (rc!=(int)sizeof(poweron))
+                LogWrite(FromUSBPad,LOG_WARNING,"RC8 XONE initial power packet failed");
+            if (hw->idVendor==0x045eu && hw->idProduct==0x02eau) {
+                rc=DWHCIDeviceTransfer(host,pThis->m_pEndpointOut,one_s,sizeof(one_s));
+                if (rc!=(int)sizeof(one_s))
+                    LogWrite(FromUSBPad,LOG_WARNING,"RC8 Xbox One S init packet failed");
+            }
+            rc=DWHCIDeviceTransfer(host,pThis->m_pEndpointOut,led,sizeof(led));
+            if (rc!=(int)sizeof(led))
+                LogWrite(FromUSBPad,LOG_WARNING,"RC8 Xbox One LED packet failed");
+            rc=DWHCIDeviceTransfer(host,pThis->m_pEndpointOut,auth,sizeof(auth));
+            if (rc!=(int)sizeof(auth))
+                LogWrite(FromUSBPad,LOG_WARNING,"RC8 Xbox One auth packet failed");
+        }
         pThis->m_nDeviceIndex=s_nDeviceNumber++;
         TString name;String(&name);
         StringFormat(&name,"upad%u",pThis->m_nDeviceIndex);
         DeviceNameServiceAddDevice(DeviceNameServiceGet(),StringGet(&name),pThis,FALSE);
         _String(&name);
-        LogWrite(FromUSBPad,LOG_NOTICE,
-                 "FRF Xbox360 wired 045e:028e XInput interrupt-IN 32B enabled");
+        if (pThis->m_fXboxOne)
+            LogWrite(FromUSBPad,LOG_NOTICE,
+                     "RC8 Xbox One GIP FF/47/D0 IN+OUT enabled");
+        else
+            LogWrite(FromUSBPad,LOG_NOTICE,
+                     "RC8 Xbox360 XInput FF/5D/01 interrupt-IN enabled");
         return USBGamePadDeviceStartRequest(pThis);
     }
     TUSBHIDDescriptor *pHIDDesc = (TUSBHIDDescriptor *) USBFunctionGetDescriptor (&pThis->m_USBFunction, DESCRIPTOR_HID);
@@ -634,10 +719,13 @@ void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *p
         }
         pThis->m_FailureCount=0;
         if (pThis->m_pStatusHandler &&
-            (pThis->m_pHIDReportDescriptor || pThis->m_fXbox360) &&
+            (pThis->m_pHIDReportDescriptor || pThis->m_fXbox360 ||
+             pThis->m_fXboxOne) &&
             bytes>0 && bytes<=pThis->m_nReportSize) {
             boolean valid=FALSE;
-            if (pThis->m_fXbox360)
+            if (pThis->m_fXboxOne)
+                valid=GamePadDecodeXboxOne(pThis,bytes);
+            else if (pThis->m_fXbox360)
                 valid=GamePadDecodeXbox360(pThis,bytes);
             else if (pThis->m_fShanWan2563)
                 valid=GamePadDecodeShanWan(pThis,bytes);
@@ -666,9 +754,12 @@ void USBGamePadDeviceCompletionRoutine (TUSBRequest *pURB, void *pParam, void *p
         if (success && pThis->m_fXbox360 && bytes>=14u)
             valid=pThis->m_pReportBuffer[0]==0u &&
                   pThis->m_pReportBuffer[1]==0x14u;
+        if (success && pThis->m_fXboxOne && bytes>=18u)
+            valid=pThis->m_pReportBuffer[0]==0x20u;
         /* generic report decoders count their input as valid when delivered */
         if (success && !pThis->m_fShanWan2563 &&
-            !pThis->m_fXbox360 && bytes>0) valid=1u;
+            !pThis->m_fXbox360 && !pThis->m_fXboxOne &&
+            bytes>0) valid=1u;
         frf_pad_diag_rx(success,bytes,
                          bytes ? pThis->m_pReportBuffer[0] : 0u,
                          valid,pThis->m_pReportBuffer);

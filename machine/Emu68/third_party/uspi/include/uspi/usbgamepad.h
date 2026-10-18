@@ -47,6 +47,7 @@ typedef struct TUSBGamePadDevice
 	u16 m_nReportSize;
     u8 m_fShanWan2563;
     u8 m_fXbox360;
+    u8 m_fXboxOne;
     u8 m_GamePadReportID;
     u8 m_RetryPending;
     u8 m_FailureCount;

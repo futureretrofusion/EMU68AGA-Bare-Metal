@@ -1,0 +1,41 @@
+EMU68AGA Pi3 RC8 — Wired Nacon/Xbox One S / multi-protocol gamepad TEST
+18 October 2026. Pi3 bare-metal AGA v1.117 baseline with RC6 boot POST.
+This is a compiler-tested firmware candidate. No physical pad was tested.
+
+New input:
+- 045E:028E: Xbox360 wired/compatible FF/5D/01 interface, RC7 path retained.
+  Covers a Switch-compatible controller impersonating a wired Xbox360
+  when its *actual USB interface* matches that protocol.
+- 146B:0603: Nacon wired compact PS4 PC XInput mode; probes FF/5D/01
+  on this VID/PID, retains generic USB HID fallback if exposed instead.
+- 045E:02EA: Microsoft Xbox One S wired GIP FF/47/D0 interface 0 only.
+  Uses interrupt OUT: 05 20 00 01 00 (power-on), 05 20 01 0F 06
+  (Xbox One S init), followed by LED/auth packets. Reads 0x20 GIP
+  input packets on interrupt IN, decoding Dpad, face buttons, sticks.
+- Selected 2DC8 (8BitDo) XInput FF/5D/01 and GIP FF/47/D0 protocol
+  interfaces are matched *if its dongle presents that vendor and format*.
+  Tester did not supply the receiver PID; this is provisional, not a
+  claim that their 8BitDo Xbox mode works.
+- Logitech Dual Action 046D:C216 generic HID path retained without changes.
+- ShanWan generic HID path and keyboard failure backoff retained.
+
+POST updated to say PKT rather than HID for Xbox vendor-specific
+controllers. GP = number of registered gamepads; GP RX = received packets;
+DECODE = packets accepted as game input; JOY1/EV reflect mapped input.
+Amiga C:usbpad-info provides detailed raw packet report and counters.
+
+Installation:
+ 1. BACK UP the working Pi3 FAT kernel8.img.
+ 2. Copy ONLY kernel8.img from this ZIP to the existing Pi3 boot
+    partition. Leave config.txt, Kickstart, disk partitions and DOSDrivers.
+ 3. Power off. Plug each gamepad BEFORE powering the Pi3 on.
+ 4. Press Dpad and A/cross on each gamepad while RC8 POST appears.
+ 5. Launch Amiga Shell program usbpad-info twice, before and after
+    moving buttons/sticks. Capture its exact output, plus a POST photo.
+ 6. Try joystick port 2 in an actual Amiga game, and compare Logitech.
+ 7. If boot or keyboard regresses, restore the previous RC7 kernel8.img.
+
+The 2.4 GHz 8BitDo stick's receiver needs its VID/PID/USB interface ID
+before guaranteed protocol identification is possible.
+No USB storage changes were made in RC8.
+Compiled (AArch64 BE), ZIP verified, actual Pi3/Amiga behavior unverified.

@@ -27,6 +27,7 @@
 #include <uspi/usbkeyboard.h>
 #include <uspi/usbmouse.h>
 #include <uspi/usbgamepad.h>
+#include <uspi/usbdevice.h>
 #include <uspi/usbmidi.h>
 #include <uspi/smsc951x.h>
 #include <uspi/lan7800.h>
@@ -97,6 +98,33 @@ else if (StringCompare (pName, "ven424-7800") == 0)
         assert (pDevice != 0);
         USBGamePadDevice (pDevice, pParent);
         pResult = (TUSBFunction *) pDevice;
+    }
+    /* Known XInput and Game Input Protocol devices. Match a controller
+       class/interface, not arbitrary vendor products with unrelated USB roles.
+       146b:0603 exposes XInput when attached to PC on supported firmware.
+       2dc8 arcade sticks may report as 360 or One depending on mode. */
+    else if ((StringCompare(pName,"ven146b-603")==0 &&
+              USBFunctionGetInterfaceClass(pParent)==0xff &&
+              USBFunctionGetInterfaceSubClass(pParent)==0x5d &&
+              USBFunctionGetInterfaceProtocol(pParent)==0x01) ||
+             (StringCompare(pName,"ven45e-2ea")==0 &&
+              USBFunctionGetInterfaceClass(pParent)==0xff &&
+              USBFunctionGetInterfaceSubClass(pParent)==0x47 &&
+              USBFunctionGetInterfaceProtocol(pParent)==0xd0 &&
+              USBFunctionGetInterfaceNumber(pParent)==0) ||
+             (StringCompare(pName,"intff-5d-1")==0 &&
+              (USBFunctionGetDevice(pParent)->m_pDeviceDesc->idVendor==0x146b ||
+               USBFunctionGetDevice(pParent)->m_pDeviceDesc->idVendor==0x045e ||
+               USBFunctionGetDevice(pParent)->m_pDeviceDesc->idVendor==0x2dc8)) ||
+             (StringCompare(pName,"intff-47-d0")==0 &&
+              USBFunctionGetInterfaceNumber(pParent)==0 &&
+              (USBFunctionGetDevice(pParent)->m_pDeviceDesc->idVendor==0x045e ||
+               USBFunctionGetDevice(pParent)->m_pDeviceDesc->idVendor==0x2dc8)))
+    {
+        TUSBGamePadDevice *pDevice=(TUSBGamePadDevice*)malloc(sizeof(TUSBGamePadDevice));
+        assert(pDevice!=0);
+        USBGamePadDevice(pDevice,pParent);
+        pResult=(TUSBFunction*)pDevice;
     }
     else if (StringCompare (pName, "int3-0-0") == 0)
     {

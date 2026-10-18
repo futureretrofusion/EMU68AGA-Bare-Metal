@@ -334,7 +334,7 @@ static void frf_post_draw(void)
     post_rect(x+w-2,y,2,h,cyan);
     post_rect(x,y+h-2,w,2,cyan);
     post_text(x+10,y+7,"EMU68AGA  SYSTEM POST",white);
-    post_text(x+10,y+25,"PI3 BARE METAL / RC6",cyan);
+    post_text(x+10,y+25,"PI3 BARE METAL / RC8",cyan);
     post_rect(x+8,y+44,w-16,1,0x2965u);
 
     post_row(x+10,y+50,"AGA VIDEO",(flags&(1u<<1))?"READY":"WAIT ",
@@ -364,7 +364,7 @@ static void frf_post_draw(void)
     post_text(x+215,y+129,"ERR:",white);
     post_dec(x+257,y+129,post_err%1000u,3,post_err?amber:green);
 
-    post_text(x+10,y+147,"HID ID:",white);
+    post_text(x+10,y+147,"PKT ID:",white);
     post_hex(x+74,y+147,post_id,2,cyan);
     post_text(x+106,y+147,"LEN:",white);
     post_dec(x+146,y+147,post_len%100u,2,cyan);
@@ -389,11 +389,11 @@ static void frf_post_draw(void)
     else if (post_events)
         post_text(x+10,y+207,"PAD INPUT CHANGE SEEN",green);
     else if (c>0 && c!=~0u && post_rx==0)
-        post_text(x+10,y+207,"PAD FOUND - AWAITING HID",amber);
+        post_text(x+10,y+207,"PAD FOUND - AWAITING USB",amber);
     else if (c==0u)
         post_text(x+10,y+207,"NO GAMEPAD ENUMERATED",amber);
     else if (post_rx>0)
-        post_text(x+10,y+207,"HID RX - TEST BUTTONS",amber);
+        post_text(x+10,y+207,"USB RX - TEST BUTTONS",amber);
     else
         post_text(x+10,y+207,"TEST PAD DURING BOOT",cyan);
 
