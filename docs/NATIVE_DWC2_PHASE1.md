@@ -85,3 +85,7 @@ hardware timing or USB functionality.
 
 No functionality is attributed to a milestone until it is demonstrated
 on physical hardware.
+
+## Keyboard-first follow-up
+
+Added a separate, tested USB HID boot keyboard report decoder and an actual CIA-A raw-key output adapter. Handles make/break, modifiers, rollover, and USB HID usage translation. **No keyboard transport is implemented yet**, so this function is not called by hardware. To obtain real keys requires enumerating the Pi 3 USB hub and scheduling HID interrupt-IN transactions (with split transactions for full/low-speed devices). Research identified TinyUSB MIT host stack with DWC2 hub/split support. Reference checkout: `~/Downloads/FRF_TINYUSB_REFERENCE` (upstream commit 2f675ab). Integration and target support are not yet proven.

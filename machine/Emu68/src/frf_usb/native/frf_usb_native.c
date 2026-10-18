@@ -8,6 +8,7 @@
 #include <support.h>
 #include "frf_usb.h"
 #include "frf_dwc2.h"
+#include "frf_native_keyboard.h"
 
 #define FRF_PI3_DWC2_BASE 0x3f980000u
 
@@ -49,6 +50,20 @@ int frf_usb_event_pop(struct frf_usb_event *out)
 {
     (void)out;
     return 0;
+}
+/* Called by a future USB HID interrupt-IN transport once fully enumerated.
+ * No fake keyboard events: packets must come from a real USB endpoint.
+ */
+extern void frf_vcia_keyboard_raw(uint8_t raw);
+static struct frf_native_keyboard native_keyboard;
+static void native_key_emit(void *ctx, uint8_t raw)
+{
+    (void)ctx;
+    frf_vcia_keyboard_raw(raw);
+}
+void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
+{
+    frf_native_keyboard_report(&native_keyboard, report, native_key_emit, 0);
 }
 void frf_usb_guest_start(void) {}
 int frf_usb_early_startup_active(void) { return 0; }

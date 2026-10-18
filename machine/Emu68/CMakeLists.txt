@@ -388,6 +388,7 @@ if(FRF_USB_HOST)
         endif()
         target_sources(Emu68.elf PRIVATE
             ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_native_keyboard.c
             ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native.c)
         target_include_directories(Emu68.elf PRIVATE
             ${CMAKE_SOURCE_DIR}/src/frf_usb
