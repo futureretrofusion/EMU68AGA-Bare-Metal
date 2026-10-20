@@ -516,8 +516,31 @@ bool hcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
   // configure a fixed-allocated fifo scheme
   dfifo_host_init(rhport, is_hs_phy);
 
+#ifdef FRF_USB_TINYUSB
+  /* Pi3 power up as in USPi: preserve HPRT current port state,
+   * clear W1C bits in write value, set power only if missing.
+   * Writing HPRT_POWER alone loses preserved port controls. */
+  uint32_t pi3_port = dwc2->hprt & ~HPRT_W1_MASK;
+  if (!(pi3_port & HPRT_POWER)) {
+      dwc2->hprt = pi3_port | HPRT_POWER;
+  }
+  /* Give root-port power and the internal LAN9514 hub time to settle
+     before sampling HPRT connection status. */
+  uint32_t pi3_power_start = tusb_time_millis_api();
+  while((uint32_t)(tusb_time_millis_api()-pi3_power_start)<100u) {}
+  /* Do not declare a working host when HPRT_PWR never asserted.
+   * A second W1C-safe power request helps with slow Pi3 PHY wakeup. */
+  if (!(dwc2->hprt & HPRT_POWER)) {
+      pi3_port=dwc2->hprt & ~HPRT_W1_MASK;
+      dwc2->hprt=pi3_port | HPRT_POWER;
+      pi3_power_start=tusb_time_millis_api();
+      while((uint32_t)(tusb_time_millis_api()-pi3_power_start)<50u) {}
+      if (!(dwc2->hprt & HPRT_POWER)) return false;
+  }
+#else
   dwc2->hprt = HPRT_W1_MASK; // clear all write-1-clear bits
   dwc2->hprt = HPRT_POWER; // turn on VBUS
+#endif
 
   // Enable required interrupts
   dwc2->gintmsk |= GINTSTS_OTGINT | GINTSTS_HPRTINT | GINTSTS_HCINT | GINTSTS_DISCINT;

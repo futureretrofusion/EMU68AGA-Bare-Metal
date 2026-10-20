@@ -100,7 +100,18 @@ static bool phy_hs_init(dwc2_regs_t* dwc2) {
 
   // De-select FS PHY
   gusbcfg &= ~GUSBCFG_PHYSEL;
-
+#ifdef FRF_USB_TINYUSB
+  /* Broadcom BCM2837 host quirk, matched to the locally verified USPi
+   * DWHCIDeviceInitCore(): select UTMI+ 8-bit even when GHWCFG2 advertises
+   * ULPI, disable external VBUS drive and term-select DL pulse.
+   * Generic TinyUSB's HS ULPI selection prevents Pi3's root host PHY
+   * from ever connecting to the hardwired LAN9514 hub. */
+  phy_width=8u;
+  gusbcfg &= ~(GUSBCFG_ULPI_UTMI_SEL | GUSBCFG_PHYIF16 |
+               GUSBCFG_ULPIEVBUSD | GUSBCFG_ULPIEVBUSI |
+               GUSBCFG_DDRSEL | (1u<<22));
+  dwc2->gusbcfg=gusbcfg;
+#else
   if (ghwcfg2.hs_phy_type == GHWCFG2_HSPHY_ULPI) {
     TU_LOG(DWC2_COMMON_DEBUG, "Highspeed ULPI PHY init\r\n");
 
@@ -132,6 +143,7 @@ static bool phy_hs_init(dwc2_regs_t* dwc2) {
     }
   }
 
+#endif
   // Apply config
   dwc2->gusbcfg = gusbcfg;
 
@@ -140,12 +152,26 @@ static bool phy_hs_init(dwc2_regs_t* dwc2) {
 
   // Reset core after selecting PHY
   if (!reset_core(dwc2)) return false;
+#ifdef FRF_USB_TINYUSB
+  /* BCM2837 USPi reset has 100ms PHY settling delay. */
+  const uint32_t reset_wait=tusb_time_millis_api();
+  while((uint32_t)(tusb_time_millis_api()-reset_wait)<100u) {}
+#endif
 
   // Set turn-around, must after core reset otherwise it will be clear
   // - 9 if using 8-bit PHY interface
   // - 5 if using 16-bit PHY interface
   gusbcfg &= ~GUSBCFG_TRDT_Msk;
   gusbcfg |= (phy_width == 16 ? 5u : 9u) << GUSBCFG_TRDT_Pos;
+#ifdef FRF_USB_TINYUSB
+  /* USPi's Pi3 core init preserves ULPI FS/LS clock behaviour for
+   * dedicated FS PHY configurations even with UTMI+ selected. */
+  gusbcfg &= ~(GUSBCFG_ULPIFSLS | GUSBCFG_ULPICSM);
+  if(ghwcfg2.hs_phy_type==GHWCFG2_HSPHY_ULPI &&
+     ghwcfg2.fs_phy_type==GHWCFG2_FSPHY_DEDICATED) {
+      gusbcfg |= (GUSBCFG_ULPIFSLS | GUSBCFG_ULPICSM);
+  }
+#endif
   dwc2->gusbcfg = gusbcfg;
 
   // MCU specific PHY update post reset
@@ -217,7 +243,16 @@ bool dwc2_core_init(uint8_t rhport, bool is_hs_phy, bool is_dma) {
   dwc2->gusbcfg |= (7ul << GUSBCFG_TOCAL_Pos);
 
   // Enable PHY clock TODO stop/gate clock when suspended mode
+#ifdef FRF_USB_TINYUSB
+  /* USPi DWHCIDeviceInitHost writes zero to BCM ARM_USB_POWER (0xE00)
+   * rather than masking the four generic low-power bits. Restore that
+   * proven Pi3 behaviour so PHY clock is completely ungated. */
+  dwc2->pcgcctl=0u;
+  dwc2->gusbcfg &= ~(GUSBCFG_HNPCAP | GUSBCFG_SRPCAP);
+  dwc2->gahbcfg |= (1u<<4); /* BCM2837 WAIT_AXI_WRITES */
+#else
   dwc2->pcgcctl &= ~(PCGCCTL_STOPPCLK | PCGCCTL_GATEHCLK | PCGCCTL_PWRCLMP | PCGCCTL_RSTPDWNMODULE);
+#endif
 
   TU_ASSERT(dfifo_flush_tx(dwc2, 0x10)); // all tx FIFO
   TU_ASSERT(dfifo_flush_rx(dwc2));

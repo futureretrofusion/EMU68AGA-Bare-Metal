@@ -121,18 +121,29 @@ void tuh_msc_umount_cb(uint8_t addr)
     (void)addr;
     if(frf_usb_storage) --frf_usb_storage;
 }
+static uint32_t pi3_dwc2_read(unsigned offset)
+{
+    uint32_t raw=*(volatile uint32_t *)(uintptr_t)(0xf2980000u+offset);
+    __asm__ volatile("dmb oshld" ::: "memory");
+    return __builtin_bswap32(raw);
+}
 void frf_tinyusb_host_main(void)
 {
-    frf_post_native_usb_stage(2,0,0xf2980000u,0x54555342u);
+    /* Dump actual Synopsys ID and GHWCFG2 before changing the core. */
+    frf_post_native_usb_stage(2,0,pi3_dwc2_read(0x040u),
+                               pi3_dwc2_read(0x048u));
     /* Core selection and VBUS request were already done on CPU1 above. */
     const tusb_rhport_init_t pi3_host={.role=TUSB_ROLE_HOST,.speed=TUSB_SPEED_HIGH};
     int ok=tuh_rhport_init(0,&pi3_host);
+    /* Show actual GUSBCFG PHY mode, HPRT and PCGCCTL power status;
+       a successful return from hcd_init alone cannot prove port power. */
+    uint32_t port_raw=pi3_dwc2_read(0x440u);
     frf_post_native_usb_stage(3,ok?0:-1,
-                              frf_usb_enumerations,frf_usb_reports);
-    frf_boot_stage(10);
-    __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
-    __asm__ volatile("sev" ::: "memory");
+                              pi3_dwc2_read(0x00cu),port_raw);
     if(!ok) {
+        frf_boot_stage(10);
+        __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
+        __asm__ volatile("sev" ::: "memory");
         for(;;) __asm__ volatile("wfe");
     }
     /* Pi 3B's internal LAN9514 USB hub is physically connected before
@@ -141,10 +152,21 @@ void frf_tinyusb_host_main(void)
        TinyUSB otherwise waits forever for an edge that will never arrive.
        Seed a root attach based on current HPRT connect status. */
     bool connected_before=hcd_port_connect_status(0);
-    frf_post_native_usb_stage(4,0,connected_before?1u:0u,0);
+    port_raw=pi3_dwc2_read(0x440u);
+    /* Stage 4 shows raw HPRT (DETAIL), PCGCCTL (AUX).
+       RC=-6 means HPRT_PWR didn't latch, RC=-7 means powered but
+       no device connected to the root PHY (internal hub absent).
+       Neither status is treated as HID success. */
+    int port_rc=(port_raw&(1u<<12)) ?
+                (connected_before?0:-7) : -6;
+    frf_post_native_usb_stage(4,port_rc,port_raw,
+                               pi3_dwc2_read(0xe00u));
     if(connected_before) {
         hcd_event_device_attach(0,false);
     }
+    frf_boot_stage(10);
+    __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
+    __asm__ volatile("sev" ::: "memory");
     bool last_connected=connected_before;
     uint32_t last_rescan=tusb_time_millis_api();
     uint32_t root_attach_attempts=connected_before?1u:0u;
