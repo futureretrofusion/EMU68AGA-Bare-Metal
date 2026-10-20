@@ -135,13 +135,49 @@ void frf_tinyusb_host_main(void)
     if(!ok) {
         for(;;) __asm__ volatile("wfe");
     }
-    /* Polling ISR on the dedicated CPU1 is intentional until an
-       EMU68-compatible hardware IRQ is installed. Host state machine
-       and class callbacks are handled by TinyUSB in the same context.
-       Keep the pump independent from guest emulation and keyboard CIA. */
+    /* Pi 3B's internal LAN9514 USB hub is physically connected before
+       our standalone CPU1 USB worker starts. A connection-change edge may
+       therefore have occurred before DWC2 interrupt masks were enabled.
+       TinyUSB otherwise waits forever for an edge that will never arrive.
+       Seed a root attach based on current HPRT connect status. */
+    bool connected_before=hcd_port_connect_status(0);
+    frf_post_native_usb_stage(4,0,connected_before?1u:0u,0);
+    if(connected_before) {
+        hcd_event_device_attach(0,false);
+    }
+    bool last_connected=connected_before;
+    uint32_t last_rescan=tusb_time_millis_api();
+    uint32_t root_attach_attempts=connected_before?1u:0u;
+    /* CPU1 processes the DWC2 interrupt status in one event/task context.
+       Unlike earlier hand-written polling, TinyUSB owns hub TT scheduling.
+       On an already-connected root hub, retry enumeration occasionally if
+       no USB devices ever mounted. Timed retry avoids endlessly queuing
+       duplicate attachment events. */
     for(;;) {
-        hcd_int_handler(0,true);
+        hcd_int_handler(0,false);
         tuh_task_ext(0,false);
+        uint32_t now=tusb_time_millis_api();
+        bool connected=hcd_port_connect_status(0);
+        if(connected != last_connected) {
+            last_connected=connected;
+            last_rescan=now;
+            if(connected) {
+                root_attach_attempts++;
+                hcd_event_device_attach(0,false);
+                frf_post_native_usb_stage(5,0,1u,root_attach_attempts);
+            } else {
+                hcd_event_device_remove(0,false);
+                frf_post_native_usb_stage(5,-1,0u,root_attach_attempts);
+            }
+        }
+        if(connected && frf_usb_enumerations==0 &&
+           (uint32_t)(now-last_rescan)>=6000u &&
+           root_attach_attempts<4u) {
+            last_rescan=now;
+            root_attach_attempts++;
+            hcd_event_device_attach(0,false);
+            frf_post_native_usb_stage(6,-2,root_attach_attempts,0);
+        }
         __asm__ volatile("yield");
     }
 }
