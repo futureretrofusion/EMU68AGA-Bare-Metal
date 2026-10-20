@@ -1,18 +1,19 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  * Copyright (C) 2026 Future Retro Fusion.
  * EMU68AGA / Pi 3 standalone first native USB backend.
- * Diagnostic bring-up ONLY. No HID, hubs, BOT, DMA or USB transfers yet.
+ * Native Pi3 controller bring-up and direct-HID prototype; hub/TT support pending.
  * Never link this file alongside USPi.
  */
 #include <stdint.h>
 #include <support.h>
+#include "mmu.h"
 #include "frf_usb.h"
 #include "frf_dwc2.h"
 #include "frf_dwc2_pio.h"
 #include "frf_usb_native_hid.h"
 #include "frf_native_keyboard.h"
 
-#define FRF_PI3_DWC2_BASE 0x3f980000u
+#define FRF_PI3_DWC2_BASE 0xf2980000u /* EMU68 MMU mapping of BCM2837 physical 0x3f980000 */
 
 /* Existing CPU0 boot-gate ABI. */
 volatile uint8_t frf_usb_host_start_allowed;
@@ -70,12 +71,87 @@ void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
 void frf_usb_guest_start(void) {}
 int frf_usb_early_startup_active(void) { return 0; }
 
+
+/* Raspberry Pi property mailbox, device 3 = USB HCD.
+ * The mailbox path is independent of USPi. EMU68 exposes device MMIO
+ * at the 0xF2000000 virtual alias rather than the 0x3F000000 physical base.
+ */
+#define FRF_MBOX_BASE   0xf2000000UL
+#define FRF_MBOX_READ   (FRF_MBOX_BASE + 0xb880u)
+#define FRF_MBOX_STATUS (FRF_MBOX_BASE + 0xb898u)
+#define FRF_MBOX_WRITE  (FRF_MBOX_BASE + 0xb8a0u)
+#define FRF_MBOX_FULL   (1u << 31)
+#define FRF_MBOX_EMPTY  (1u << 30)
+static volatile uint32_t native_usb_power_request[8] __attribute__((aligned(64)));
+
+static uint32_t native_mbox_read(uintptr_t address)
+{
+    uint32_t raw = *(volatile uint32_t *)address;
+    __asm__ volatile("dmb oshld" ::: "memory");
+    return __builtin_bswap32(raw);
+}
+static void native_mbox_write(uintptr_t address, uint32_t word)
+{
+    __asm__ volatile("dmb oshst" ::: "memory");
+    *(volatile uint32_t *)address = __builtin_bswap32(word);
+    __asm__ volatile("dsb oshst" ::: "memory");
+}
+static int native_usb_power_on(uint32_t *state_out)
+{
+    volatile uint32_t *const req = native_usb_power_request;
+    req[0] = __builtin_bswap32(8u * 4u);
+    req[1] = 0u;
+    req[2] = __builtin_bswap32(0x00028001u); /* SET_POWER_STATE */
+    req[3] = __builtin_bswap32(8u);
+    req[4] = 0u;
+    req[5] = __builtin_bswap32(3u);  /* USB HCD */
+    req[6] = __builtin_bswap32(3u);  /* ON | WAIT */
+    req[7] = 0u;
+    arm_flush_cache((uintptr_t)req, sizeof native_usb_power_request);
+    uintptr_t phys = mmu_virt2phys((uintptr_t)req);
+    if (phys == (uintptr_t)-1 || (phys & 15u)) return -1;
+    uint32_t address = (uint32_t)phys & ~15u;
+    unsigned elapsed = 0;
+    while (native_mbox_read(FRF_MBOX_STATUS) & FRF_MBOX_FULL) {
+        if (++elapsed >= 1000000u) return -2;
+        __asm__ volatile("yield");
+    }
+    native_mbox_write(FRF_MBOX_WRITE, address | 8u);
+    elapsed = 0;
+    for (;;) {
+        if (!(native_mbox_read(FRF_MBOX_STATUS) & FRF_MBOX_EMPTY)) {
+            uint32_t reply = native_mbox_read(FRF_MBOX_READ);
+            if ((reply & 15u) == 8u && (reply & ~15u) == address) break;
+        }
+        if (++elapsed >= 1000000u) return -3;
+        __asm__ volatile("yield");
+    }
+    arm_dcache_invalidate((uintptr_t)req, sizeof native_usb_power_request);
+    uint32_t state = __builtin_bswap32(req[6]);
+    if (state_out) *state_out = state;
+    return ((state & 3u) == 1u &&
+            (__builtin_bswap32(req[1]) & 0x80000000u)) ? 0 : -4;
+}
+
 void frf_usb_main(void)
 {
     extern void frf_boot_stage(unsigned stage);
     while (!__atomic_load_n(&frf_usb_host_start_allowed, __ATOMIC_ACQUIRE))
         __asm__ volatile("wfe");
     frf_boot_stage(6);
+
+    uint32_t usb_power_state = 0;
+    int power_rc = native_usb_power_on(&usb_power_state);
+    kprintf("[FRF-NATIVE-USB] firmware power rc=%d state=%08x\\n",
+            power_rc, usb_power_state);
+    if (power_rc != 0) {
+        kprintf("[FRF-NATIVE-USB] USB cannot start: firmware power request failed\\n");
+        frf_boot_stage(10);
+        __atomic_store_n(&frf_usb_boot_ready, 1u, __ATOMIC_RELEASE);
+        __asm__ volatile("sev" ::: "memory");
+        for (;;) __asm__ volatile("wfe");
+    }
+    delay_us(NULL, 100000u);
 
     const struct frf_dwc2_ops ops = {
         mmio_read, mmio_write, delay_us,
