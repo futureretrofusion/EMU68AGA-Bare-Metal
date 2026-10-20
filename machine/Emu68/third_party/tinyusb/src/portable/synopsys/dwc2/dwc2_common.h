@@ -77,16 +77,23 @@ void dwc2_core_handle_common_irq(uint8_t rhport, bool in_isr);
 //--------------------------------------------------------------------+
 // DFIFO
 //--------------------------------------------------------------------+
-TU_ATTR_ALWAYS_INLINE static inline void dfifo_flush_tx(dwc2_regs_t* dwc2, uint8_t fnum) {
-  // flush TX fifo and wait for it cleared
+TU_ATTR_ALWAYS_INLINE static inline bool dfifo_flush_tx(dwc2_regs_t* dwc2, uint8_t fnum) {
+  // Bounded Pi3 DWC2 FIFO flush: never hang guest boot if USB PHY stalls.
   dwc2->grstctl = GRSTCTL_TXFFLSH | (fnum << GRSTCTL_TXFNUM_Pos);
-  while (0 != (dwc2->grstctl & GRSTCTL_TXFFLSH_Msk)) {}
+  const uint32_t start=tusb_time_millis_api();
+  while (0 != (dwc2->grstctl & GRSTCTL_TXFFLSH_Msk)) {
+    if ((uint32_t)(tusb_time_millis_api()-start)>250u) return false;
+  }
+  return true;
 }
 
-TU_ATTR_ALWAYS_INLINE static inline void dfifo_flush_rx(dwc2_regs_t* dwc2) {
-  // flush RX fifo and wait for it cleared
+TU_ATTR_ALWAYS_INLINE static inline bool dfifo_flush_rx(dwc2_regs_t* dwc2) {
   dwc2->grstctl = GRSTCTL_RXFFLSH;
-  while (0 != (dwc2->grstctl & GRSTCTL_RXFFLSH_Msk)) {}
+  const uint32_t start=tusb_time_millis_api();
+  while (0 != (dwc2->grstctl & GRSTCTL_RXFFLSH_Msk)) {
+    if ((uint32_t)(tusb_time_millis_api()-start)>250u) return false;
+  }
+  return true;
 }
 
 void dfifo_read_packet(dwc2_regs_t* dwc2, uint8_t* dst, uint16_t len);

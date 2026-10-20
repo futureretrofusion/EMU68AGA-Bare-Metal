@@ -54,11 +54,15 @@ enum {
 
 // Host driver struct for each opened endpoint
 typedef struct {
-  union {
+  /* These two words are DWC2 register-shaped even though cached inside
+   * a normal host endpoint structure. They MUST use the same LE scalar
+   * layout as dwc2_channel_char_t/dwc2_channel_split_t; the rest of the
+   * host endpoint (notably buffer pointers) remains native ARM BE. */
+  union __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t hcchar;
     dwc2_channel_char_t hcchar_bm;
   };
-  union {
+  union __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t hcsplt;
     dwc2_channel_split_t hcsplt_bm;
   };
@@ -492,9 +496,12 @@ bool hcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
     dwc2->hfir |= HFIR_RELOAD_CTRL;
   }
 
-  // force host mode and wait for mode switch
+  // Force host mode; detect a failed mode switch rather than spin forever.
   dwc2->gusbcfg = (dwc2->gusbcfg & ~GUSBCFG_FDMOD) | GUSBCFG_FHMOD;
-  while ((dwc2->gintsts & GINTSTS_CMOD) != GINTSTS_CMODE_HOST) {}
+  const uint32_t switch_start=tusb_time_millis_api();
+  while ((dwc2->gintsts & GINTSTS_CMOD) != GINTSTS_CMODE_HOST) {
+    if ((uint32_t)(tusb_time_millis_api()-switch_start)>500u) return false;
+  }
 
   #ifdef TUP_USBIP_DWC2_STM32
   dwc2_stm32_gccfg_cfg(dwc2, false, true);

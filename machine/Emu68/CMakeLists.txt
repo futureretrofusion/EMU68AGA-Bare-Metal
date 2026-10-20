@@ -432,7 +432,10 @@ if(FRF_USB_HOST)
             set_source_files_properties(
                 ${FRF_TUSB}/portable/synopsys/dwc2/hcd_dwc2.c
                 ${FRF_TUSB}/portable/synopsys/dwc2/dwc2_common.c
-                PROPERTIES COMPILE_OPTIONS "-fsso-struct=little-endian;-Wno-error=scalar-storage-order")
+                PROPERTIES COMPILE_OPTIONS "-Wno-error=scalar-storage-order")
+            # Only hardware register unions/structs in dwc2_type.h use LE
+            # scalar-storage-order. Host stack and controller descriptors
+            # remain normal big-endian, including pointers passed by TinyUSB.
             message(STATUS "Experimental TinyUSB host compiled directly into EMU68AGA")
         else()
         target_sources(Emu68.elf PRIVATE

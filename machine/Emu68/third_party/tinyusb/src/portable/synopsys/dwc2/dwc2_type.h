@@ -175,9 +175,9 @@ enum {
 //--------------------------------------------------------------------
 // Common Register Bitfield
 //--------------------------------------------------------------------
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t ses_req_scs           : 1; //  0 Session request success
     uint32_t ses_req               : 1; //  1 Session request
     uint32_t vbval_ov_en           : 1; //  2 VBUS valid override enable
@@ -207,9 +207,9 @@ typedef union {
 } dwc2_gotgctl_t;
 TU_VERIFY_STATIC(sizeof(dwc2_gotgctl_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t rsv0_1                : 2; //  0..1  Reserved
     uint32_t ses_end_det           : 1; //  2     Session end detected
     uint32_t rsv3_7                : 5; //  3..7  Reserved
@@ -225,9 +225,9 @@ typedef union {
 } dwc2_gotgint_t;
 TU_VERIFY_STATIC(sizeof(dwc2_gotgint_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t gintmask              :  1; //  0 Global interrupt mask
     uint32_t hbst_len              :  4; //  1..4 Burst length/type
     uint32_t dma_en                :  1; //  5 DMA enable
@@ -244,9 +244,9 @@ typedef union {
 } dwc2_gahbcfg_t;
 TU_VERIFY_STATIC(sizeof(dwc2_gahbcfg_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t timeout_cal             :  3; /* 0..2 Timeout calibration.
       The USB standard timeout value for high-speed operation is 736 to 816 (inclusive) bit times. The USB standard
       timeout value for full- speed operation is 16 to 18 (inclusive) bit times. The application must program this field
@@ -287,9 +287,9 @@ typedef union {
 } dwc2_gusbcfg_t;
 TU_VERIFY_STATIC(sizeof(dwc2_gusbcfg_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t core_soft_rst      : 1; // 0 Core Soft Reset
     uint32_t piufs_soft_rst     : 1; // 1 PIU FS Dedicated Controller Soft Reset
     uint32_t frame_counter_rst  : 1; // 2 Frame Counter Reset (host)
@@ -305,9 +305,9 @@ typedef union {
 } dwc2_grstctl_t;
 TU_VERIFY_STATIC(sizeof(dwc2_grstctl_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t ep_ch_num     : 4; // 0..3 Endpoint/Channel Number
     uint32_t byte_count    :11; // 4..14 Byte Count
     uint32_t dpid          : 2; // 15..16 Data PID
@@ -318,9 +318,9 @@ typedef union {
 } dwc2_grxstsp_t;
 TU_VERIFY_STATIC(sizeof(dwc2_grxstsp_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t op_mode                : 3; // 0..2 HNP/SRP Host/Device/OTG mode
     uint32_t arch                   : 2; // 3..4 Slave/External/Internal DMA
     uint32_t single_point           : 1; // 5 0: support hub and split | 1: no hub, no split
@@ -340,9 +340,9 @@ typedef union {
 } dwc2_ghwcfg2_t;
 TU_VERIFY_STATIC(sizeof(dwc2_ghwcfg2_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t xfer_size_width          : 4;  // 0..3 Transfer size counter in bits = 11 + n (max 19 bits)
     uint32_t packet_size_width        : 3;  // 4..6 Packet size counter in bits = 4 + n (max 10 bits)
     uint32_t otg_enable               : 1;  // 7 OTG capable
@@ -359,9 +359,9 @@ typedef union {
 } dwc2_ghwcfg3_t;
 TU_VERIFY_STATIC(sizeof(dwc2_ghwcfg3_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t num_dev_period_in_ep  : 4; // 0..3 Number of Device Periodic IN Endpoints
     uint32_t partial_powerdown     : 1; // 4 Partial Power Down Enabled
     uint32_t ahb_freq_min          : 1; // 5 1: minimum of AHB frequency is less than 60 MHz
@@ -388,9 +388,9 @@ typedef union {
 } dwc2_ghwcfg4_t;
 TU_VERIFY_STATIC(sizeof(dwc2_ghwcfg4_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t fifo_available      : 16; // 0..15 Number of words available in the Tx FIFO
     uint32_t req_queue_available :  8; // 16..23 Number of spaces available in the NPT transmit request queue for both IN and OU
                                        // 24..31 is top entry in the request queue that is currently being processed by the MAC
@@ -401,9 +401,9 @@ typedef union {
 } dwc2_hnptxsts_t;
 TU_VERIFY_STATIC(sizeof(dwc2_hnptxsts_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t fifo_available      :16; // 0..15 Number of words available in the Tx FIFO
     uint32_t req_queue_available : 7; // 16..22 Number of spaces available in the PTX transmit request queue
     uint32_t qtop_terminate      : 1; // 23 Last entry for selected channel
@@ -415,9 +415,9 @@ typedef union {
 } dwc2_hptxsts_t;
 TU_VERIFY_STATIC(sizeof(dwc2_hptxsts_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t conn_status         : 1; // 0 Port connect status
     uint32_t conn_detected       : 1; // 1 Port connect detected
     uint32_t enable              : 1; // 2 Port enable status
@@ -437,9 +437,9 @@ typedef union {
 } dwc2_hprt_t;
 TU_VERIFY_STATIC(sizeof(dwc2_hprt_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t ep_size         : 11; // 0..10 Maximum packet size
     uint32_t ep_num          :  4; // 11..14 Endpoint number
     uint32_t ep_dir          :  1; // 15 Endpoint direction
@@ -455,9 +455,9 @@ typedef union {
 } dwc2_channel_char_t;
 TU_VERIFY_STATIC(sizeof(dwc2_channel_char_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t hub_port    :  7; // 0..6 Hub port number
     uint32_t hub_addr    :  7; // 7..13 Hub address
     uint32_t xact_pos    :  2; // 14..15 Transaction position
@@ -468,9 +468,9 @@ typedef union {
 } dwc2_channel_split_t;
 TU_VERIFY_STATIC(sizeof(dwc2_channel_split_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t xfer_size    : 19; // 0..18 Transfer size in bytes
     uint32_t packet_count : 10; // 19..28 Number of packets
     uint32_t pid          :  2; // 29..30 Packet ID
@@ -479,9 +479,9 @@ typedef union {
 } dwc2_channel_tsize_t;
 TU_VERIFY_STATIC(sizeof(dwc2_channel_tsize_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t num        : 16; // 0..15 Frame number
     uint32_t remainning : 16; // 16..31 Frame remaining
   };
@@ -489,7 +489,7 @@ typedef union {
 TU_VERIFY_STATIC(sizeof(dwc2_hfnum_t) == 4, "incorrect size");
 
 // Host Channel
-typedef struct {
+typedef struct __attribute__((scalar_storage_order("little-endian"))) {
   volatile uint32_t hcchar;       // 500 + 20*ch Host Channel Characteristics
   volatile uint32_t hcsplt;       // 504 + 20*ch Host Channel Split Control
   volatile uint32_t hcint;        // 508 + 20*ch Host Channel Interrupt
@@ -503,9 +503,9 @@ typedef struct {
 //--------------------------------------------------------------------
 // Device Register Bitfield
 //--------------------------------------------------------------------
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t speed                    : 2; // 0..1 Speed
     uint32_t nzsts_out_handshake      : 1; // 2 Non-zero-length status OUT handshake
     uint32_t en_32khz_suspsend        : 1; // 3 Enable 32-kHz SUSPEND mode
@@ -524,9 +524,9 @@ typedef union {
 } dwc2_dcfg_t;
 TU_VERIFY_STATIC(sizeof(dwc2_dcfg_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t remote_wakeup_signal   : 1; // 0 Remote wakeup signal
     uint32_t soft_disconnet         : 1; // 1 Soft disconnect
     uint32_t gnp_in_nak_status      : 1; // 2 Global non-periodic NAK IN status
@@ -549,9 +549,9 @@ typedef union {
 } dwc2_dctl_t;
 TU_VERIFY_STATIC(sizeof(dwc2_dctl_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t suspend_status : 1; // 0 Suspend status
     uint32_t enum_speed     : 2; // 1..2 Enumerated speed
     uint32_t erratic_err    : 1; // 3 Erratic error
@@ -563,9 +563,9 @@ typedef union {
 } dwc2_dsts_t;
 TU_VERIFY_STATIC(sizeof(dwc2_dsts_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t xfer_complete       : 1; // 0 Transfer complete
     uint32_t disabled            : 1; // 1 Endpoint disabled
     uint32_t ahb_err             : 1; // 2 AHB error
@@ -586,9 +586,9 @@ typedef union {
 } dwc2_diepint_t;
 TU_VERIFY_STATIC(sizeof(dwc2_diepint_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t mps                : 11; // 0..10 Maximum packet size, EP0 only use 2 bits
     uint32_t next_ep            : 4;  // 11..14 Next endpoint number
     uint32_t active             : 1;  // 15 Active
@@ -608,9 +608,9 @@ typedef union {
 } dwc2_depctl_t;
 TU_VERIFY_STATIC(sizeof(dwc2_depctl_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t xfer_complete      : 1; // 0 Transfer complete
     uint32_t disabled           : 1; // 1 Endpoint disabled
     uint32_t ahb_err            : 1; // 2 AHB error
@@ -632,9 +632,9 @@ typedef union {
 } dwc2_doepint_t;
 TU_VERIFY_STATIC(sizeof(dwc2_doepint_t) == 4, "incorrect size");
 
-typedef union {
+typedef union __attribute__((scalar_storage_order("little-endian"))) {
   uint32_t value;
-  struct TU_ATTR_PACKED {
+  struct TU_ATTR_PACKED __attribute__((scalar_storage_order("little-endian"))) {
     uint32_t xfer_size    : 19; // 0..18 Transfer size in bytes
     uint32_t packet_count : 10; // 19..28 Number of packets
     uint32_t mc_pid       :  2; // 29..30 IN: Multi Count, OUT: PID
@@ -643,7 +643,7 @@ typedef union {
 TU_VERIFY_STATIC(sizeof(dwc2_ep_tsize_t) == 4, "incorrect size");
 
 // Device IN/OUT Endpoint
-typedef struct {
+typedef struct __attribute__((scalar_storage_order("little-endian"))) {
   union {
     volatile uint32_t diepctl;
     volatile uint32_t doepctl;
@@ -674,7 +674,7 @@ TU_VERIFY_STATIC(sizeof(dwc2_dep_t) == 0x20, "incorrect size");
 //--------------------------------------------------------------------
 // CSR Register Map
 //--------------------------------------------------------------------
-typedef struct {
+typedef struct __attribute__((scalar_storage_order("little-endian"))) {
   //------------- Core Global -------------
   volatile uint32_t gotgctl;            // 000 OTG Control and Status
   volatile uint32_t gotgint;            // 004 OTG Interrupt
