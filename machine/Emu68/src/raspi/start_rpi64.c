@@ -349,7 +349,11 @@ static void frf_post_draw(void)
     post_text(x+10,y+25,"RC8 / USB INPUT TEST",cyan);
 #else
 #ifdef FRF_USB_NATIVE_DWC2
+#ifdef FRF_USB_TINYUSB
+    post_text(x+10,y+25,"TINYUSB HOST / PI3 TEST",cyan);
+#else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
+#endif
 #else
     post_text(x+10,y+25,"PI3 BARE METAL / RC8",cyan);
 #endif

@@ -19,6 +19,7 @@ option(FRF_WIFI_SD1_ENUM "Allow runtime opt-in ARM SD1 Arasan SDIO identificatio
 option(FRF_WIFI_HW_PROBE "Pi3A+ SDIO register audit (read only)" OFF)
 option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1" OFF)
 option(FRF_USB_NATIVE_DWC2 "EXPERIMENTAL Pi3 native DWC2 root-port diagnostics; no HID/storage yet" OFF)
+option(FRF_USB_TINYUSB "Experimental Pi3 TinyUSB host integration (no public release)" OFF)
 option(FRF_USB_PASSIVE_TEST "Preserve USPi input and show native DWC2 passive probe on HDMI POST" OFF)
 option(FRF_KBD_ACK_RECOVERY "Recover virtual CIA keyboard if guest SP handshake stalls over 250ms" OFF)
 if(FRF_KBD_ACK_RECOVERY)
@@ -396,9 +397,44 @@ if(FRF_USB_HOST)
         message(FATAL_ERROR "FRF_USB_HOST currently supports Raspberry Pi only")
     endif()
     if(FRF_USB_NATIVE_DWC2)
+        if(FRF_USB_TINYUSB AND NOT AGA_PI3)
+            message(FATAL_ERROR "TinyUSB backend requires Pi 3")
+        endif()
         if(NOT AGA_PI3)
             message(FATAL_ERROR "Native DWC2 phase 1 is only for Pi3 AGA builds (set AGA_PI3=ON)")
         endif()
+        if(FRF_USB_TINYUSB)
+            set(FRF_TUSB ${CMAKE_SOURCE_DIR}/third_party/tinyusb/src)
+            target_sources(Emu68.elf PRIVATE
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_native_keyboard.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_host.c
+                ${FRF_TUSB}/tusb.c
+                ${FRF_TUSB}/common/tusb_fifo.c
+                ${FRF_TUSB}/host/usbh.c
+                ${FRF_TUSB}/host/hub.c
+                ${FRF_TUSB}/class/hid/hid_host.c
+                ${FRF_TUSB}/class/msc/msc_host.c
+                ${FRF_TUSB}/portable/synopsys/dwc2/hcd_dwc2.c
+                ${FRF_TUSB}/portable/synopsys/dwc2/dwc2_common.c)
+            target_include_directories(Emu68.elf PRIVATE
+                ${FRF_TUSB} ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/native ${CMAKE_SOURCE_DIR}/src/frf_usb)
+            target_compile_definitions(Emu68.elf PRIVATE
+                FRF_USB_HOST=1 FRF_USB_NATIVE_DWC2=1 FRF_USB_TINYUSB=1)
+            foreach(FRF_TINYUSB_SRC tusb.c common/tusb_fifo.c host/usbh.c
+                    host/hub.c class/hid/hid_host.c class/msc/msc_host.c
+                    portable/synopsys/dwc2/hcd_dwc2.c
+                    portable/synopsys/dwc2/dwc2_common.c)
+                set_property(SOURCE ${FRF_TUSB}/${FRF_TINYUSB_SRC} APPEND PROPERTY
+                    COMPILE_OPTIONS -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+            endforeach()
+            set_source_files_properties(
+                ${FRF_TUSB}/portable/synopsys/dwc2/hcd_dwc2.c
+                ${FRF_TUSB}/portable/synopsys/dwc2/dwc2_common.c
+                PROPERTIES COMPILE_OPTIONS "-fsso-struct=little-endian;-Wno-error=scalar-storage-order")
+            message(STATUS "Experimental TinyUSB host compiled directly into EMU68AGA")
+        else()
         target_sources(Emu68.elf PRIVATE
             ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2.c
             ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2_pio.c
@@ -407,15 +443,16 @@ if(FRF_USB_HOST)
             ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native.c)
         target_include_directories(Emu68.elf PRIVATE
             ${CMAKE_SOURCE_DIR}/src/frf_usb
-            ${CMAKE_SOURCE_DIR}/src/frf_usb/native)
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native ${CMAKE_SOURCE_DIR}/src/frf_usb)
         target_compile_definitions(Emu68.elf PRIVATE
             FRF_USB_HOST=1 FRF_USB_NATIVE_DWC2=1)
         message(STATUS "FRF native DWC2: NO USPi sources linked; diagnostic ONLY")
+        endif()
     else()
     if(FRF_USB_PASSIVE_TEST)
         target_sources(Emu68.elf PRIVATE
             ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2.c)
-        target_include_directories(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_usb/native)
+        target_include_directories(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_usb/native ${CMAKE_SOURCE_DIR}/src/frf_usb)
         target_compile_definitions(Emu68.elf PRIVATE FRF_USB_PASSIVE_TEST=1)
     endif()
     file(GLOB FRF_USPI_SRC ${CMAKE_SOURCE_DIR}/third_party/uspi/lib/*.c)

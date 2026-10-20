@@ -22,6 +22,7 @@ volatile uint8_t frf_usb_mouse_present;
 volatile uint8_t frf_usb_mouse_seen;
 volatile uint8_t frf_usb_mouse_buttons;
 
+#ifndef FRF_USB_TINYUSB
 static uint32_t mmio_read(void *ctx, uint32_t offset)
 {
     uintptr_t base = (uintptr_t)ctx;
@@ -36,6 +37,7 @@ static void mmio_write(void *ctx, uint32_t offset, uint32_t value)
     *(volatile uint32_t *)(base + offset) = __builtin_bswap32(value);
     __asm__ volatile("dsb oshst" ::: "memory");
 }
+#endif
 static void delay_us(void *ctx, unsigned duration)
 {
     (void)ctx;
@@ -161,6 +163,10 @@ void frf_usb_main(void)
     }
     delay_us(NULL, 100000u);
 
+#ifdef FRF_USB_TINYUSB
+    extern void frf_tinyusb_host_main(void) __attribute__((noreturn));
+    frf_tinyusb_host_main();
+#else
     const struct frf_dwc2_ops ops = {
         mmio_read, mmio_write, delay_us,
         (void *)(uintptr_t)FRF_PI3_DWC2_BASE
@@ -226,4 +232,5 @@ void frf_usb_main(void)
     __asm__ volatile("sev" ::: "memory");
     kprintf("[FRF-NATIVE-USB] Native USB bring-up failed; no HID input; restore known-good kernel8.img if needed\n");
     for (;;) __asm__ volatile("wfe");
+#endif
 }
