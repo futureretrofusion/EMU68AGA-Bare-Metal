@@ -39,9 +39,14 @@ int frf_dwc2_pio_init(const struct frf_dwc2_ops *o)
  wr(o,HPTXFSIZ,(512u<<16)|768u);
  /* 30/60 MHz host PHY clock select for HS PHY, preserve other bits. */
  wr(o,HCFG,rd(o,HCFG)&~3u);
- wr(o,GRSTCTL,B(4));
+ /* DWC2 GRSTCTL bit 4 is TX FIFO flush, bit 5 is RX FIFO flush.
+  * Select TX FIFO 0x10 ("all") only on the TX flush command.
+  * The old code combined the FIFO selection with the RX flush,
+  * leaving stale data in non-periodic and periodic TX FIFOs.
+  */
+ wr(o,GRSTCTL,B(4)|(0x10u<<6));
  if (wait_clear(o,GRSTCTL,B(4))) return -2;
- wr(o,GRSTCTL,B(5)|(0x10u<<6));
+ wr(o,GRSTCTL,B(5));
  if (wait_clear(o,GRSTCTL,B(5))) return -3;
  /* Run DWC2 in programmed-I/O host mode. RXFLVL needs to be unmasked
   * for the host to observe and drain the receive FIFO promptly. */

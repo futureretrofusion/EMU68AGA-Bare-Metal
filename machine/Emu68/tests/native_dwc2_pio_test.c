@@ -11,6 +11,7 @@ enum { HCCHAR=0x500, HCTSIZ=0x510, HCINT=0x508,
 struct mock {
  uint32_t regs[0x1100/4],fifo;
  unsigned phase, fifo_reads, setup_words,rxpending, bytes;
+ unsigned tx_flushed, rx_flushed, flush_order_errors;
  uint8_t device_desc[8];
 };
 static uint32_t readreg(void *context,uint32_t off) {
@@ -30,6 +31,17 @@ static uint32_t readreg(void *context,uint32_t off) {
 }
 static void writereg(void *context,uint32_t off,uint32_t val) {
  struct mock *m=context;
+ if(off==GRSTCTL) {
+     if(val&(1u<<4)){
+         if(((val>>6)&0x1fu)!=0x10u || m->tx_flushed) m->flush_order_errors++;
+         m->tx_flushed++;
+     }
+     if(val&(1u<<5)){
+         if(!m->tx_flushed || m->rx_flushed || (val&(1u<<4))) m->flush_order_errors++;
+         m->rx_flushed++;
+     }
+     return;
+ }
  if(off==HCINT){m->regs[HCCHAR/4] &= ~(1u<<31);m->regs[off/4]=0;return;}
  if(off==FIFO){m->fifo=val;m->setup_words++;return;}
  if(off==HCCHAR){
@@ -50,6 +62,7 @@ int main(void){
  memcpy(m.device_desc,dev,sizeof(dev));
  struct frf_dwc2_ops ops={readreg,writereg,delay,&m};
  assert(frf_dwc2_pio_init(&ops)==0);
+ assert(m.tx_flushed==1 && m.rx_flushed==1 && m.flush_order_errors==0);
  struct frf_dwc2_pio_stats st={0};
  uint8_t got[8]={0};
  int rc=frf_dwc2_pio_get_descriptor(&ops,0,8,1,0,got,8,&st);
