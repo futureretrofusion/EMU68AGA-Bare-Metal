@@ -9,6 +9,7 @@
 
 enum {
     GAHBCFG = 0x008, GUSBCFG = 0x00c, GRSTCTL = 0x010,
+    GHWCFG4 = 0x050, HCFG=0x400,
     GINTSTS = 0x014, GINTMSK = 0x018, GSNPSID = 0x040,
     GHWCFG2 = 0x048, HPRT = 0x440, PCGCCTL = 0xe00
 };
@@ -73,20 +74,44 @@ int frf_dwc2_host_init(const struct frf_dwc2_ops *o)
 {
     struct frf_dwc2_state s;
     if (frf_dwc2_probe(o, &s)) return -1;
-    /* ONLY the native backend calls this, never concurrently with USPi. */
+    /* Standalone DWC2 host, program register-level PHY selection BEFORE
+       soft reset, as in the Synopsys core bring-up model. All MMIO is
+       explicitly little-endian through frf_dwc2_ops. This fixes the old
+       code which forced host first and reset the core with no PHY setup.
+       No USPi implementation or headers are used. */
     wr(o, GINTMSK, 0u);
-    /* Native PIO polling: disable controller DMA as well as global IRQ. */
     wr(o, GAHBCFG, rd(o, GAHBCFG) & ~(BIT(0) | BIT(5)));
-    uint32_t cfg = rd(o, GUSBCFG);
-    wr(o, GUSBCFG, (cfg | FORCE_HOST) & ~FORCE_DEVICE);
-    o->delay_us(o->ctx, 100000);
+
+    const uint32_t hwcfg2=s.hardware_config;
+    const unsigned hsphy=(hwcfg2 >> 6) & 3u;
+    if (hsphy==0u) return -5; /* not a high-speed host PHY */
+    const int use_ulpi=(hsphy==2u);
+    const unsigned width=(rd(o, GHWCFG4)>>14)&3u;
+    const int utmi16=(!use_ulpi && width!=0u);
+    uint32_t cfg=rd(o, GUSBCFG);
+    cfg &= ~(BIT(3)|BIT(4)|BIT(6)|BIT(7)|BIT(17)|BIT(19)|
+             BIT(20)|BIT(21)|BIT(29)|BIT(30));
+    if(use_ulpi) cfg |= BIT(4);
+    if(utmi16) cfg |= BIT(3);
+    wr(o, GUSBCFG, cfg);
+
     if (wait_mask(o, GRSTCTL, AHB_IDLE, AHB_IDLE, 10000)) return -2;
-    wr(o, GRSTCTL, CORE_RESET);
+    wr(o, GRSTCTL, rd(o, GRSTCTL) | CORE_RESET);
     if (wait_mask(o, GRSTCTL, CORE_RESET, 0u, 10000)) return -3;
-    o->delay_us(o->ctx, 100000);
-    wr(o, PCGCCTL, 0u); /* Restart PHY clock. */
-    if (wait_mask(o, GINTSTS, HOST_MODE, HOST_MODE, 10000)) return -4;
-    /* Polling only: no DMA, interrupts or device transfers yet. */
+    if (wait_mask(o, GRSTCTL, AHB_IDLE, AHB_IDLE, 10000)) return -6;
+    o->delay_us(o->ctx, 100);
+
+    cfg=rd(o, GUSBCFG);
+    cfg=(cfg & ~((7u<<0)|(15u<<10)))|
+        (7u<<0)|((utmi16?5u:9u)<<10);
+    wr(o, GUSBCFG, cfg);
+    /* Fully ungate high speed PHY; host mode is selected AFTER reset. */
+    wr(o, PCGCCTL, rd(o,PCGCCTL) & ~15u);
+    wr(o, GUSBCFG, (rd(o,GUSBCFG)|FORCE_HOST) & ~FORCE_DEVICE);
+    if (wait_mask(o, GINTSTS, HOST_MODE, HOST_MODE, 15000)) return -4;
+    wr(o, HCFG, rd(o,HCFG) & ~7u); /* HS enabled, 30/60MHz host clock */
+    wr(o, GAHBCFG, rd(o,GAHBCFG) & ~(BIT(0)|BIT(5)));
+    wr(o, GINTSTS, 0xffffffffu); /* clear stale state */
     wr(o, GINTMSK, 0u);
     return 0;
 }
@@ -101,6 +126,10 @@ int frf_dwc2_port_reset(const struct frf_dwc2_ops *o,
     wr(o, HPRT, (p & ~PRT_W1C) | PRT_POWER);
     o->delay_us(o->ctx, 100000);
     p = rd(o, HPRT);
+    for (unsigned attempt=0; attempt<40u && !(p & PRT_CONNECT); ++attempt) {
+        o->delay_us(o->ctx,10000);
+        p=rd(o,HPRT);
+    }
     if (!(p & PRT_CONNECT)) {
         (void) frf_dwc2_probe(o, s);
         return -3;
