@@ -318,6 +318,11 @@ static void post_row(uint32_t x,uint32_t y,const char *name,
     post_text(x,y,name,0xbdf7u);
     post_text(x+152u,y,state,color);
 }
+#ifdef FRF_USB_PASSIVE_TEST
+static volatile uint32_t post_dwc2_id;
+static volatile uint32_t post_dwc2_rc = ~0u;
+static volatile uint32_t post_key_count;
+#endif
 static void frf_post_draw(void)
 {
     if (__atomic_load_n(&post_stop,__ATOMIC_ACQUIRE)) return;
@@ -334,7 +339,11 @@ static void frf_post_draw(void)
     post_rect(x+w-2,y,2,h,cyan);
     post_rect(x,y+h-2,w,2,cyan);
     post_text(x+10,y+7,"EMU68AGA  SYSTEM POST",white);
+#ifdef FRF_USB_PASSIVE_TEST
+    post_text(x+10,y+25,"RC8 / USB INPUT TEST",cyan);
+#else
     post_text(x+10,y+25,"PI3 BARE METAL / RC8",cyan);
+#endif
     post_rect(x+8,y+44,w-16,1,0x2965u);
 
     post_row(x+10,y+50,"AGA VIDEO",(flags&(1u<<1))?"READY":"WAIT ",
@@ -383,6 +392,21 @@ static void frf_post_draw(void)
     post_text(x+178,y+183,"EV:",white);
     post_dec(x+210,y+183,post_events%100000u,5,post_events?green:amber);
 
+#ifdef FRF_USB_PASSIVE_TEST
+    post_rect(x+8,y+204,w-16,1,0x2965u);
+    post_text(x+10,y+207,"DWC:",white);
+    uint32_t probe_rc=__atomic_load_n(&post_dwc2_rc,__ATOMIC_RELAXED);
+    if (probe_rc==~0u)
+        post_text(x+55,y+207,"WAIT",amber);
+    else if (probe_rc==0) {
+        post_hex(x+55,y+207,__atomic_load_n(&post_dwc2_id,__ATOMIC_RELAXED),8,green);
+    } else {
+        post_text(x+55,y+207,"ERR",amber);
+        post_hex(x+87,y+207,probe_rc,2,amber);
+    }
+    post_text(x+158,y+207,"KEY:",white);
+    post_dec(x+204,y+207,__atomic_load_n(&post_key_count,__ATOMIC_RELAXED)%10000u,4,green);
+#else
     post_rect(x+8,y+204,w-16,1,0x2965u);
     if (post_joy || post_fire)
         post_text(x+10,y+207,"PAD INPUT ACTIVE",green);
@@ -396,10 +420,24 @@ static void frf_post_draw(void)
         post_text(x+10,y+207,"USB RX - TEST BUTTONS",amber);
     else
         post_text(x+10,y+207,"TEST PAD DURING BOOT",cyan);
+#endif
 
     __asm__ volatile("dsb ishst" ::: "memory");
     __atomic_store_n(&post_lock,0u,__ATOMIC_RELEASE);
 }
+#ifdef FRF_USB_PASSIVE_TEST
+void frf_post_native_usb_probe(int rc, uint32_t id)
+{
+    post_dwc2_id=id;
+    post_dwc2_rc=(uint32_t)rc;
+    frf_post_draw();
+}
+void frf_post_native_usb_key(void)
+{
+    __atomic_add_fetch(&post_key_count,1u,__ATOMIC_RELAXED);
+    frf_post_draw();
+}
+#endif
 void frf_post_usb_devices(unsigned kb,unsigned ms,unsigned gp,unsigned msc)
 {
     post_kb=kb;post_ms=ms;post_gp=gp;post_storage=msc;

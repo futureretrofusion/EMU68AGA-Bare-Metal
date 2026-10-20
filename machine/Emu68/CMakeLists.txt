@@ -19,6 +19,7 @@ option(FRF_WIFI_SD1_ENUM "Allow runtime opt-in ARM SD1 Arasan SDIO identificatio
 option(FRF_WIFI_HW_PROBE "Pi3A+ SDIO register audit (read only)" OFF)
 option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1" OFF)
 option(FRF_USB_NATIVE_DWC2 "EXPERIMENTAL Pi3 native DWC2 root-port diagnostics; no HID/storage yet" OFF)
+option(FRF_USB_PASSIVE_TEST "Preserve USPi input and show native DWC2 passive probe on HDMI POST" OFF)
 if(FRF_USB_NATIVE_DWC2 AND NOT FRF_USB_HOST)
     message(FATAL_ERROR "FRF_USB_NATIVE_DWC2 requires FRF_USB_HOST=ON")
 endif()
@@ -397,6 +398,12 @@ if(FRF_USB_HOST)
             FRF_USB_HOST=1 FRF_USB_NATIVE_DWC2=1)
         message(STATUS "FRF native DWC2: NO USPi sources linked; diagnostic ONLY")
     else()
+    if(FRF_USB_PASSIVE_TEST)
+        target_sources(Emu68.elf PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2.c)
+        target_include_directories(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_usb/native)
+        target_compile_definitions(Emu68.elf PRIVATE FRF_USB_PASSIVE_TEST=1)
+    endif()
     file(GLOB FRF_USPI_SRC ${CMAKE_SOURCE_DIR}/third_party/uspi/lib/*.c)
     set(FRF_USB_ENV
         ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_uspi_env.c

@@ -8,6 +8,23 @@
 #include "frf_usb.h"
 #include "frf_usb_mass.h"
 #include "frf_pad_diag.h"
+#ifdef FRF_USB_PASSIVE_TEST
+#include "frf_dwc2.h"
+extern void frf_post_native_usb_probe(int rc,uint32_t id);
+extern void frf_post_native_usb_key(void);
+static uint32_t native_mmio_read(void *ctx,uint32_t reg)
+{
+    return __builtin_bswap32(*(volatile uint32_t *)((uintptr_t)ctx+reg));
+}
+static void native_mmio_noop(void *ctx,uint32_t reg,uint32_t v)
+{
+    (void)ctx; (void)reg; (void)v;
+}
+static void native_delay_noop(void *ctx,unsigned usec)
+{
+    (void)ctx; (void)usec;
+}
+#endif
 extern volatile struct frf_um_shared *frf_um_host;
 #include <uspi/types.h>
 #include <uspi.h>
@@ -214,6 +231,9 @@ static void emit_key(uint8_t raw, int up)
 
 static void key_raw(unsigned char mod, const unsigned char keys[6])
 {
+#ifdef FRF_USB_PASSIVE_TEST
+    frf_post_native_usb_key();
+#endif
     /* USB modifier bits: LCtrl,LShift,LAlt,LGUI,RCtrl,RShift,RAlt,RGUI. */
     static const uint8_t modraw[8] = {
         0x63, 0x60, 0x64, 0x66, 0x63, 0x61, 0x65, 0x67
@@ -392,6 +412,18 @@ void frf_usb_main(void)
     frf_boot_stage(6);
     kprintf("[USB] FRF v0.10.15 COHERENT-MMU: v0.9.3 keyboard base + real wire timing\n");
 
+#ifdef FRF_USB_PASSIVE_TEST
+    {
+        struct frf_dwc2_state state;
+        const struct frf_dwc2_ops ops = {
+            native_mmio_read,native_mmio_noop,native_delay_noop,
+            (void *)(uintptr_t)0x3f980000u
+        };
+        /* Read-only: no reset, register writes or USB stack takeover. */
+        int native_rc=frf_dwc2_probe(&ops,&state);
+        frf_post_native_usb_probe(native_rc,state.core_id);
+    }
+#endif
     frf_boot_stage(7);
     if (!frf_uspi_env_init()) {
         kprintf("[USB] environment init failed; CPU1 parked\n");
