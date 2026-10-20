@@ -323,6 +323,10 @@ static volatile uint32_t post_dwc2_id;
 static volatile uint32_t post_dwc2_rc = ~0u;
 static volatile uint32_t post_key_count;
 #endif
+#ifdef FRF_USB_NATIVE_DWC2
+static volatile uint32_t native_usb_stage, native_usb_rc;
+static volatile uint32_t native_usb_detail, native_usb_aux;
+#endif
 static void frf_post_draw(void)
 {
     if (__atomic_load_n(&post_stop,__ATOMIC_ACQUIRE)) return;
@@ -342,7 +346,11 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_PASSIVE_TEST
     post_text(x+10,y+25,"RC8 / USB INPUT TEST",cyan);
 #else
+#ifdef FRF_USB_NATIVE_DWC2
+    post_text(x+10,y+25,"NATIVE USB PI3 / MMIO FIX",cyan);
+#else
     post_text(x+10,y+25,"PI3 BARE METAL / RC8",cyan);
+#endif
 #endif
     post_rect(x+8,y+44,w-16,1,0x2965u);
 
@@ -354,6 +362,21 @@ static void frf_post_draw(void)
              (flags&(1u<<9))?green:amber);
 
     post_rect(x+8,y+106,w-16,1,0x2965u);
+#ifdef FRF_USB_NATIVE_DWC2
+    /* On-screen checkpoints: 1 firmware power, 2 probe, 3 host init,
+       4 root port, 5 FIFO, 6 USB enumeration, 7 HID ready. */
+    post_text(x+10,y+111,"USB STAGE:",white);
+    post_dec(x+105,y+111,native_usb_stage,2,cyan);
+    post_text(x+156,y+111,"RC:",white);
+    post_hex(x+188,y+111,native_usb_rc,8,native_usb_rc?amber:green);
+    post_text(x+10,y+135,"DETAIL:",white);
+    post_hex(x+74,y+135,native_usb_detail,8,cyan);
+    post_text(x+10,y+159,"AUX:",white);
+    post_hex(x+60,y+159,native_usb_aux,8,cyan);
+    post_text(x+10,y+183,"0=OK / NEG=ERROR",white);
+    post_rect(x+8,y+204,w-16,1,0x2965u);
+    post_text(x+10,y+207,"NO USPI - NATIVE USB TEST",amber);
+#else
     post_text(x+10,y+111,"USB KB/MS/GP/MSC:",white);
     uint32_t a=__atomic_load_n(&post_kb,__ATOMIC_RELAXED);
     uint32_t b=__atomic_load_n(&post_ms,__ATOMIC_RELAXED);
@@ -421,6 +444,7 @@ static void frf_post_draw(void)
     else
         post_text(x+10,y+207,"TEST PAD DURING BOOT",cyan);
 #endif
+#endif /* FRF_USB_NATIVE_DWC2 */
 
     __asm__ volatile("dsb ishst" ::: "memory");
     __atomic_store_n(&post_lock,0u,__ATOMIC_RELEASE);
@@ -435,6 +459,17 @@ void frf_post_native_usb_probe(int rc, uint32_t id)
 void frf_post_native_usb_key(void)
 {
     __atomic_add_fetch(&post_key_count,1u,__ATOMIC_RELAXED);
+    frf_post_draw();
+}
+#endif
+#ifdef FRF_USB_NATIVE_DWC2
+void frf_post_native_usb_stage(unsigned stage, int rc,
+                               uint32_t detail, uint32_t aux)
+{
+    native_usb_stage=stage;
+    native_usb_rc=(uint32_t)rc;
+    native_usb_detail=detail;
+    native_usb_aux=aux;
     frf_post_draw();
 }
 #endif
