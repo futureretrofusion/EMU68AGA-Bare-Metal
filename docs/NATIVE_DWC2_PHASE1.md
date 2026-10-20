@@ -108,3 +108,31 @@ User retracted prior claim that isolated joypad polling cured typing. Source ins
 
 ## Native USB host development status (20 October 2026)
 The native-only DWC2 build now includes a bounded polling PIO packet engine, a root-port control transfer sequence, device/configuration descriptors, SET_ADDRESS, SET_CONFIGURATION, and Boot HID keyboard/mouse interrupt polling, with keyboard events feeding virtual CIA. This path is for directly connected USB HID devices; it does NOT yet enumerate high-speed hubs or perform translator split transactions required for most Pi3B USB ports. No native gamepads, XInput, hotplug or mass-storage BOT yet. Never publish as a complete distro. Linux mock control-transfer and HID translation tests PASS; Pi3 BE native firmware compiles and links but has not been physically validated. Virtual CIA keyboard now supports optional 250ms lost-ACK recovery (-DFRF_KBD_ACK_RECOVERY=ON) plus high-water, drop, ACK and timeout counters; also unverified on hardware. Previous diagnostic-only description above is historical. Distribution guard deliberately rejects release builds.
+
+## Hardware-test failure and source corrections — 21 October 2026
+User reports **no USB devices working at all** with the native DWC2 firmware.
+Treat that hardware test as authoritative. Earlier mock tests and successful
+compilation did not validate USB operation. The native USB build is withdrawn
+from distribution consideration.
+
+Confirmed source defects corrected on this branch:
+- DWC2 register base used physical `0x3F980000`, but EMU68Aga uses
+  virtual peripheral base `0xF2000000` so native DWC2 must use
+  `0xF2980000`; the passive probe was corrected too.
+- Native driver omitted the Pi firmware mailbox USB-HCD power-on request
+  (VC device 3). A bounded standalone mailbox request is now present.
+- Root-port writes previously risked disabling an enabled port because
+  HPRT write-one-clear masking omitted the enable and suspend bits.
+- Native PIO driver lacked receive FIFO interrupt/status unmasking and
+  explicit DMA-off mode. Both have been updated.
+- Native boot POST now displays controller stage, return code, register
+  detail and auxiliary value on HDMI, with no serial dependency.
+
+**None of these corrections has been rebuilt or hardware tested** because
+Studio Main tunnel disconnected before the corrections were made. No new
+`kernel8.img` was produced or validated. Rebuild with the pre-existing Pi3
+native CMake configuration and inspect HDMI boot POST before making claims.
+The normal Pi3B USB path goes through a high-speed internal hub, for which
+this independent USB driver still lacks hub enumeration and split
+transactions. HID, gamepads and mass storage remain blocked behind it.
+The distribution-build safety gate must remain enabled.
