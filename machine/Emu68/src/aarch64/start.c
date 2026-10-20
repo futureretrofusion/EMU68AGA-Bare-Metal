@@ -474,10 +474,22 @@ void secondary_boot(void)
     __atomic_clear(&boot_lock, __ATOMIC_RELEASE);
 
 #if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
+#ifdef FRF_USB_NATIVE_DWC2
+    /* Native USB core must not miss its one-time startup because AGA memory
+       was published after CPU1 passed this point. The worker itself waits
+       for the CPU0 USB boot gate before touching registers or mailbox. */
+    if (cpu_id == 1) {
+        extern void frf_post_native_usb_cpu1_seen(unsigned chip_base_set);
+        extern void frf_usb_main(void);
+        frf_post_native_usb_cpu1_seen(aga_chip_base != 0u);
+        frf_usb_main();
+    }
+#else
     if (cpu_id == 1 && aga_chip_base) {
         extern void frf_usb_main(void);
         frf_usb_main();
     }
+#endif
 #endif
 
 #ifdef AGA_PISTORM

@@ -326,6 +326,8 @@ static volatile uint32_t post_key_count;
 #ifdef FRF_USB_NATIVE_DWC2
 static volatile uint32_t native_usb_stage, native_usb_rc;
 static volatile uint32_t native_usb_detail, native_usb_aux;
+static volatile uint32_t native_usb_cpu1_seen, native_usb_cpu1_chip;
+
 #endif
 static void frf_post_draw(void)
 {
@@ -347,7 +349,7 @@ static void frf_post_draw(void)
     post_text(x+10,y+25,"RC8 / USB INPUT TEST",cyan);
 #else
 #ifdef FRF_USB_NATIVE_DWC2
-    post_text(x+10,y+25,"NATIVE USB PI3 / MMIO FIX",cyan);
+    post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
 #else
     post_text(x+10,y+25,"PI3 BARE METAL / RC8",cyan);
 #endif
@@ -358,8 +360,22 @@ static void frf_post_draw(void)
              (flags&(1u<<1))?green:amber);
     post_row(x+10,y+67,"ROM + MEMORY",(flags&(1u<<2))?"READY":"WAIT ",
              (flags&(1u<<2))?green:amber);
+#ifdef FRF_USB_NATIVE_DWC2
+    const uint32_t ns=__atomic_load_n(&native_usb_stage,__ATOMIC_ACQUIRE);
+    const uint32_t nr=__atomic_load_n(&native_usb_rc,__ATOMIC_ACQUIRE);
+    const uint32_t cpu1=__atomic_load_n(&native_usb_cpu1_seen,__ATOMIC_ACQUIRE);
+    const char *ns_status = (ns>=7u && nr==0u)?"HID OK":
+                            (nr!=0u)?"ERROR":
+                            (ns>=6u)?"SCAN":
+                            (ns>=3u)?"DWC2":
+                            (ns>=1u)?"POWER":
+                            cpu1?"CORE1":"NO CPU1";
+    post_row(x+10,y+84,"USB HOST",ns_status,
+             (ns>=7u&&nr==0u)?green:amber);
+#else
     post_row(x+10,y+84,"USB HOST",(flags&(1u<<9))?"READY":"WAIT ",
              (flags&(1u<<9))?green:amber);
+#endif
 
     post_rect(x+8,y+106,w-16,1,0x2965u);
 #ifdef FRF_USB_NATIVE_DWC2
@@ -373,7 +389,12 @@ static void frf_post_draw(void)
     post_hex(x+74,y+135,native_usb_detail,8,cyan);
     post_text(x+10,y+159,"AUX:",white);
     post_hex(x+60,y+159,native_usb_aux,8,cyan);
-    post_text(x+10,y+183,"0=OK / NEG=ERROR",white);
+    post_text(x+10,y+183,"CPU1:",white);
+    post_dec(x+62,y+183,cpu1,1,cpu1?green:amber);
+    post_text(x+102,y+183,"AGA:",white);
+    post_dec(x+143,y+183,native_usb_cpu1_chip,1,cyan);
+    post_text(x+175,y+183,"USB RC:",white);
+    post_hex(x+233,y+183,nr,8,nr?amber:green);
     post_rect(x+8,y+204,w-16,1,0x2965u);
     post_text(x+10,y+207,"NO USPI - NATIVE USB TEST",amber);
 #else
@@ -463,6 +484,12 @@ void frf_post_native_usb_key(void)
 }
 #endif
 #ifdef FRF_USB_NATIVE_DWC2
+void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
+{
+    __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
+    native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
 void frf_post_native_usb_stage(unsigned stage, int rc,
                                uint32_t detail, uint32_t aux)
 {

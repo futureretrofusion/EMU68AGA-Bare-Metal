@@ -219,11 +219,11 @@ void frf_usb_main(void)
         }
     }
     /* Keep native failure information visible before guest video takeover. */
-    delay_us(NULL,800000u);
+    delay_us(NULL,2500000u); /* keep native failure stage on HDMI for tester */
     frf_boot_stage(10);
     /* 'ready' here means diagnostics finished, NOT device enumeration. */
     __atomic_store_n(&frf_usb_boot_ready, 1u, __ATOMIC_RELEASE);
     __asm__ volatile("sev" ::: "memory");
-    kprintf("[FRF-NATIVE-USB] Phase 1 only: no keyboard/mouse/gamepad/storage; revert to USPi backend for normal use\n");
+    kprintf("[FRF-NATIVE-USB] Native USB bring-up failed; no HID input; restore known-good kernel8.img if needed\n");
     for (;;) __asm__ volatile("wfe");
 }
