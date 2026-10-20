@@ -140,8 +140,12 @@ void frf_usb_main(void)
         __asm__ volatile("wfe");
     frf_boot_stage(6);
 
+    extern void frf_post_native_usb_stage(unsigned stage, int rc,
+                                          uint32_t detail, uint32_t aux);
+    frf_post_native_usb_stage(1,0,FRF_PI3_DWC2_BASE,0);
     uint32_t usb_power_state = 0;
     int power_rc = native_usb_power_on(&usb_power_state);
+    frf_post_native_usb_stage(1,power_rc,usb_power_state,FRF_PI3_DWC2_BASE);
     kprintf("[FRF-NATIVE-USB] firmware power rc=%d state=%08x\\n",
             power_rc, usb_power_state);
     if (power_rc != 0) {
@@ -159,14 +163,18 @@ void frf_usb_main(void)
     };
     struct frf_dwc2_state s;
     int rc = frf_dwc2_probe(&ops, &s);
+    frf_post_native_usb_stage(2,rc,s.core_id,s.hardware_config);
     kprintf("[FRF-NATIVE-USB] Pi3 DWC2 probe rc=%d id=%08x hwcfg2=%08x host=%u\n",
             rc, s.core_id, s.hardware_config, s.host_mode);
     if (rc == 0) {
         rc = frf_dwc2_host_init(&ops);
+        frf_post_native_usb_stage(3,rc,
+                     ops.read(ops.ctx,0x00cu),ops.read(ops.ctx,0x008u));
         kprintf("[FRF-NATIVE-USB] exclusive host init rc=%d\n", rc);
     }
     if (rc == 0) {
         rc = frf_dwc2_port_reset(&ops, &s);
+        frf_post_native_usb_stage(4,rc,s.port_status,s.port_speed);
         kprintf("[FRF-NATIVE-USB] root port rc=%d raw=%08x connected=%u enabled=%u speed=%u\n",
                 rc, s.port_status, s.port_connected, s.port_enabled, s.port_speed);
     }
@@ -175,14 +183,21 @@ void frf_usb_main(void)
          * normally has an HS hub on the root port. This is *not* enumeration
          * of the keyboard behind that hub; no splits, no HID class yet. */
         int fifo_rc=frf_dwc2_pio_init(&ops);
+        frf_post_native_usb_stage(5,fifo_rc,
+                          ops.read(ops.ctx,0x024u),ops.read(ops.ctx,0x028u));
         kprintf("[FRF-NATIVE-USB] PIO host FIFO rc=%d\n",fifo_rc);
         if (fifo_rc==0) {
             static struct frf_native_hid hid;
             int device_rc=frf_native_hid_enumerate(&ops,&hid);
+            frf_post_native_usb_stage(6,device_rc,
+                ((uint32_t)hid.have_keyboard<<16)|hid.have_mouse,
+                 hid.stats.attempts);
             kprintf("[FRF-NATIVE-USB] root enumeration rc=%d kb=%u mouse=%u USB packets=%u RX=%u\n",
                     device_rc,hid.have_keyboard,hid.have_mouse,
                     hid.stats.attempts,hid.stats.rx_bytes);
             if(device_rc==0 && hid.configured) {
+                frf_post_native_usb_stage(7,0,
+                     ((uint32_t)hid.have_keyboard<<16)|hid.have_mouse,0);
                 frf_boot_stage(9);
                 frf_boot_stage(10);
                 __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
@@ -196,6 +211,8 @@ void frf_usb_main(void)
             }
         }
     }
+    /* Keep native failure information visible before guest video takeover. */
+    delay_us(NULL,800000u);
     frf_boot_stage(10);
     /* 'ready' here means diagnostics finished, NOT device enumeration. */
     __atomic_store_n(&frf_usb_boot_ready, 1u, __ATOMIC_RELEASE);
