@@ -427,6 +427,19 @@ static uint8_t  frf_kbd_wait_ack;
 static uint8_t  frf_kbd_ack_active;
 static uint64_t frf_kbd_ack_start;
 static uint64_t frf_kbd_next_tick;
+/* CIA keyboard backpressure telemetry. Read through atomic snapshot API. */
+static volatile uint32_t frf_kbd_peak, frf_kbd_recover, frf_kbd_ack_ok;
+static uint64_t frf_kbd_ack_deadline;
+void frf_vcia_keyboard_stats(uint32_t *depth, uint32_t *peak,
+                             uint32_t *drops, uint32_t *timeouts,
+                             uint32_t *acks)
+{
+    if (depth) *depth = (uint32_t)((frf_kbd_qw - frf_kbd_qr) & (FRF_KBD_QN - 1u));
+    if (peak) *peak = __atomic_load_n(&frf_kbd_peak, __ATOMIC_RELAXED);
+    if (drops) *drops = __atomic_load_n(&frf_kbd_drop, __ATOMIC_RELAXED);
+    if (timeouts) *timeouts = __atomic_load_n(&frf_kbd_recover, __ATOMIC_RELAXED);
+    if (acks) *acks = __atomic_load_n(&frf_kbd_ack_ok, __ATOMIC_RELAXED);
+}
 
 void frf_vcia_keyboard_raw(uint8_t raw)
 {
@@ -438,6 +451,8 @@ void frf_vcia_keyboard_raw(uint8_t raw)
     }
     frf_kbd_q[frf_kbd_qw] = raw;
     frf_kbd_qw = n;
+    uint32_t pending = (uint32_t)((frf_kbd_qw - frf_kbd_qr) & (FRF_KBD_QN - 1u));
+    if (pending > frf_kbd_peak) frf_kbd_peak = pending;
     frf_vcia_unlock();
 }
 
@@ -565,10 +580,28 @@ static void frf_vcia_keyboard_service_locked(void)
         frf_kbd_tx_active = 0;
         frf_kbd_wait_ack = 1;
         frf_kbd_ack_active = 0;
+        /* Normal Amiga SP handshake occurs quickly. A missed handshake
+           must never freeze this queue forever. Recovery is bounded and
+           tracks failures, rather than silently reordering key transitions.
+           This protects future HID backend as well as the existing one. */
+        frf_kbd_ack_deadline = now + (freq / 4u); /* 250 ms */
         frf_vcia_publish_irq_locked(&frf_ciaa, 1);
         return;
     }
 
+    if (frf_kbd_wait_ack && frf_kbd_ack_deadline &&
+        (int64_t)(now - frf_kbd_ack_deadline) >= 0) {
+        ++frf_kbd_recover;
+#ifndef FRF_KBD_ACK_RECOVERY
+        frf_kbd_ack_deadline = 0; /* report once, not each service tick */
+#endif
+#ifdef FRF_KBD_ACK_RECOVERY
+        frf_kbd_wait_ack = 0;
+        frf_kbd_ack_active = 0;
+        frf_kbd_ack_deadline = 0;
+        frf_kbd_next_tick = now;
+#endif
+    }
     if (frf_kbd_wait_ack || frf_kbd_qr == frf_kbd_qw)
         return;
     if (frf_kbd_next_tick && (int64_t)(now - frf_kbd_next_tick) < 0)
@@ -807,6 +840,8 @@ static void frf_vcia_write_one_locked(int is_a, unsigned r, uint8_t v)
                 frf_kbd_next_tick = ((int64_t)(earliest - now) > 0) ? earliest : now;
                 frf_kbd_wait_ack = 0;
                 frf_kbd_ack_active = 0;
+                frf_kbd_ack_deadline = 0;
+                ++frf_kbd_ack_ok;
             }
         }
 

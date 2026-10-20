@@ -18,6 +18,23 @@ option(FRF_NET_Z2_BRIDGE "Expose virtual FRF Ethernet shared-memory board (no ra
 option(FRF_WIFI_SD1_ENUM "Allow runtime opt-in ARM SD1 Arasan SDIO identification (no firmware/WPA)" OFF)
 option(FRF_WIFI_HW_PROBE "Pi3A+ SDIO register audit (read only)" OFF)
 option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1" OFF)
+option(FRF_USB_NATIVE_DWC2 "EXPERIMENTAL Pi3 native DWC2 root-port diagnostics; no HID/storage yet" OFF)
+option(FRF_USB_PASSIVE_TEST "Preserve USPi input and show native DWC2 passive probe on HDMI POST" OFF)
+option(FRF_KBD_ACK_RECOVERY "Recover virtual CIA keyboard if guest SP handshake stalls over 250ms" OFF)
+if(FRF_KBD_ACK_RECOVERY)
+    add_compile_definitions(FRF_KBD_ACK_RECOVERY=1)
+endif()
+option(FRF_DISTRIBUTION_BUILD "Require independent, distribution-auditable USB backend" OFF)
+if(FRF_DISTRIBUTION_BUILD)
+    if(NOT FRF_USB_HOST OR NOT FRF_USB_NATIVE_DWC2)
+        message(FATAL_ERROR "FRF_DISTRIBUTION_BUILD refuses USB-disabled or USPi-backed firmware: independent USB required")
+    endif()
+    message(FATAL_ERROR "FRF_DISTRIBUTION_BUILD is blocked: native DWC2 has no real USB enumeration, HID input, or mass storage yet. Do not distribute as functional USB firmware.")
+endif()
+
+if(FRF_USB_NATIVE_DWC2 AND NOT FRF_USB_HOST)
+    message(FATAL_ERROR "FRF_USB_NATIVE_DWC2 requires FRF_USB_HOST=ON")
+endif()
 option(FRF_RTG_HANDOFF "Respect external Picasso96 HVS display list in standalone AGA" OFF)
 
 if(NOT EMU68_SKIP_PPC_ROM)
@@ -378,6 +395,29 @@ if(FRF_USB_HOST)
     if(NOT "${TARGET}" STREQUAL "raspi64")
         message(FATAL_ERROR "FRF_USB_HOST currently supports Raspberry Pi only")
     endif()
+    if(FRF_USB_NATIVE_DWC2)
+        if(NOT AGA_PI3)
+            message(FATAL_ERROR "Native DWC2 phase 1 is only for Pi3 AGA builds (set AGA_PI3=ON)")
+        endif()
+        target_sources(Emu68.elf PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2_pio.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native_hid.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_native_keyboard.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native.c)
+        target_include_directories(Emu68.elf PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/frf_usb
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native)
+        target_compile_definitions(Emu68.elf PRIVATE
+            FRF_USB_HOST=1 FRF_USB_NATIVE_DWC2=1)
+        message(STATUS "FRF native DWC2: NO USPi sources linked; diagnostic ONLY")
+    else()
+    if(FRF_USB_PASSIVE_TEST)
+        target_sources(Emu68.elf PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2.c)
+        target_include_directories(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_usb/native)
+        target_compile_definitions(Emu68.elf PRIVATE FRF_USB_PASSIVE_TEST=1)
+    endif()
     file(GLOB FRF_USPI_SRC ${CMAKE_SOURCE_DIR}/third_party/uspi/lib/*.c)
     set(FRF_USB_ENV
         ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_uspi_env.c
@@ -399,6 +439,7 @@ if(FRF_USB_HOST)
     )
     set_source_files_properties(${CMAKE_SOURCE_DIR}/src/frf_usb/frf_usb.c
         PROPERTIES COMPILE_FLAGS "-Wno-error")
+    endif()
 endif()
 
 # AGA-PISTORM: virtual AGA chipset core + glue
