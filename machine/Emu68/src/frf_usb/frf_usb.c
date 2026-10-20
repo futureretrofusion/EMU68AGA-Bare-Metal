@@ -417,7 +417,7 @@ void frf_usb_main(void)
         struct frf_dwc2_state state;
         const struct frf_dwc2_ops ops = {
             native_mmio_read,native_mmio_noop,native_delay_noop,
-            (void *)(uintptr_t)0x3f980000u
+            (void *)(uintptr_t)0xf2980000u /* EMU68 Pi3 virtual MMIO alias */
         };
         /* Read-only: no reset, register writes or USB stack takeover. */
         int native_rc=frf_dwc2_probe(&ops,&state);
