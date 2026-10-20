@@ -102,3 +102,6 @@ EMU68AGA port is **not implemented**.
 
 ## Proven input scheduling requirement
 Hardware testing: separating keyboard reads from gamepad reads eliminated typing lag and repeated keys. The replacement host driver MUST dispatch keyboard interrupt-IN completions without waiting for gamepad polling, decoding, retries, or mass storage. Keep bounded separate queues for keyboard, mouse and gamepad. Regression: rapid typing in AmigaOS while holding gamepad buttons must show no lag, repeat or missing release.
+
+## New confirmed symptom: keyboard lag accumulates over time
+User retracted prior claim that isolated joypad polling cured typing. Source inspection: machine/Emu68/src/aarch64/vectors.c has 64-entry frf_kbd_q, sends each event only after prior keyboard SP handshake and contains no timeout for frf_kbd_wait_ack. A stalled/missed guest handshake can leave a growing queue with drop-oldest overflow. This is an identified potential cause, NOT a proven root cause. Before release instrument queue occupancy/high water/drop count/ACK age, validate guest handshake and avoid an unchecked indefinite stall. Replacing DWC2 alone will not fix this CIA-side issue. Do not mark distribution ready until sustained typing test passes.
