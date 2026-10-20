@@ -23,9 +23,10 @@ enum {
 #define PRT_ENABLE BIT(2)
 #define PRT_EN_CHANGED BIT(3)
 #define PRT_OVERCURRENT_CHANGED BIT(5)
+#define PRT_SUSPEND BIT(7)
 #define PRT_RESET BIT(8)
 #define PRT_POWER BIT(12)
-#define PRT_W1C (PRT_CONN_CHANGED | PRT_EN_CHANGED | PRT_OVERCURRENT_CHANGED)
+#define PRT_W1C (PRT_CONN_CHANGED | PRT_ENABLE | PRT_EN_CHANGED | PRT_OVERCURRENT_CHANGED | PRT_SUSPEND)
 
 static int valid(const struct frf_dwc2_ops *o)
 {
@@ -74,7 +75,8 @@ int frf_dwc2_host_init(const struct frf_dwc2_ops *o)
     if (frf_dwc2_probe(o, &s)) return -1;
     /* ONLY the native backend calls this, never concurrently with USPi. */
     wr(o, GINTMSK, 0u);
-    wr(o, GAHBCFG, rd(o, GAHBCFG) & ~BIT(0));
+    /* Native PIO polling: disable controller DMA as well as global IRQ. */
+    wr(o, GAHBCFG, rd(o, GAHBCFG) & ~(BIT(0) | BIT(5)));
     uint32_t cfg = rd(o, GUSBCFG);
     wr(o, GUSBCFG, (cfg | FORCE_HOST) & ~FORCE_DEVICE);
     o->delay_us(o->ctx, 100000);
