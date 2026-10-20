@@ -89,3 +89,13 @@ on physical hardware.
 ## Keyboard-first follow-up
 
 Added a separate, tested USB HID boot keyboard report decoder and an actual CIA-A raw-key output adapter. Handles make/break, modifiers, rollover, and USB HID usage translation. **No keyboard transport is implemented yet**, so this function is not called by hardware. To obtain real keys requires enumerating the Pi 3 USB hub and scheduling HID interrupt-IN transactions (with split transactions for full/low-speed devices). Research identified TinyUSB MIT host stack with DWC2 hub/split support. Reference checkout: `~/Downloads/FRF_TINYUSB_REFERENCE` (upstream commit 2f675ab). Integration and target support are not yet proven.
+
+## Distribution release gate (20 October 2026)
+`FRF_DISTRIBUTION_BUILD=ON` deliberately stops CMake configuration until
+independent USB enumeration, HID input and storage are implemented and
+hardware validated. Setting `FRF_USB_NATIVE_DWC2=ON` by itself produces
+a **diagnostic-only** image. The USB keyboard bridge test still links USPi.
+Neither has been verified as an independently licensed, functional USB
+distribution image. Do not remove this guard to advertise a release.
+TinyUSB reference is upstream MIT licensed, but its Pi 3 standalone
+EMU68AGA port is **not implemented**.
