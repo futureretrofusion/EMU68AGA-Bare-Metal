@@ -111,19 +111,23 @@ static int native_usb_power_on(uint32_t *state_out)
     uintptr_t phys = mmu_virt2phys((uintptr_t)req);
     if (phys == (uintptr_t)-1 || (phys & 15u)) return -1;
     uint32_t address = (uint32_t)phys & ~15u;
-    unsigned elapsed = 0;
+    uint64_t hz, tnow, start;
+    __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz));
+    __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(start));
     while (native_mbox_read(FRF_MBOX_STATUS) & FRF_MBOX_FULL) {
-        if (++elapsed >= 1000000u) return -2;
+        __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(tnow));
+        if (tnow-start > hz) return -2; /* 1 second bounded wait */
         __asm__ volatile("yield");
     }
     native_mbox_write(FRF_MBOX_WRITE, address | 8u);
-    elapsed = 0;
+    __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(start));
     for (;;) {
         if (!(native_mbox_read(FRF_MBOX_STATUS) & FRF_MBOX_EMPTY)) {
             uint32_t reply = native_mbox_read(FRF_MBOX_READ);
             if ((reply & 15u) == 8u && (reply & ~15u) == address) break;
         }
-        if (++elapsed >= 1000000u) return -3;
+        __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(tnow));
+        if (tnow-start > hz*2u) return -3; /* 2 seconds */
         __asm__ volatile("yield");
     }
     arm_dcache_invalidate((uintptr_t)req, sizeof native_usb_power_request);
@@ -188,10 +192,13 @@ void frf_usb_main(void)
         kprintf("[FRF-NATIVE-USB] PIO host FIFO rc=%d\n",fifo_rc);
         if (fifo_rc==0) {
             static struct frf_native_hid hid;
-            int device_rc=frf_native_hid_enumerate(&ops,&hid);
+            int device_rc=frf_native_hid_enumerate(&ops,&hid,s.port_speed);
             frf_post_native_usb_stage(6,device_rc,
-                ((uint32_t)hid.have_keyboard<<16)|hid.have_mouse,
-                 hid.stats.attempts);
+                ((uint32_t)hid.root_hub_ports<<24)|
+                ((uint32_t)hid.ports_seen<<16)|
+                ((uint32_t)hid.have_keyboard<<8)|hid.have_mouse,
+                 ((uint32_t)(uint16_t)hid.port_error<<16) |
+                 (hid.stats.last_channel_interrupt & 0xffffu));
             kprintf("[FRF-NATIVE-USB] root enumeration rc=%d kb=%u mouse=%u USB packets=%u RX=%u\n",
                     device_rc,hid.have_keyboard,hid.have_mouse,
                     hid.stats.attempts,hid.stats.rx_bytes);

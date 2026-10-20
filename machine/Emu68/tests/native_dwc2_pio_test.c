@@ -30,7 +30,7 @@ static uint32_t readreg(void *context,uint32_t off) {
 }
 static void writereg(void *context,uint32_t off,uint32_t val) {
  struct mock *m=context;
- if(off==HCINT){m->regs[off/4]=0;return;}
+ if(off==HCINT){m->regs[HCCHAR/4] &= ~(1u<<31);m->regs[off/4]=0;return;}
  if(off==FIFO){m->fifo=val;m->setup_words++;return;}
  if(off==HCCHAR){
    m->regs[off/4]=val;

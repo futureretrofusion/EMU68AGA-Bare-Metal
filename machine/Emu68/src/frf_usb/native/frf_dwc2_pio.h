@@ -11,9 +11,12 @@ struct frf_dwc2_packet {
     uint8_t address, endpoint, in, type, low_speed, pid;
     uint16_t max_packet, length, received;
     uint8_t *buffer;
+    /* Zero = root port direct, otherwise high-speed hub TT route. */
+    uint8_t hub_address, hub_port;
 };
 struct frf_dwc2_pio_stats {
     uint32_t attempts, completed, timeouts, naks, stalls, errors, rx_bytes;
+    uint32_t last_channel_interrupt, last_global_interrupt;
 };
 int frf_dwc2_pio_init(const struct frf_dwc2_ops *o);
 int frf_dwc2_pio_packet(const struct frf_dwc2_ops *o,

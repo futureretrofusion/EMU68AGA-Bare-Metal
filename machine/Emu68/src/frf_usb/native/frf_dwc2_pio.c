@@ -80,18 +80,28 @@ int frf_dwc2_pio_packet(const struct frf_dwc2_ops *o,
  if(!o||!o->read||!o->write||!o->delay_us||!p||
     p->address>127||p->endpoint>15||p->max_packet==0||
     p->max_packet>64||p->length>p->max_packet||
-    (p->length && !p->buffer) || p->type>3) return -1;
+    (p->length && !p->buffer) || p->type>3 ||
+    (p->hub_address && (!p->hub_port || p->hub_address>127 ||
+                       p->hub_port>127))) return -1;
  if(st) st->attempts++;
  p->received=0;
  /* A genuine single-packet transfer, MAX 64 bytes. USB2 high-bandwidth
   * interrupts and split transactions are not supported in this stage. */
- wr(o,HCCHAR0,B(30)); /* disable a previously active channel */
+ uint32_t old_char=rd(o,HCCHAR0);
+ if(old_char&B(31)) {
+    /* DWC2 requires CHENA+CHDIS together to halt an active channel. */
+    wr(o,HCCHAR0,old_char|B(30)|B(31));
+ }
  for(unsigned i=0;i<1000u && (rd(o,HCCHAR0)&B(31));++i)
     o->delay_us(o->ctx,10);
  if(rd(o,HCCHAR0)&B(31)) return -2;
  wr(o,HCINTMSK0,0u);
  wr(o,HCINT0,0xffffffffu);
- wr(o,HCSPLT0,0u);
+ uint32_t splitval=0;
+ if(p->hub_address) {
+    splitval=B(31)|((uint32_t)p->hub_address<<7)|p->hub_port;
+ }
+ wr(o,HCSPLT0,splitval);
  uint32_t charval=((uint32_t)p->address<<22)|
                   ((uint32_t)p->type<<18)|
                   ((uint32_t)!!p->low_speed<<17)|
@@ -110,6 +120,7 @@ int frf_dwc2_pio_packet(const struct frf_dwc2_ops *o,
  wr(o,HCCHAR0,charval|B(31));
  if(!p->in && p->length) fifo_write(o,p->buffer,p->length);
  unsigned rxcount=0;
+ unsigned split_phase=0,split_retries=0;
  for(unsigned step=0;step<10000;step++) {
     uint32_t gint=rd(o,GINTSTS);
     if(gint&B(4)) {
@@ -127,6 +138,32 @@ int frf_dwc2_pio_packet(const struct frf_dwc2_ops *o,
         }
     }
     uint32_t hcint=rd(o,HCINT0);
+    if(st) {
+        st->last_channel_interrupt=hcint;
+        st->last_global_interrupt=gint;
+    }
+    /* Full/low-speed child behind a high-speed hub: first start split,
+     * then TT complete split. Bound all NYET retry attempts.
+     * No simultaneous channel users (single CPU1 synchronous scheduler).
+     */
+    if(p->hub_address && (hcint&B(5)) && !split_phase) {
+        wr(o,HCINT0,hcint);
+        split_phase=1;
+        wr(o,HCSPLT0,splitval|B(16)); /* COMPSPLT */
+        o->delay_us(o->ctx,125u);
+        wr(o,HCCHAR0,charval|B(31));
+        continue;
+    }
+    if(p->hub_address && (hcint&B(6)) && split_phase) {
+        wr(o,HCINT0,hcint);
+        if(++split_retries>8u) {
+            if(st) st->naks++;
+            return -8; /* hub TT never finished complete split */
+        }
+        o->delay_us(o->ctx,125u);
+        wr(o,HCCHAR0,charval|B(31));
+        continue;
+    }
     if(hcint&B(3)) { /* STALL */
         wr(o,HCINT0,hcint);
         if(st) st->stalls++;
@@ -162,13 +199,13 @@ int frf_dwc2_pio_get_descriptor(const struct frf_dwc2_ops *o,
 {
  if(!buffer||!len||len>1024||mps==0||mps>64) return -1;
  uint8_t setup[8]={0x80,0x06,index,type,0,0,(uint8_t)len,(uint8_t)(len>>8)};
- struct frf_dwc2_packet p={addr,0,0,0,0,FRF_USB_PID_SETUP,mps,8,0,setup};
+ struct frf_dwc2_packet p={addr,0,0,0,0,FRF_USB_PID_SETUP,mps,8,0,setup,0,0};
  int rc=frf_dwc2_pio_packet(o,&p,st);
  if(rc) return rc;
  uint16_t total=0;uint8_t pid=FRF_USB_PID_DATA1;
  while(total<len) {
     uint16_t n=(len-total<mps)?len-total:mps;
-    p=(struct frf_dwc2_packet){addr,0,1,0,0,pid,mps,n,0,buffer+total};
+    p=(struct frf_dwc2_packet){addr,0,1,0,0,pid,mps,n,0,buffer+total,0,0};
     rc=frf_dwc2_pio_packet(o,&p,st);
     if(rc) return rc;
     total+=p.received;
@@ -176,7 +213,7 @@ int frf_dwc2_pio_get_descriptor(const struct frf_dwc2_ops *o,
     pid=(pid==FRF_USB_PID_DATA1)?FRF_USB_PID_DATA0:FRF_USB_PID_DATA1;
  }
  /* Control status OUT ZLP always DATA1. */
- p=(struct frf_dwc2_packet){addr,0,0,0,0,FRF_USB_PID_DATA1,mps,0,0,NULL};
+ p=(struct frf_dwc2_packet){addr,0,0,0,0,FRF_USB_PID_DATA1,mps,0,0,NULL,0,0};
  rc=frf_dwc2_pio_packet(o,&p,st);
  return rc?rc:(int)total;
 }

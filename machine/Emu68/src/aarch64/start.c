@@ -2192,7 +2192,11 @@ void boot(void *dtree)
             __asm__ volatile("yield");
             __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(now));
         } while (!__atomic_load_n(&frf_usb_boot_ready, __ATOMIC_ACQUIRE)
+#ifdef FRF_USB_NATIVE_DWC2
+                 && (now - t0) < f * 18u);
+#else
                  && (now - t0) < f * 6u);
+#endif
         frf_boot_stage(3);
         __asm__ volatile("dmb ish" ::: "memory");
         kprintf("[BOOT] USB gate: ready=%u mouse=%u seen=%u buttons=%02x\n",
