@@ -7,7 +7,8 @@
 #include <stddef.h>
 
 enum {
- GRSTCTL=0x010, GINTSTS=0x014, GRXSTSP=0x020, GRXFSIZ=0x024,
+ GAHBCFG=0x008, GRSTCTL=0x010, GINTSTS=0x014, GINTMSK=0x018,
+ GRXSTSP=0x020, GRXFSIZ=0x024,
  GNPTXFSIZ=0x028, GNPTXSTS=0x02c,
  HCFG=0x400, HPTXFSIZ=0x100, HAINTMSK=0x418,
  HCCHAR0=0x500, HCSPLT0=0x504, HCINT0=0x508,
@@ -42,6 +43,11 @@ int frf_dwc2_pio_init(const struct frf_dwc2_ops *o)
  if (wait_clear(o,GRSTCTL,B(4))) return -2;
  wr(o,GRSTCTL,B(5)|(0x10u<<6));
  if (wait_clear(o,GRSTCTL,B(5))) return -3;
+ /* Run DWC2 in programmed-I/O host mode. RXFLVL needs to be unmasked
+  * for the host to observe and drain the receive FIFO promptly. */
+ wr(o,GAHBCFG,rd(o,GAHBCFG)&~(B(0)|B(5)));
+ wr(o,GINTSTS,0xffffffffu);
+ wr(o,GINTMSK,B(4));
  wr(o,HAINTMSK,1u);
  wr(o,HCINTMSK0,0u);
  wr(o,HCINT0,0xffffffffu);
