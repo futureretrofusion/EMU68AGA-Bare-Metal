@@ -20,6 +20,10 @@ option(FRF_WIFI_HW_PROBE "Pi3A+ SDIO register audit (read only)" OFF)
 option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1" OFF)
 option(FRF_USB_NATIVE_DWC2 "EXPERIMENTAL Pi3 native DWC2 root-port diagnostics; no HID/storage yet" OFF)
 option(FRF_USB_PASSIVE_TEST "Preserve USPi input and show native DWC2 passive probe on HDMI POST" OFF)
+option(FRF_KBD_ACK_RECOVERY "Recover virtual CIA keyboard if guest SP handshake stalls over 250ms" OFF)
+if(FRF_KBD_ACK_RECOVERY)
+    add_compile_definitions(FRF_KBD_ACK_RECOVERY=1)
+endif()
 option(FRF_DISTRIBUTION_BUILD "Require independent, distribution-auditable USB backend" OFF)
 if(FRF_DISTRIBUTION_BUILD)
     if(NOT FRF_USB_HOST OR NOT FRF_USB_NATIVE_DWC2)
@@ -397,6 +401,8 @@ if(FRF_USB_HOST)
         endif()
         target_sources(Emu68.elf PRIVATE
             ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2_pio.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native_hid.c
             ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_native_keyboard.c
             ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native.c)
         target_include_directories(Emu68.elf PRIVATE

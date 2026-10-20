@@ -8,6 +8,8 @@
 #include <support.h>
 #include "frf_usb.h"
 #include "frf_dwc2.h"
+#include "frf_dwc2_pio.h"
+#include "frf_usb_native_hid.h"
 #include "frf_native_keyboard.h"
 
 #define FRF_PI3_DWC2_BASE 0x3f980000u
@@ -91,6 +93,32 @@ void frf_usb_main(void)
         rc = frf_dwc2_port_reset(&ops, &s);
         kprintf("[FRF-NATIVE-USB] root port rc=%d raw=%08x connected=%u enabled=%u speed=%u\n",
                 rc, s.port_status, s.port_connected, s.port_enabled, s.port_speed);
+    }
+    if (rc == 0 && s.port_connected && s.port_enabled) {
+        /* First physical USB transaction: root-port GET_DESCRIPTOR. A Pi3
+         * normally has an HS hub on the root port. This is *not* enumeration
+         * of the keyboard behind that hub; no splits, no HID class yet. */
+        int fifo_rc=frf_dwc2_pio_init(&ops);
+        kprintf("[FRF-NATIVE-USB] PIO host FIFO rc=%d\n",fifo_rc);
+        if (fifo_rc==0) {
+            static struct frf_native_hid hid;
+            int device_rc=frf_native_hid_enumerate(&ops,&hid);
+            kprintf("[FRF-NATIVE-USB] root enumeration rc=%d kb=%u mouse=%u USB packets=%u RX=%u\n",
+                    device_rc,hid.have_keyboard,hid.have_mouse,
+                    hid.stats.attempts,hid.stats.rx_bytes);
+            if(device_rc==0 && hid.configured) {
+                frf_boot_stage(9);
+                frf_boot_stage(10);
+                __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
+                __asm__ volatile("sev" ::: "memory");
+                for (;;) {
+                    frf_native_hid_poll(&ops,&hid);
+                    /* one-millisecond coarse host poll. USB keyboard
+                     * report receive is independent of gamepad. */
+                    delay_us(NULL,1000u);
+                }
+            }
+        }
     }
     frf_boot_stage(10);
     /* 'ready' here means diagnostics finished, NOT device enumeration. */
