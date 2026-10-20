@@ -99,3 +99,6 @@ Neither has been verified as an independently licensed, functional USB
 distribution image. Do not remove this guard to advertise a release.
 TinyUSB reference is upstream MIT licensed, but its Pi 3 standalone
 EMU68AGA port is **not implemented**.
+
+## Proven input scheduling requirement
+Hardware testing: separating keyboard reads from gamepad reads eliminated typing lag and repeated keys. The replacement host driver MUST dispatch keyboard interrupt-IN completions without waiting for gamepad polling, decoding, retries, or mass storage. Keep bounded separate queues for keyboard, mouse and gamepad. Regression: rapid typing in AmigaOS while holding gamepad buttons must show no lag, repeat or missing release.
