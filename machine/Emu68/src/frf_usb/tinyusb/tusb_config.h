@@ -13,7 +13,7 @@
 #define CFG_TUH_HID 8
 #define CFG_TUH_MSC 4
 #define CFG_TUH_MSC_MAXLUN 1
-#define CFG_TUSB_MEM_ALIGN __attribute__((aligned(32)))
+#define CFG_TUSB_MEM_ALIGN __attribute__((aligned(64)))
 #define CFG_TUSB_DEBUG 0
 #define CFG_TUH_DWC2_DMA_ENABLE 1
 #define CFG_TUH_DWC2_SLAVE_ENABLE 0

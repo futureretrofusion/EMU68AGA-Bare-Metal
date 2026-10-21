@@ -270,7 +270,18 @@ bool dwc2_core_init(uint8_t rhport, bool is_hs_phy, bool is_dma) {
 
   if (is_dma) {
     // DMA seems to be only settable after a core reset, and not possible to switch on-the-fly
+#ifdef FRF_USB_TINYUSB
+    /* Pi 3 BCM2837: working USPi explicitly clears the BCM-specific
+     * MAX_AXI_BURST bits [2:1] and sets WAIT_AXI_WRITES (bit 4).
+     * TinyUSB's generic INCR4 value (GAHBCFG_HBSTLEN_2 = 0x6)
+     * turns those bits back on and can change DMA bus behaviour.
+     * Preserve the known Pi3 controller programming, not generic DWC2.
+     */
+    dwc2->gahbcfg=(dwc2->gahbcfg | GAHBCFG_DMAEN | (1u<<4)) &
+                   ~(3u<<1);
+#else
     dwc2->gahbcfg |= GAHBCFG_DMAEN | GAHBCFG_HBSTLEN_2;
+#endif
   } else {
     dwc2->gintmsk |= GINTSTS_RXFLVL;
   }

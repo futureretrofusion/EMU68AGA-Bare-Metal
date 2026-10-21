@@ -20,7 +20,7 @@ gcc -std=gnu17 -O2 -pthread \
   "$T/portable/synopsys/dwc2/dwc2_common.c" \
   -o "$out/pi3_dwc2_hcd_model"
 
-for m in 0 1 2 3 5 6 7; do
+for m in 0 1 2 3 5 6 7 8; do
   timeout 7s "$out/pi3_dwc2_hcd_model" "$m" > "$out/mode_$m.txt"
   if ! grep -q '^MODE '"$m"' .* PASS$' "$out/mode_$m.txt"; then
     echo "DWC2 model mode $m FAIL"

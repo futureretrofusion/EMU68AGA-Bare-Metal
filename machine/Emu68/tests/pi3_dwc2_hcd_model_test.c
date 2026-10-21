@@ -53,7 +53,31 @@ void* tusb_app_virt_to_phys(void *p) {
     dma_translate_calls++;
     return (void *)(uintptr_t)(0xc0100000u|((uintptr_t)p&0x000fffffu));
 }
-static volatile uint32_t *regs;
+/* Real DWC2 registers are little-endian while EMU68AGA executes big-endian
+ * AArch64. Model the register storage order with a GCC scalar-storage-order
+ * structure; every direct register access now crosses a real endian boundary.
+ */
+typedef struct __attribute__((scalar_storage_order("little-endian"))) {
+    volatile uint32_t reg[0x4000];
+} emulated_dwc2_mmio_t;
+static volatile emulated_dwc2_mmio_t *dwc2_mmio;
+static volatile uint32_t *raw_bus_words;
+/* The DWC2 simulation must not overwrite a newer CPU GRSTCTL request
+ * after observing an older value. Unlike an actual register bus, a RAM
+ * simulator has an unsynchronised writer thread. Use CAS on bus words. */
+static uint32_t bus_word(uint32_t v) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return __builtin_bswap32(v);
+#else
+    return v;
+#endif
+}
+static bool write_if_unchanged(unsigned off,uint32_t before,uint32_t after) {
+    uint32_t expected=bus_word(before);
+    return __atomic_compare_exchange_n(
+       &raw_bus_words[off/4],&expected,bus_word(after),false,
+       __ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST);
+}
 static volatile int running=1;
 /* 0 healthy, 1 no root hub, 2 stalled core reset,
    3 stalled TX FIFO, 5 root power not latched,
@@ -72,28 +96,34 @@ uint32_t tusb_time_millis_api(void) {
 static void* fake_controller(void *ctx) {
     (void)ctx;
     while(running) {
-        uint32_t gr=regs[GRSTCTL/4];
-        if((gr&1u) && test_mode!=2){
-            phy_cfg_during_reset=regs[GUSBCFG/4];
-            regs[GRSTCTL/4]=AHBIDLE; core_resets++;
+        uint32_t gr=dwc2_mmio->reg[GRSTCTL/4];
+        if((gr&1u) && test_mode!=2) {
+            if(write_if_unchanged(GRSTCTL,gr,AHBIDLE)){
+                phy_cfg_during_reset=dwc2_mmio->reg[GUSBCFG/4];
+                core_resets++;
+            }
+        } else if((gr&(1u<<5)) && test_mode!=3) {
+            if(write_if_unchanged(GRSTCTL,gr,AHBIDLE)) tx_flushes++;
+        } else if(gr&(1u<<4)) {
+            if(write_if_unchanged(GRSTCTL,gr,AHBIDLE)) rx_flushes++;
+        } else if(!(gr&AHBIDLE) && !((gr&1u) && test_mode==2) &&
+                  !((gr&(1u<<5)) && test_mode==3)) {
+            (void)write_if_unchanged(GRSTCTL,gr,AHBIDLE);
         }
-        if((gr&(1u<<5)) && test_mode!=3){regs[GRSTCTL/4]=AHBIDLE; tx_flushes++;}
-        if(gr&(1u<<4)){regs[GRSTCTL/4]=AHBIDLE; rx_flushes++;}
-        if(!(gr&AHBIDLE) && !(gr&1u && test_mode==2) && !(gr&(1u<<5) && test_mode==3)) regs[GRSTCTL/4]=AHBIDLE;
         /* GINTSTS is read-only CMOD 1 and W1C other bits. */
-        regs[GINTSTS/4]=test_mode==4?0u:1u;
+        dwc2_mmio->reg[GINTSTS/4]=test_mode==4?0u:1u;
         /* HPRT read-only connection status and sticky power latch. */
-        uint32_t port=regs[HPRT/4];
+        uint32_t port=dwc2_mmio->reg[HPRT/4];
         if(port & (1u<<12)) powered++;
         if(test_mode==6) {
             if(port & (1u<<8)) port_reset_asserted++;
             else if(port_reset_asserted) port_enabled_seen++;
-            if(regs[0x500u/4] & (1u<<31)) ep0_setup_armed++;
+            if(dwc2_mmio->reg[0x500u/4] & (1u<<31)) ep0_setup_armed++;
         }
         uint32_t pwr=test_mode==5?0u:port&(1u<<12);
         uint32_t extra=test_mode==6?
            ((port&(1u<<8))|((port_reset_asserted && !(port&(1u<<8)))?(1u<<2):0u)):0u;
-        regs[HPRT/4] = pwr | (test_mode==1?0u:1u) | extra;
+        dwc2_mmio->reg[HPRT/4] = pwr | (test_mode==1?0u:1u) | extra;
         usleep(30);
     }
     return NULL;
@@ -104,27 +134,31 @@ int main(int argc,char **argv) {
                       MAP_ANONYMOUS|MAP_PRIVATE|MAP_FIXED_NOREPLACE,-1,0);
     if(mapped==MAP_FAILED){perror("mmap");return 2;}
     assert((uintptr_t)mapped==HW_BASE);
-    regs=(volatile uint32_t*)mapped;
-    regs[GUSBCFG/4]=(1u<<4)|(1u<<3)|(1u<<20); /* begin in ULPI16+external-VBUS */
-    regs[GSNPSID/4]=test_mode==7?0u:0x4f54280au;
-    regs[GHWCFG2/4]=(2u<<6)|(2u<<3)|(7u<<14); /* ULPI advertised, DMA arch */
-    regs[GHWCFG3/4]=4096u<<16;
-    regs[GHWCFG4/4]=0u;
-    regs[GRSTCTL/4]=AHBIDLE;
-    regs[GINTSTS/4]=test_mode==4?0u:1u;
-    regs[HPRT/4]=test_mode==1?0u:1u;
+    dwc2_mmio=(volatile emulated_dwc2_mmio_t*)mapped;
+    raw_bus_words=(volatile uint32_t*)mapped;
+    dwc2_mmio->reg[GUSBCFG/4]=(1u<<4)|(1u<<3)|(1u<<20); /* begin in ULPI16+external-VBUS */
+    dwc2_mmio->reg[GSNPSID/4]=test_mode==7?0u:0x4f54280au;
+    dwc2_mmio->reg[GHWCFG2/4]=(2u<<6)|(2u<<3)|(7u<<14) |
+                     (test_mode==8?(1u<<8):0u);
+    /* Mode8 emulates BCM2837 hardware with ULPI HS + dedicated FS
+       clock: USPi chooses the 48MHz HCFG setting for this combination. */
+    dwc2_mmio->reg[GHWCFG3/4]=4096u<<16;
+    dwc2_mmio->reg[GHWCFG4/4]=0u;
+    dwc2_mmio->reg[GRSTCTL/4]=AHBIDLE;
+    dwc2_mmio->reg[GINTSTS/4]=test_mode==4?0u:1u;
+    dwc2_mmio->reg[HPRT/4]=test_mode==1?0u:1u;
     pthread_t worker;
     assert(pthread_create(&worker,NULL,fake_controller,NULL)==0);
     const tusb_rhport_init_t config={.role=TUSB_ROLE_HOST,.speed=TUSB_SPEED_HIGH};
     const uint32_t before=tusb_time_millis_api();
     const bool ok=tuh_rhport_init(0,&config);
     uint32_t elapsed=tusb_time_millis_api()-before;
-    const uint32_t phy=regs[GUSBCFG/4];
-    const uint32_t port=regs[HPRT/4];
-    const uint32_t gahbcfg=regs[0x008u/4];
+    const uint32_t phy=dwc2_mmio->reg[GUSBCFG/4];
+    const uint32_t port=dwc2_mmio->reg[HPRT/4];
+    const uint32_t gahbcfg=dwc2_mmio->reg[0x008u/4];
     printf("HCD init=%u elapsed=%ums PHYCFG=%08x HPRT=%08x PCGCCTL=%08x reset=%u tx=%u rx=%u power_samples=%u PHY_BEFORE_RESET=%08x\n",
-           ok,elapsed,phy,port,regs[PCGCCTL/4],core_resets,tx_flushes,rx_flushes,powered,phy_cfg_during_reset);
-    const bool expected = test_mode==0 || test_mode==1 || test_mode==6;
+           ok,elapsed,phy,port,dwc2_mmio->reg[PCGCCTL/4],core_resets,tx_flushes,rx_flushes,powered,phy_cfg_during_reset);
+    const bool expected = test_mode==0 || test_mode==1 || test_mode==6 || test_mode==8;
     const bool worked=(ok && (port & (1u<<12)) &&
              (phy_cfg_during_reset & (3u<<3))==(3u<<3) &&
              (phy & (1u<<20))==0u &&
@@ -132,6 +166,23 @@ int main(int argc,char **argv) {
              (phy & (1u<<3))==0 && core_resets && tx_flushes && rx_flushes);
     const bool as_expected= test_mode==1?(worked && !hcd_port_connect_status(0)):
                            (expected ? worked : !ok);
+    if(ok && test_mode==8 && (dwc2_mmio->reg[0x400u/4]&3u)!=1u) {
+        printf("BCM2837 dedicated-FS initial HCFG clock != 48MHz: %08x\n",
+               dwc2_mmio->reg[0x400u/4]);
+        running=0;pthread_join(worker,NULL);return 1;
+    }
+    if(ok && test_mode!=8 && (dwc2_mmio->reg[0x400u/4]&3u)!=0u) {
+        printf("BCM2837 normal initial HCFG clock != 30/60MHz: %08x\n",
+               dwc2_mmio->reg[0x400u/4]);
+        running=0;pthread_join(worker,NULL);return 1;
+    }
+    /* The Pi3 USPi port REQUIRES max AXI burst bits [2:1] cleared;
+       generic TinyUSB INCR4 would have failed this new test. */
+    if(ok && ((gahbcfg&(3u<<1)) != 0 || !(gahbcfg&(1u<<4)))) {
+        printf("BCM2837 DMA AHB mismatch: %08x (expected bits 2:1=0, bit4=1)\n",
+               gahbcfg);
+        running=0;pthread_join(worker,NULL);return 1;
+    }
     if(ok && !(gahbcfg&(1u<<5))) {
         puts("DMA GAHBCFG.ENABLE missing");
         running=0;pthread_join(worker,NULL);return 1;
@@ -153,7 +204,7 @@ int main(int argc,char **argv) {
             tuh_task_ext(0,false);
             usleep(100);
         }
-        const uint32_t dma_first=regs[(0x500u+0x14u)/4];
+        const uint32_t dma_first=dwc2_mmio->reg[(0x500u+0x14u)/4];
         printf("FIRST CONTROL DMA bus=%08x translated=%u clean=%u invalidate=%u\n",
                dma_first,dma_translate_calls,dma_clean_calls,dma_invalidate_calls);
         if((dma_first&0xc0000000u)!=0xc0000000u || !dma_translate_calls ||

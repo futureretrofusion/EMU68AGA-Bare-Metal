@@ -512,6 +512,19 @@ bool hcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
   } else {
     dwc2->hcfg |= HCFG_FSLS_ONLY;  // disable high speed mode
   }
+#ifdef FRF_USB_TINYUSB
+  /* BCM2837 clock selection matched to the locally working USPi code:
+   * ULPI-capable HS hardware with a dedicated FS PHY and ULPIFSLS
+   * requires 48MHz FS/LS PCLK at initial host enable. Otherwise use
+   * 30/60MHz. Previously TinyUSB left HCFG[1:0] at its reset value. */
+  const uint32_t hwcfg2=dwc2->ghwcfg2;
+  uint32_t hcfg=dwc2->hcfg & ~HCFG_FSLS_PHYCLK_SEL_Msk;
+  if (((hwcfg2>>6)&3u)==2u && ((hwcfg2>>8)&3u)==1u &&
+      (dwc2->gusbcfg & GUSBCFG_ULPIFSLS))
+    hcfg |= HCFG_FSLS_PHYCLK_SEL_48MHZ;
+  else hcfg |= HCFG_FSLS_PHYCLK_SEL_30_60MHZ;
+  dwc2->hcfg=hcfg;
+#endif
 
   // configure a fixed-allocated fifo scheme
   dfifo_host_init(rhport, is_hs_phy);
