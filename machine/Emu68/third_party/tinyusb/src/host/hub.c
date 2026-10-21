@@ -281,7 +281,7 @@ static void config_get_hub_descriptor(tuh_xfer_t* xfer) {
     .bRequest = HUB_REQUEST_GET_DESCRIPTOR,
     .wValue   = 0,
     .wIndex   = 0,
-    .wLength  = sizeof(hub_desc_cs_t)
+    .wLength  = tu_htole16(sizeof(hub_desc_cs_t))
   };
 
   xfer->setup       = &request;

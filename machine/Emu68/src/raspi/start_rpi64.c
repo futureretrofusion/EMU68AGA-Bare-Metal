@@ -356,9 +356,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / BUS TRACE R9",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / CTRL FIX R10",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / EP0 FIX R8",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / CTRL FIX R10",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -442,14 +442,14 @@ static void frf_post_draw(void)
             "HPRT", "GINTSTS", "GINTMSK", "HAINT",
             "HC0 CHAR", "HC0 SIZE", "HC0 DMA", "HC0 IRQ",
             "HC0 IRQMSK", "HOST TASK", "CHAN IRQ#", "PORT IRQ#",
-            "DEV MOUNT", "HID MOUNT", "ENUM OK/ERR", "GUSBCFG"
+            "DEV MOUNT", "HID MOUNT", "ENUM OK/ERR", "CTRL LEN"
         };
         post_rect(px,y,310u,ph,0x0822u);
         post_rect(px,y,310u,2u,cyan);
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R9 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R10 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;

@@ -48,6 +48,11 @@ void tu_hwfifo_read(const volatile void *fifo,uint8_t *b,uint16_t n,const tu_hwf
 /* Host-side stand-in for Pi3 GPU bus translation and cache hooks.
    The ARM integration calls mmu_virt2phys() and uses CPU cache operations. */
 static volatile unsigned dma_clean_calls,dma_invalidate_calls,dma_translate_calls;
+extern uint16_t frf_usb_control_wire_data_length(tusb_control_request_t const*);
+static volatile uint32_t trace_ctrl_wire,trace_ctrl_cpu;
+void frf_pi3_trace_control_length(uint16_t wire,uint16_t cpu) {
+    trace_ctrl_wire=wire;trace_ctrl_cpu=cpu;
+}
 void frf_pi3_trace_ep(uint32_t raw,uint32_t cached_mps,uint32_t desc_mps) {
     printf("DEBUG EP OPEN raw=%08x cache_mps=%u desc_mps=%u\n",
            raw,cached_mps,desc_mps);
@@ -164,6 +169,21 @@ int main(int argc,char **argv) {
        .wLength=tu_htole16(8u)
     };
     static const uint8_t expected_setup[8]={0x80,6,0,1,0,0,8,0};
+    /* Link against the actual production USB host control-stage helper.
+       On ARM-BE the old unconverted request->wLength was 0x0800 (2048),
+       while the controller must receive 8. */
+    uint16_t decoded_length=frf_usb_control_wire_data_length(&setup);
+    if(test_mode==0)
+      printf("CONTROL SETUP DATA LEN: raw=%04x decoded=%u expected=8\n",
+             setup.wLength,(unsigned)decoded_length);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    if(setup.wLength!=0x0800u) return 12; /* reproduces prior 2048-byte bug */
+#endif
+    if (decoded_length != 8u) {
+        fprintf(stderr,"BE USB CONTROL LENGTH FAILURE: raw=%04x host=%u expected 8\n",
+                setup.wLength,(unsigned)decoded_length);
+        return 11;
+    }
     if(memcmp(&setup,expected_setup,8)) {
        fprintf(stderr,"BAD USB SETUP endian bytes:");
        const uint8_t *b=(const uint8_t*)&setup;

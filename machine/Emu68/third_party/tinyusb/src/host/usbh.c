@@ -1120,12 +1120,35 @@ static void control_xfer_complete(uint8_t daddr, xfer_result_t result) {
   }
 }
 
+#ifdef FRF_USB_TINYUSB
+/* Keep the ABI conversion in the same function used by the actual HCD.
+   The standalone AArch64-BE DWC2 model calls this symbol to verify the
+   production control data-stage length rather than duplicating its logic. */
+uint16_t frf_usb_control_wire_data_length(tusb_control_request_t const *request) {
+    return tu_le16toh(request->wLength);
+}
+extern void frf_pi3_trace_control_length(uint16_t wire,uint16_t cpu);
+#endif
 static bool usbh_control_xfer_cb (uint8_t daddr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
   (void) ep_addr;
 
   const uint8_t rhport = usbh_get_rhport(daddr);
   tusb_control_request_t const * request = &_usbh_epbuf.request;
+  /* USB SETUP headers are on-wire little-endian, regardless of the
+   * AArch64-BE host ABI. An 8-byte GET_DESCRIPTOR had previously been
+   * sent to the DWC2 HCD as 2048 bytes (0x0800), causing 255 extra
+   * packets and HCINT.DATATOGGLE_ERR on the actual Pi3. */
+#ifdef FRF_USB_TINYUSB
+  uint16_t const data_length = frf_usb_control_wire_data_length(request);
+#else
+  uint16_t const data_length = tu_le16toh(request->wLength);
+#endif
   usbh_ctrl_xfer_info_t* ctrl_info = &_usbh_data.ctrl_xfer_info;
+#ifdef FRF_USB_TINYUSB
+  if (result == XFER_RESULT_SUCCESS &&
+      ctrl_info->stage == CONTROL_STAGE_SETUP)
+    frf_pi3_trace_control_length(request->wLength,data_length);
+#endif
 
   // Drop stale completions: slot already released (abort/close fired its cb)
   // or now owns a different device's xfer (a pending entry was dispatched).
@@ -1163,11 +1186,11 @@ static bool usbh_control_xfer_cb (uint8_t daddr, uint8_t ep_addr, xfer_result_t 
     case XFER_RESULT_SUCCESS:
       switch(ctrl_info->stage) {
         case CONTROL_STAGE_SETUP:
-          if (request->wLength > 0) {
+          if (data_length > 0) {
             // DATA stage: initial data toggle is always 1
             control_xfer_set_stage(CONTROL_STAGE_DATA);
             const uint8_t ep_data = tu_edpt_addr(0, request->bmRequestType_bit.direction);
-            if (!hcd_edpt_xfer(rhport, daddr, ep_data, ctrl_info->buffer, request->wLength)) {
+            if (!hcd_edpt_xfer(rhport, daddr, ep_data, ctrl_info->buffer, data_length)) {
               control_xfer_complete(daddr, XFER_RESULT_FAILED);
               return false;
             }
@@ -1176,7 +1199,7 @@ static bool usbh_control_xfer_cb (uint8_t daddr, uint8_t ep_addr, xfer_result_t 
           TU_ATTR_FALLTHROUGH;
 
         case CONTROL_STAGE_DATA: {
-            if (request->wLength > 0) {
+            if (data_length > 0) {
               TU_LOG_USBH("[%u:%u] Control data:\r\n", rhport, daddr);
               TU_LOG_MEM_USBH(ctrl_info->buffer, xferred_bytes, 2);
             }
@@ -1556,7 +1579,7 @@ bool tuh_descriptor_get_hid_report(uint8_t daddr, uint8_t itf_num, uint8_t desc_
       .bRequest = TUSB_REQ_GET_DESCRIPTOR,
       .wValue   = tu_htole16(TU_U16(desc_type, index)),
       .wIndex   = tu_htole16((uint16_t) itf_num),
-      .wLength  = len
+      .wLength  = tu_htole16(len)
   };
   tuh_xfer_t xfer = {
       .daddr       = daddr,

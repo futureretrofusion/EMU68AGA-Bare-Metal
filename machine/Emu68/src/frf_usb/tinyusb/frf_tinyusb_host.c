@@ -49,6 +49,11 @@ static uint32_t frf_usb_diag_last_irq,frf_usb_diag_chan_irq,frf_usb_diag_port_ir
 extern void frf_post_native_usb_trace(const uint32_t*,unsigned);
 #endif
 static volatile uint32_t frf_usb_reports,frf_usb_enumerations;
+static volatile uint32_t frf_usb_ctrl_len_wire,frf_usb_ctrl_len_cpu;
+void frf_pi3_trace_control_length(uint16_t wire,uint16_t cpu) {
+    frf_usb_ctrl_len_wire=(uint32_t)wire;
+    frf_usb_ctrl_len_cpu=(uint32_t)cpu;
+}
 /* CPU1 HCD first-transaction register telemetry (no logging from ISR). */
 static volatile uint32_t frf_pi3_ep_raw,frf_pi3_ep_mps,frf_pi3_desc_mps;
 static volatile uint32_t frf_pi3_xfer_raw,frf_pi3_xfer_size,frf_pi3_xfer_packets;
@@ -284,7 +289,8 @@ void frf_tinyusb_host_main(void)
                 frf_usb_hid_interfaces,/* any HID mount, incl generic */
                 ((frf_enum_success_xfers&0xffffu)<<16) |
                    (frf_enum_failed_xfers&0xffffu),
-                pi3_dwc2_read(0x00cu)
+                ((frf_usb_ctrl_len_wire & 0xffffu)<<16)|
+                  (frf_usb_ctrl_len_cpu & 0xffffu)
             };
             frf_post_native_usb_trace(status,16u);
         }
