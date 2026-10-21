@@ -350,7 +350,7 @@ static void frf_post_draw(void)
 #else
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
-    post_text(x+10,y+25,"TINYUSB PI3 / UTMI PWR",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / REV4",cyan);
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
 #endif

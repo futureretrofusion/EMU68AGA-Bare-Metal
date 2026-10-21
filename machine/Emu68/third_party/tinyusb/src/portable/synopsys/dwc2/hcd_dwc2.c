@@ -1108,7 +1108,8 @@ static void handle_rxflvl_irq(uint8_t rhport) {
       hcd_endpoint_t* edpt = &_hcd_data.edpt[xfer->ep_id];
 
       if (byte_count > 0) {
-        tu_hwfifo_read(dwc2->fifo[0], edpt->buffer + xfer->xferred_bytes, byte_count, NULL);
+        tu_hwfifo_read((const volatile void*)((uintptr_t)dwc2+0x1000u),
+                       edpt->buffer + xfer->xferred_bytes, byte_count, NULL);
         xfer->xferred_bytes += byte_count;
         xfer->fifo_bytes = byte_count;
       }
@@ -1154,7 +1155,9 @@ static bool channel_txfifo_write(dwc2_regs_t* dwc2, uint8_t ch_id, bool is_perio
       return true;
     }
 
-    tu_hwfifo_write(dwc2->fifo[ch_id], edpt->buffer + xfer->fifo_bytes, xact_bytes, NULL);
+    tu_hwfifo_write((volatile void*)((uintptr_t)dwc2+0x1000u+
+                              (uintptr_t)ch_id*0x1000u),
+                    edpt->buffer + xfer->fifo_bytes, xact_bytes, NULL);
     xfer->fifo_bytes += xact_bytes;
   }
 

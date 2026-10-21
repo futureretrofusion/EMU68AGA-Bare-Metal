@@ -164,11 +164,16 @@ void frf_tinyusb_host_main(void)
     if(connected_before) {
         hcd_event_device_attach(0,false);
     }
-    frf_boot_stage(10);
-    __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
-    __asm__ volatile("sev" ::: "memory");
+    /* Initial HID enumeration is asynchronous in TinyUSB. The old code
+       told CPU0 USB was ready BEFORE running a single event/task pass, so
+       Kickstart could begin with no installed USB HID interface at all.
+       Keep guest boot gated for a maximum of 5s or until a real keyboard
+       or mouse class mount callback. This does not invent a device: only
+       tuh_hid_mount_cb() sets these flags. */
+    const uint32_t enumeration_started=tusb_time_millis_api();
+    bool guest_released=false;
     bool last_connected=connected_before;
-    uint32_t last_rescan=tusb_time_millis_api();
+    uint32_t last_rescan=enumeration_started;
     uint32_t root_attach_attempts=connected_before?1u:0u;
     /* CPU1 processes the DWC2 interrupt status in one event/task context.
        Unlike earlier hand-written polling, TinyUSB owns hub TT scheduling.
@@ -179,6 +184,24 @@ void frf_tinyusb_host_main(void)
         hcd_int_handler(0,false);
         tuh_task_ext(0,false);
         uint32_t now=tusb_time_millis_api();
+        if(!guest_released &&
+           (frf_usb_hid_keyboard || frf_usb_hid_mouse ||
+             (uint32_t)(now-enumeration_started)>=5000u)) {
+            /* Stage 8 is the handshake checkpoint, NOT a claimed USB mount.
+               RC=0 means a real HID mount; RC=-8 means a 5-second timeout.
+               A failed mount preserves raw HPRT and PHY configuration. */
+            uint32_t mounted=frf_usb_hid_keyboard+frf_usb_hid_mouse;
+            /* On HID timeout do NOT discard the evidence of the original
+               failure. DETAIL=raw HPRT and AUX=GUSBCFG allow decoding root
+               power bit12, physical hub connect bit0, PHY mode bit3/4. */
+            frf_post_native_usb_stage(8,mounted?0:-8,
+                          mounted?mounted:pi3_dwc2_read(0x440u),
+                          mounted?frf_usb_enumerations:pi3_dwc2_read(0x00cu));
+            frf_boot_stage(10);
+            __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
+            __asm__ volatile("sev" ::: "memory");
+            guest_released=true;
+        }
         bool connected=hcd_port_connect_status(0);
         if(connected != last_connected) {
             last_connected=connected;

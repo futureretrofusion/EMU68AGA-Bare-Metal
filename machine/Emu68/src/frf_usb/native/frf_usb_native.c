@@ -155,11 +155,32 @@ void frf_usb_main(void)
     kprintf("[FRF-NATIVE-USB] firmware power rc=%d state=%08x\\n",
             power_rc, usb_power_state);
     if (power_rc != 0) {
-        kprintf("[FRF-NATIVE-USB] USB cannot start: firmware power request failed\\n");
+#ifdef FRF_USB_TINYUSB
+        /* The older working Pi3 USPi driver probes GSNPSID before its
+         * mailbox SET_POWER_STATE request. A firmware mailbox error must
+         * not completely disable USB if the USB OTG controller is already
+         * awake and exposes a valid Synopsys ID (e.g. 4f54280a).
+         * This is strictly an *attempt* gate, not detection or success. */
+        uint32_t phy_id=native_mbox_read(FRF_PI3_DWC2_BASE+0x040u);
+        kprintf("[FRF-NATIVE-USB] mailbox rc=%d, live DWC2 ID=%08x\n",
+                power_rc,phy_id);
+        frf_post_native_usb_stage(2,power_rc,phy_id,usb_power_state);
+        if ((phy_id & 0xffff0000u)!=0x4f540000u &&
+            (phy_id & 0xffff0000u)!=0x55320000u) {
+            kprintf("[FRF-NATIVE-USB] USB controller not responsive, cannot start\n");
+            frf_boot_stage(10);
+            __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
+            __asm__ volatile("sev" ::: "memory");
+            for (;;) __asm__ volatile("wfe");
+        }
+        kprintf("[FRF-NATIVE-USB] controller awake, trying real DWC2 init despite mailbox result\n");
+#else
+        kprintf("[FRF-NATIVE-USB] USB cannot start: firmware power request failed\n");
         frf_boot_stage(10);
         __atomic_store_n(&frf_usb_boot_ready, 1u, __ATOMIC_RELEASE);
         __asm__ volatile("sev" ::: "memory");
         for (;;) __asm__ volatile("wfe");
+#endif
     }
     delay_us(NULL, 100000u);
 

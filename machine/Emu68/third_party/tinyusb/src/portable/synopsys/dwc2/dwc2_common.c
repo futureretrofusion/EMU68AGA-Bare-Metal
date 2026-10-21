@@ -110,7 +110,6 @@ static bool phy_hs_init(dwc2_regs_t* dwc2) {
   gusbcfg &= ~(GUSBCFG_ULPI_UTMI_SEL | GUSBCFG_PHYIF16 |
                GUSBCFG_ULPIEVBUSD | GUSBCFG_ULPIEVBUSI |
                GUSBCFG_DDRSEL | (1u<<22));
-  dwc2->gusbcfg=gusbcfg;
 #else
   if (ghwcfg2.hs_phy_type == GHWCFG2_HSPHY_ULPI) {
     TU_LOG(DWC2_COMMON_DEBUG, "Highspeed ULPI PHY init\r\n");
@@ -144,18 +143,23 @@ static bool phy_hs_init(dwc2_regs_t* dwc2) {
   }
 
 #endif
-  // Apply config
-  dwc2->gusbcfg = gusbcfg;
-
-  // mcu specific phy init
-  dwc2_phy_init(dwc2, ghwcfg2.hs_phy_type);
-
-  // Reset core after selecting PHY
-  if (!reset_core(dwc2)) return false;
 #ifdef FRF_USB_TINYUSB
-  /* BCM2837 USPi reset has 100ms PHY settling delay. */
-  const uint32_t reset_wait=tusb_time_millis_api();
+  /* BCM2837: match the previously working bare-metal USPi sequence.
+   * First clear external VBUS drive/TERMSEL, then reset the core, settle
+   * 100ms, and ONLY THEN select UTMI+ 8 bit. The generic DWC2 driver
+   * selected a PHY before resetting; that does not match the Pi3 stack.
+   */
+  dwc2->gusbcfg &= ~(GUSBCFG_ULPIEVBUSD | (1u<<22));
+  if(!reset_core(dwc2)) return false;
+  uint32_t reset_wait=tusb_time_millis_api();
   while((uint32_t)(tusb_time_millis_api()-reset_wait)<100u) {}
+  dwc2->gusbcfg = gusbcfg;
+  dwc2_phy_init(dwc2, ghwcfg2.hs_phy_type);
+#else
+  // Generic Synopsys DWC2: select PHY, reset core, then configure clocks.
+  dwc2->gusbcfg = gusbcfg;
+  dwc2_phy_init(dwc2, ghwcfg2.hs_phy_type);
+  if (!reset_core(dwc2)) return false;
 #endif
 
   // Set turn-around, must after core reset otherwise it will be clear
