@@ -43,8 +43,8 @@ void* tusb_app_virt_to_phys(void *virtual_address)
     return (void *)(uintptr_t)((physical & 0x3fffffffu) | 0xc0000000u);
 }
 static volatile uint32_t frf_usb_hid_keyboard,frf_usb_hid_mouse,frf_usb_storage;
-#ifdef FRF_USB_DIAG_HOLD
 static volatile uint32_t frf_usb_hid_interfaces;
+#ifdef FRF_USB_DIAG_HOLD
 static uint32_t frf_usb_diag_last_irq,frf_usb_diag_chan_irq,frf_usb_diag_port_irq;
 extern void frf_post_native_usb_trace(const uint32_t*,unsigned);
 #endif
@@ -142,11 +142,9 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
 {
     (void)descriptor;(void)descriptor_len;
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
-#ifdef FRF_USB_DIAG_HOLD
-    /* Any successful TinyUSB HID mount counts, even if this interface's
-       protocol is not boot keyboard/mouse (e.g. composite or gamepad). */
+    /* All HID mounts count, even generic interfaces without boot report
+       protocol (composite mice, modern keyboards, gamepads). */
     frf_usb_hid_interfaces++;
-#endif
     if(protocol==HID_ITF_PROTOCOL_KEYBOARD) frf_usb_hid_keyboard++;
     else if(protocol==HID_ITF_PROTOCOL_MOUSE) {
         frf_usb_hid_mouse++;
@@ -309,15 +307,19 @@ void frf_tinyusb_host_main(void)
             int fail_rc=!(port&(1u<<12)) ? -6 :
                         !(port&1u) ? -7 :
                         frf_usb_dma_invalid_address ? -9 :
+                        frf_usb_hid_interfaces ? -12 :
+                        frf_usb_enumerations ? -11 :
                         frf_enum_failed_xfers ? -10 : -8;
             uint32_t transfer_failure =
                    (frf_enum_fail_state & 0xffffu)<<16 |
                    (frf_enum_fail_result & 0xffffu);
             frf_post_native_usb_stage(8,mounted?0:fail_rc,
                           mounted?mounted:
-                            (fail_rc==-10 ? transfer_failure : port),
+                            (fail_rc==-10 ? transfer_failure :
+                             (fail_rc==-11 || fail_rc==-12) ? frf_usb_enumerations : port),
                           mounted?frf_usb_enumerations:
                             (fail_rc==-10 ? port :
+                             (fail_rc==-11 || fail_rc==-12) ? frf_usb_hid_interfaces :
                              frf_usb_dma_invalid_address ?
                              frf_usb_dma_invalid_address:pi3_dwc2_read(0x00cu)));
             frf_boot_stage(10);

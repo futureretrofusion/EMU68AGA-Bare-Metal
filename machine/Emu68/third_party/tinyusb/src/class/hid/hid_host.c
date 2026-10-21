@@ -219,8 +219,8 @@ static bool hidh_set_protocol(uint8_t daddr, uint8_t itf_num, uint8_t protocol,
           .direction = TUSB_DIR_OUT
       },
       .bRequest = HID_REQ_CONTROL_SET_PROTOCOL,
-      .wValue   = protocol,
-      .wIndex   = itf_num,
+      .wValue   = tu_htole16((uint16_t)protocol),
+      .wIndex   = tu_htole16((uint16_t)itf_num),
       .wLength  = 0
   };
 
@@ -249,11 +249,11 @@ static void get_report_complete(tuh_xfer_t* xfer) {
   uint8_t const itf_num = (uint8_t) tu_le16toh(xfer->setup->wIndex);
   uint8_t const idx = tuh_hid_itf_get_index(xfer->daddr, itf_num);
 
-  uint8_t const report_type = tu_u16_high(xfer->setup->wValue);
-    uint8_t const report_id = tu_u16_low(xfer->setup->wValue);
+  uint8_t const report_type = tu_u16_high(tu_le16toh(xfer->setup->wValue));
+    uint8_t const report_id = tu_u16_low(tu_le16toh(xfer->setup->wValue));
 
   tuh_hid_get_report_complete_cb(xfer->daddr, idx, report_id, report_type,
-                                 (xfer->result == XFER_RESULT_SUCCESS) ? xfer->setup->wLength : 0);
+                                 (xfer->result == XFER_RESULT_SUCCESS) ? tu_le16toh(xfer->setup->wLength) : 0);
 }
 
 bool tuh_hid_get_report(uint8_t daddr, uint8_t idx, uint8_t report_id, uint8_t report_type, void* report, uint16_t len) {
@@ -270,7 +270,7 @@ bool tuh_hid_get_report(uint8_t daddr, uint8_t idx, uint8_t report_id, uint8_t r
       .bRequest = HID_REQ_CONTROL_GET_REPORT,
       .wValue   = tu_htole16(tu_u16(report_type, report_id)),
       .wIndex   = tu_htole16((uint16_t) p_hid->itf_num),
-      .wLength  = len
+      .wLength  = tu_htole16(len)
   };
 
   tuh_xfer_t xfer = {
@@ -291,11 +291,11 @@ static void set_report_complete(tuh_xfer_t* xfer) {
   uint8_t const itf_num = (uint8_t) tu_le16toh(xfer->setup->wIndex);
   uint8_t const idx = tuh_hid_itf_get_index(xfer->daddr, itf_num);
 
-  uint8_t const report_type = tu_u16_high(xfer->setup->wValue);
-  uint8_t const report_id = tu_u16_low(xfer->setup->wValue);
+  uint8_t const report_type = tu_u16_high(tu_le16toh(xfer->setup->wValue));
+  uint8_t const report_id = tu_u16_low(tu_le16toh(xfer->setup->wValue));
 
   tuh_hid_set_report_complete_cb(xfer->daddr, idx, report_id, report_type,
-                                 (xfer->result == XFER_RESULT_SUCCESS) ? xfer->setup->wLength : 0);
+                                 (xfer->result == XFER_RESULT_SUCCESS) ? tu_le16toh(xfer->setup->wLength) : 0);
 }
 
 bool tuh_hid_set_report(uint8_t daddr, uint8_t idx, uint8_t report_id, uint8_t report_type, void* report, uint16_t len) {
@@ -312,7 +312,7 @@ bool tuh_hid_set_report(uint8_t daddr, uint8_t idx, uint8_t report_id, uint8_t r
       .bRequest = HID_REQ_CONTROL_SET_REPORT,
       .wValue   = tu_htole16(tu_u16(report_type, report_id)),
       .wIndex   = tu_htole16((uint16_t) p_hid->itf_num),
-      .wLength  = len
+      .wLength  = tu_htole16(len)
   };
 
   tuh_xfer_t xfer = {

@@ -356,9 +356,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / CTRL FIX R10",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / HUB BE FIX R11",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / CTRL FIX R10",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / HUB BE FIX R11",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -385,11 +385,13 @@ static void frf_post_draw(void)
            native_usb_live[12]>0u)?"DEVICES ONLY":
 #endif
           (ns==8u && nr==0u)?"HID READY":
+          (ns==8u && nr==(uint32_t)-12)?"NONBOOT HID":
+          (ns==8u && nr==(uint32_t)-11)?"DEV NO HID":
           (ns==8u && nr==(uint32_t)-10)?"ENUM XFER FAIL":
           (ns==8u && nr==(uint32_t)-9)?"DMA ADDRESS":
           (ns==8u && nr==(uint32_t)-6)?"NO PORT PWR":
           (ns==8u && nr==(uint32_t)-7)?"NO ROOT HUB":
-          (ns==8u && nr!=(uint32_t)0)?"NO HID":
+          (ns==8u && nr!=(uint32_t)0)?"NO USB DEV":
           (ns==7u && nr==0u)?"HID FOUND":
           (ns==4u && nr==(uint32_t)-7)?"NO HUB":
           (ns==4u && nr==(uint32_t)-6)?"NO PORT PWR":
@@ -449,7 +451,7 @@ static void frf_post_draw(void)
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R10 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R11 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;

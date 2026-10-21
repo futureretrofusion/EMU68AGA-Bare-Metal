@@ -1953,7 +1953,7 @@ static void process_enumeration(tuh_xfer_t *xfer) {
       hub_port_status_response_t port_status;
       hub_port_get_status_local(dev0_bus->hub_addr, dev0_bus->hub_port, &port_status);
 
-      if (0 == port_status.status.connection) {
+      if (0 == (frf_hub_status_bits(&port_status) & 0x0001u)) {
         TU_LOG_USBH("Device unplugged from hub while debouncing\r\n");
         is_enum_failed = true;
       } else {
@@ -1977,7 +1977,7 @@ static void process_enumeration(tuh_xfer_t *xfer) {
       hub_port_status_response_t port_status;
       hub_port_get_status_local(dev0_bus->hub_addr, dev0_bus->hub_port, &port_status);
 
-      if (1 == port_status.change.reset) {
+      if ((frf_hub_change_bits(&port_status) & 0x0010u) != 0u) {
         // Acknowledge Port Reset Change
         is_enum_failed = !hub_port_clear_reset_change(dev0_bus->hub_addr, dev0_bus->hub_port, process_enumeration,
                                                        ENUM_HUB_CLEAR_RESET_COMPLETE);
@@ -1995,14 +1995,14 @@ static void process_enumeration(tuh_xfer_t *xfer) {
       hub_port_status_response_t port_status;
       hub_port_get_status_local(dev0_bus->hub_addr, dev0_bus->hub_port, &port_status);
 
-      if (0 == port_status.status.connection) {
+      if (0 == (frf_hub_status_bits(&port_status) & 0x0001u)) {
         TU_LOG_USBH("Device unplugged from hub (not addressed yet)\r\n");
         is_enum_failed = true;
         break;
       }
 
-      dev0_bus->speed = (port_status.status.high_speed)  ? TUSB_SPEED_HIGH
-                        : (port_status.status.low_speed) ? TUSB_SPEED_LOW
+      dev0_bus->speed = ((frf_hub_status_bits(&port_status) & 0x0400u))  ? TUSB_SPEED_HIGH
+                        : ((frf_hub_status_bits(&port_status) & 0x0200u)) ? TUSB_SPEED_LOW
                                                          : TUSB_SPEED_FULL;
       TU_ATTR_FALLTHROUGH;
     }

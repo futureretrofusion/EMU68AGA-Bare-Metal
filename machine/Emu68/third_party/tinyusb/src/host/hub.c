@@ -82,19 +82,26 @@ static char const* const _hub_feature_str[] = {
 //--------------------------------------------------------------------+
 // HUB
 //--------------------------------------------------------------------+
+/* Form USB hub class requests in ON-WIRE little-endian layout, even on
+ * AArch64 BIG-ENDIAN EMU68AGA. R10 had a second flaw: the class SET_PORT_POWER
+ * request sent hub port 1 as wire index 0x0100 (256), not port 1. */
+tusb_control_request_t frf_hub_make_port_feature_request(uint8_t hub_port,
+                                                          uint8_t feature,
+                                                          uint8_t request) {
+  tusb_control_request_t const setup = {
+    .bmRequestType = (uint8_t)(0x20u | (hub_port ? 0x03u : 0u)),
+    .bRequest = request,
+    .wValue = tu_htole16((uint16_t)feature),
+    .wIndex = tu_htole16((uint16_t)hub_port),
+    .wLength = 0u
+  };
+  return setup;
+}
+
 bool hub_port_clear_feature(uint8_t hub_addr, uint8_t hub_port, uint8_t feature,
                             tuh_xfer_cb_t complete_cb, uintptr_t user_data) {
-  tusb_control_request_t const request = {
-    .bmRequestType_bit = {
-      .recipient = (hub_port == 0) ? TUSB_REQ_RCPT_DEVICE : TUSB_REQ_RCPT_OTHER,
-      .type      = TUSB_REQ_TYPE_CLASS,
-      .direction = TUSB_DIR_OUT
-    },
-    .bRequest = HUB_REQUEST_CLEAR_FEATURE,
-    .wValue   = feature,
-    .wIndex   = hub_port,
-    .wLength  = 0
-  };
+  tusb_control_request_t const request =
+    frf_hub_make_port_feature_request(hub_port, feature, HUB_REQUEST_CLEAR_FEATURE);
 
   tuh_xfer_t xfer = {
     .daddr       = hub_addr,
@@ -112,17 +119,8 @@ bool hub_port_clear_feature(uint8_t hub_addr, uint8_t hub_port, uint8_t feature,
 
 bool hub_port_set_feature(uint8_t hub_addr, uint8_t hub_port, uint8_t feature,
                           tuh_xfer_cb_t complete_cb, uintptr_t user_data) {
-  tusb_control_request_t const request = {
-    .bmRequestType_bit = {
-      .recipient = (hub_port == 0) ? TUSB_REQ_RCPT_DEVICE : TUSB_REQ_RCPT_OTHER,
-      .type      = TUSB_REQ_TYPE_CLASS,
-      .direction = TUSB_DIR_OUT
-    },
-    .bRequest = HUB_REQUEST_SET_FEATURE,
-    .wValue   = feature,
-    .wIndex   = hub_port,
-    .wLength  = 0
-  };
+  tusb_control_request_t const request =
+    frf_hub_make_port_feature_request(hub_port, feature, HUB_REQUEST_SET_FEATURE);
 
   tuh_xfer_t xfer = {
     .daddr       = hub_addr,
@@ -138,19 +136,31 @@ bool hub_port_set_feature(uint8_t hub_addr, uint8_t hub_port, uint8_t feature,
   return true;
 }
 
+tusb_control_request_t frf_hub_make_status_request(uint8_t hub_port) {
+  const tusb_control_request_t setup = {
+    .bmRequestType = (uint8_t)(0xa0u | (hub_port ? 0x03u : 0u)),
+    .bRequest = HUB_REQUEST_GET_STATUS,
+    .wValue = 0u,
+    .wIndex = tu_htole16((uint16_t)hub_port),
+    .wLength = tu_htole16(4u)
+  };
+  return setup;
+}
+
+tusb_control_request_t frf_hub_make_descriptor_request(void) {
+  const tusb_control_request_t setup = {
+    .bmRequestType = 0xa0u,
+    .bRequest = HUB_REQUEST_GET_DESCRIPTOR,
+    .wValue = tu_htole16(0x2900u),
+    .wIndex = 0u,
+    .wLength = tu_htole16(sizeof(hub_desc_cs_t))
+  };
+  return setup;
+}
+
 bool hub_port_get_status(uint8_t hub_addr, uint8_t hub_port, void* resp,
                          tuh_xfer_cb_t complete_cb, uintptr_t user_data) {
-  tusb_control_request_t const request = {
-    .bmRequestType_bit = {
-      .recipient = (hub_port == 0) ? TUSB_REQ_RCPT_DEVICE : TUSB_REQ_RCPT_OTHER,
-      .type      = TUSB_REQ_TYPE_CLASS,
-      .direction = TUSB_DIR_IN
-    },
-    .bRequest = HUB_REQUEST_GET_STATUS,
-    .wValue   = 0,
-    .wIndex   = hub_port,
-    .wLength  = tu_htole16(4)
-  };
+  tusb_control_request_t const request=frf_hub_make_status_request(hub_port);
 
   tuh_xfer_t xfer = {
     .daddr       = hub_addr,
@@ -271,18 +281,7 @@ bool hub_set_config(uint8_t daddr, uint8_t itf_num) {
 }
 
 static void config_get_hub_descriptor(tuh_xfer_t* xfer) {
-  // Get Hub Descriptor
-  tusb_control_request_t const request = {
-    .bmRequestType_bit = {
-      .recipient = TUSB_REQ_RCPT_DEVICE,
-      .type      = TUSB_REQ_TYPE_CLASS,
-      .direction = TUSB_DIR_IN
-    },
-    .bRequest = HUB_REQUEST_GET_DESCRIPTOR,
-    .wValue   = 0,
-    .wIndex   = 0,
-    .wLength  = tu_htole16(sizeof(hub_desc_cs_t))
-  };
+  tusb_control_request_t const request=frf_hub_make_descriptor_request();
 
   xfer->setup       = &request;
   xfer->buffer      = get_hub_epbuf(xfer->daddr)->ctrl_buf;
@@ -316,7 +315,8 @@ static void config_port_power_complete (tuh_xfer_t* xfer) {
   uint8_t const daddr = xfer->daddr;
   hub_interface_t* p_hub = get_hub_itf(daddr);
 
-  if (xfer->setup->wIndex == p_hub->bNbrPorts) {
+  uint8_t const current_port=(uint8_t)tu_le16toh(xfer->setup->wIndex);
+  if (current_port == p_hub->bNbrPorts) {
     // All ports are power -> queue notification status endpoint and
     // complete the SET CONFIGURATION
     if (!hub_edpt_status_xfer(daddr)) {
@@ -326,7 +326,7 @@ static void config_port_power_complete (tuh_xfer_t* xfer) {
     usbh_driver_set_config_complete(daddr, p_hub->itf_num);
   } else {
     // power next port
-    uint8_t const hub_port = (uint8_t) (xfer->setup->wIndex + 1);
+    uint8_t const hub_port = (uint8_t)(current_port + 1u);
     hub_port_set_feature(daddr, hub_port, HUB_FEATURE_PORT_POWER, config_port_power_complete, 0);
   }
 }
@@ -421,11 +421,11 @@ static void process_new_status(tuh_xfer_t* xfer) {
     case STATE_HUB_STATUS: {
       hub_status_response_t hub_status = *((const hub_status_response_t *) (uintptr_t) xfer->buffer);
       TU_LOG_DRV("HUB Got hub status, addr = %u, status = %04x\r\n", daddr, hub_status.change.value);
-      if (hub_status.change.local_power_source) {
+      if ((tu_le16toh(hub_status.change.value) & 0x0001u)) {
         TU_LOG_DRV("  Local Power Change\r\n");
         processed = hub_clear_feature(daddr, HUB_FEATURE_HUB_LOCAL_POWER_CHANGE,
                                       process_new_status, STATE_COMPLETE);
-      } else if (hub_status.change.over_current) {
+      } else if ((tu_le16toh(hub_status.change.value) & 0x0002u)) {
         TU_LOG_DRV("  Over Current\r\n");
         processed = hub_clear_feature(daddr, HUB_FEATURE_HUB_OVER_CURRENT_CHANGE,
                                       process_new_status, STATE_COMPLETE);
@@ -435,7 +435,7 @@ static void process_new_status(tuh_xfer_t* xfer) {
 
     case STATE_CLEAR_CHANGE:
       // Get port status complete --> clear change
-      if (port_status->change.connection) {
+      if ((frf_hub_change_bits(port_status) & 0x0001u)) {
         // Connection change
         // Port is powered and enabled
         //TU_VERIFY(port_status.status_current.port_power && port_status.status_current.port_enable, );
@@ -443,16 +443,16 @@ static void process_new_status(tuh_xfer_t* xfer) {
         // Acknowledge Port Connection Change
         processed = hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_CONNECTION_CHANGE,
                                            process_new_status, STATE_CHECK_CONN);
-      } else if (port_status->change.port_enable) {
+      } else if ((frf_hub_change_bits(port_status) & 0x0002u)) {
         processed = hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_ENABLE_CHANGE,
                                            process_new_status, STATE_COMPLETE);
-      } else if (port_status->change.suspend) {
+      } else if ((frf_hub_change_bits(port_status) & 0x0004u)) {
         processed = hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_SUSPEND_CHANGE,
                                            process_new_status, STATE_COMPLETE);
-      } else if (port_status->change.over_current) {
+      } else if ((frf_hub_change_bits(port_status) & 0x0008u)) {
         processed = hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_OVER_CURRENT_CHANGE,
                                            process_new_status, STATE_COMPLETE);
-      } else if (port_status->change.reset) {
+      } else if ((frf_hub_change_bits(port_status) & 0x0010u)) {
         processed = hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_RESET_CHANGE,
                                            process_new_status, STATE_COMPLETE);
       }
@@ -461,7 +461,7 @@ static void process_new_status(tuh_xfer_t* xfer) {
     case STATE_CHECK_CONN: {
       const hcd_event_t event = {
         .rhport     = usbh_get_rhport(daddr),
-        .event_id   = port_status->status.connection ? HCD_EVENT_DEVICE_ATTACH : HCD_EVENT_DEVICE_REMOVE,
+        .event_id   = (frf_hub_status_bits(port_status) & 0x0001u) ? HCD_EVENT_DEVICE_ATTACH : HCD_EVENT_DEVICE_REMOVE,
         .connection = {
           .hub_addr = daddr,
           .hub_port = port_num

@@ -144,6 +144,15 @@ typedef struct {
   } status, change;
 } hub_port_status_response_t;
 TU_VERIFY_STATIC( sizeof(hub_port_status_response_t) == 4, "size is not correct");
+/* These four status bytes are produced by a USB LE hub and may be read
+ * by the ARM64-BE CPU. Never use native CPU bitfield layout for them. */
+TU_ATTR_ALWAYS_INLINE static inline uint16_t frf_hub_status_bits(const hub_port_status_response_t* r) {
+  return tu_le16toh(r->status.value);
+}
+TU_ATTR_ALWAYS_INLINE static inline uint16_t frf_hub_change_bits(const hub_port_status_response_t* r) {
+  return tu_le16toh(r->change.value);
+}
+
 
 //--------------------------------------------------------------------+
 // HUB API

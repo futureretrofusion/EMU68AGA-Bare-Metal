@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include "tusb.h"
 #include "host/hcd.h"
+#include "host/hub.h"
 #include "portable/synopsys/dwc2/dwc2_type.h"
 #include "common/tusb_fifo.h"
 void tu_hwfifo_write(volatile void *fifo,const uint8_t *b,uint16_t n,const tu_hwfifo_access_t *mode) {
@@ -161,6 +162,31 @@ static void* fake_controller(void *ctx) {
 }
 int main(int argc,char **argv) {
     if(argc>1) test_mode=atoi(argv[1]);
+    extern tusb_control_request_t frf_hub_make_port_feature_request(uint8_t,uint8_t,uint8_t);
+    extern tusb_control_request_t frf_hub_make_status_request(uint8_t);
+    extern tusb_control_request_t frf_hub_make_descriptor_request(void);
+    tusb_control_request_t power=frf_hub_make_port_feature_request(1u,8u,HUB_REQUEST_SET_FEATURE);
+    tusb_control_request_t reset=frf_hub_make_port_feature_request(2u,4u,HUB_REQUEST_SET_FEATURE);
+    tusb_control_request_t status_req=frf_hub_make_status_request(1u);
+    tusb_control_request_t hub_desc=frf_hub_make_descriptor_request();
+    const uint8_t power_wire[8]={0x23u,3u,8u,0u,1u,0u,0u,0u};
+    const uint8_t reset_wire[8]={0x23u,3u,4u,0u,2u,0u,0u,0u};
+    const uint8_t status_wire[8]={0xa3u,0u,0u,0u,1u,0u,4u,0u};
+    const uint8_t desc_wire[8]={0xa0u,6u,0u,0x29u,0u,0u,9u,0u};
+    if(memcmp(&power,power_wire,8)||memcmp(&reset,reset_wire,8)||
+       memcmp(&status_req,status_wire,8)||memcmp(&hub_desc,desc_wire,8)){
+        fprintf(stderr,"HUB ON-WIRE ENDIAN FAIL\n");
+        return 13;
+    }
+    hub_port_status_response_t hub_status;
+    const uint8_t hub_bytes[4]={0x01,0x01,0x11,0x00}; /* connected, powered; connect+reset change */
+    memcpy(&hub_status,hub_bytes,4);
+    if(frf_hub_status_bits(&hub_status)!=0x0101u ||
+       frf_hub_change_bits(&hub_status)!=0x0011u) {
+        fprintf(stderr,"HUB PORT STATUS LE DECODE FAIL\n");
+        return 14;
+    }
+    if(test_mode==0) puts("HUB PORT1 POWER/GET_STATUS/RESET/DESC BYTES and change flags PASS");
     /* An ARM-BE host must transmit these exact USB little-endian SETUP
        bytes over DMA. This is not covered by the DWC2 register ABI test. */
     const tusb_control_request_t setup={
