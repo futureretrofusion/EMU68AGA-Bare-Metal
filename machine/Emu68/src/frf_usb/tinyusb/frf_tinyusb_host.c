@@ -44,6 +44,27 @@ void* tusb_app_virt_to_phys(void *virtual_address)
 }
 static volatile uint32_t frf_usb_hid_keyboard,frf_usb_hid_mouse,frf_usb_storage;
 static volatile uint32_t frf_usb_reports,frf_usb_enumerations;
+/* CPU1 HCD first-transaction register telemetry (no logging from ISR). */
+static volatile uint32_t frf_pi3_ep_raw,frf_pi3_ep_mps,frf_pi3_desc_mps;
+static volatile uint32_t frf_pi3_xfer_raw,frf_pi3_xfer_size,frf_pi3_xfer_packets;
+extern void frf_post_native_usb_ep0(unsigned hcchar,unsigned hctsiz);
+void frf_pi3_trace_ep(uint32_t raw,uint32_t cached_mps,uint32_t desc_mps) {
+    if(!frf_pi3_ep_raw) {
+        frf_pi3_ep_raw=raw;
+        frf_pi3_ep_mps=cached_mps;
+        frf_pi3_desc_mps=desc_mps;
+    }
+}
+void frf_pi3_trace_xfer(uint32_t raw,uint32_t size,uint32_t packets,
+                        uint32_t mps,uint32_t len) {
+    (void)mps;(void)len;
+    if(!frf_pi3_xfer_raw) {
+        frf_pi3_xfer_raw=raw;
+        frf_pi3_xfer_size=size;
+        frf_pi3_xfer_packets=packets;
+        frf_post_native_usb_ep0(raw,size);
+    }
+}
 static volatile uint32_t frf_enum_fail_state,frf_enum_fail_result;
 static volatile uint32_t frf_enum_failed_xfers,frf_enum_success_xfers;
 

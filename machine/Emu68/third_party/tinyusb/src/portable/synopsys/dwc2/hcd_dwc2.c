@@ -672,12 +672,21 @@ bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, const tusb_desc_endpoint_t*
   hcd_endpoint_t* edpt = &_hcd_data.edpt[ep_id];
 
   dwc2_channel_char_t* hcchar_bm = &edpt->hcchar_bm;
-  hcchar_bm->ep_size         = tu_edpt_packet_size(desc_ep);
+  /* The DWC2 controller cannot transfer when endpoint MPS is zero.
+   * On ARM big-endian, the synthetic EP0 descriptor must be converted
+   * to LE before it arrives here. Reject bad callers instead of
+   * programming HCCHAR.MPS=0 and HCTSIZ.PKTCNT=0 silently. */
+  uint16_t const pi3_mps=tu_edpt_packet_size(desc_ep);
+  TU_VERIFY(pi3_mps > 0u && pi3_mps <= 1024u);
+  hcchar_bm->ep_size         = pi3_mps;
   hcchar_bm->ep_num          = tu_edpt_number(desc_ep->bEndpointAddress);
   hcchar_bm->ep_dir          = tu_edpt_dir(desc_ep->bEndpointAddress);
   hcchar_bm->low_speed_dev   = (bus_info.speed == TUSB_SPEED_LOW) ? 1 : 0;
   hcchar_bm->ep_type         = desc_ep->bmAttributes.xfer; // ep_type matches TUSB_XFER_*
-  hcchar_bm->err_multi_count = 0;
+  /* BCM2837 USB host: MC=1 transaction per (micro)frame.
+   * USPi sets HCCHAR[21:20]=1 unconditionally. Zero is reserved for
+   * ordinary host transactions and cannot start a valid USB request. */
+  hcchar_bm->err_multi_count = 1;
   hcchar_bm->dev_addr        = dev_addr;
   hcchar_bm->odd_frame       = 0;
   hcchar_bm->disable         = 0;
@@ -712,6 +721,11 @@ bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, const tusb_desc_endpoint_t*
       break;
   }
 
+#ifdef FRF_USB_TINYUSB
+  extern void frf_pi3_trace_ep(uint32_t,uint32_t,uint32_t);
+  frf_pi3_trace_ep(edpt->hcchar,hcchar_bm->ep_size,
+                   (uint32_t)tu_edpt_packet_size(desc_ep));
+#endif
   if (channel_is_periodic(edpt->hcchar)) {
     // HFNUM cannot distinguish elapsed periods longer than one counter cycle. USB permits the host to provide a
     // shorter period, so bound the selected period to the history available from HFNUM.
@@ -795,6 +809,11 @@ static bool channel_xfer_start(dwc2_regs_t* dwc2, uint8_t ch_id, bool defer_peri
     hctsiz.do_ping = 1;
   }
   channel->hctsiz = hctsiz.value;
+#ifdef FRF_USB_TINYUSB
+  extern void frf_pi3_trace_xfer(uint32_t,uint32_t,uint32_t,uint32_t,uint32_t);
+  frf_pi3_trace_xfer(edpt->hcchar, channel->hctsiz,
+                     packet_count,hcchar_bm->ep_size,edpt->buflen);
+#endif
   edpt->next_do_ping = 0;
 
   // Single-transaction isochronous endpoints always use DATA0. Pre-calculate the next PID for other endpoints,

@@ -328,6 +328,7 @@ static volatile uint32_t native_usb_stage, native_usb_rc;
 static volatile uint32_t native_usb_detail, native_usb_aux;
 static volatile uint32_t native_usb_cpu1_seen, native_usb_cpu1_chip;
 static volatile uint32_t native_usb_ahb_config;
+static volatile uint32_t native_usb_ep0_hcchar,native_usb_ep0_hctsiz;
 
 #endif
 static void frf_post_draw(void)
@@ -351,7 +352,7 @@ static void frf_post_draw(void)
 #else
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
-    post_text(x+10,y+25,"TINYUSB PI3 / LEFIX R7",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / EP0 FIX R8",cyan);
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
 #endif
@@ -413,7 +414,10 @@ static void frf_post_draw(void)
     post_text(x+175,y+183,"AHB:",white);
     post_hex(x+211,y+183,native_usb_ahb_config,8,cyan);
     post_rect(x+8,y+204,w-16,1,0x2965u);
-    post_text(x+10,y+207,"NO USPI - NATIVE USB TEST",amber);
+    post_text(x+10,y+207,"EP0:",cyan);
+    post_hex(x+48,y+207,native_usb_ep0_hcchar,8,cyan);
+    post_text(x+121,y+207,"SIZ:",cyan);
+    post_hex(x+160,y+207,native_usb_ep0_hctsiz,8,cyan);
 #else
     post_text(x+10,y+111,"USB KB/MS/GP/MSC:",white);
     uint32_t a=__atomic_load_n(&post_kb,__ATOMIC_RELAXED);
@@ -506,6 +510,13 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
     frf_post_draw();
+}
+void frf_post_native_usb_ep0(unsigned hcchar,unsigned hctsiz)
+{
+    if (!native_usb_ep0_hcchar) {
+        native_usb_ep0_hcchar=hcchar;
+        native_usb_ep0_hctsiz=hctsiz;
+    }
 }
 void frf_post_native_usb_ahb(unsigned raw)
 {

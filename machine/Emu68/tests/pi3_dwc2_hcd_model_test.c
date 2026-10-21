@@ -48,6 +48,15 @@ void tu_hwfifo_read(const volatile void *fifo,uint8_t *b,uint16_t n,const tu_hwf
 /* Host-side stand-in for Pi3 GPU bus translation and cache hooks.
    The ARM integration calls mmu_virt2phys() and uses CPU cache operations. */
 static volatile unsigned dma_clean_calls,dma_invalidate_calls,dma_translate_calls;
+void frf_pi3_trace_ep(uint32_t raw,uint32_t cached_mps,uint32_t desc_mps) {
+    printf("DEBUG EP OPEN raw=%08x cache_mps=%u desc_mps=%u\n",
+           raw,cached_mps,desc_mps);
+}
+void frf_pi3_trace_xfer(uint32_t raw,uint32_t size,uint32_t packets,
+                        uint32_t mps,uint32_t len) {
+    printf("DEBUG EP XFER raw=%08x reg_size=%08x packets=%u mps=%u len=%u\n",
+           raw,size,packets,mps,len);
+}
 static volatile unsigned enum_trace_count,enum_failed_trace_count;
 void frf_tinyusb_enum_observe(uint32_t state,uint32_t result) {
     (void)state;
@@ -95,6 +104,7 @@ static volatile int running=1;
 static volatile int test_mode=0;
 static volatile unsigned core_resets, tx_flushes, rx_flushes, powered;
 static volatile unsigned port_reset_asserted, ep0_setup_armed, port_enabled_seen;
+static volatile uint32_t first_hcchar, first_hctsiz, last_hcchar;
 static volatile uint32_t phy_cfg_during_reset;
 uint32_t tusb_time_millis_api(void) {
     struct timespec t;
@@ -126,7 +136,15 @@ static void* fake_controller(void *ctx) {
         if(test_mode==6) {
             if(port & (1u<<8)) port_reset_asserted++;
             else if(port_reset_asserted) port_enabled_seen++;
-            if(dwc2_mmio->reg[0x500u/4] & (1u<<31)) ep0_setup_armed++;
+            uint32_t hc=dwc2_mmio->reg[0x500u/4];
+            if(hc&(1u<<31)){
+                ++ep0_setup_armed;
+                if(!first_hcchar) {
+                    first_hcchar=hc;
+                    first_hctsiz=dwc2_mmio->reg[0x510u/4];
+                }
+                last_hcchar=hc;
+            }
         }
         uint32_t pwr=test_mode==5?0u:port&(1u<<12);
         uint32_t extra=test_mode==6?
@@ -153,6 +171,18 @@ int main(int argc,char **argv) {
        fputc('\n',stderr);
        return 7;
     }
+    dwc2_channel_char_t cc={.value=0};
+    cc.ep_size=8;
+    cc.err_multi_count=1;
+    cc.enable=1;
+    dwc2_channel_tsize_t sz={.value=0};
+    sz.xfer_size=8;
+    sz.packet_count=1;
+    sz.pid=3;
+    printf("ARM-BE DWC2 register bitfields: HCCHAR=%08x HCTSIZ=%08x\n",
+           cc.value,sz.value);
+    if(cc.value!=0x80100008u || sz.value!=0x60080008u) return 10;
+
     void *mapped=mmap((void*)HW_BASE,HW_LEN,PROT_READ|PROT_WRITE,
                       MAP_ANONYMOUS|MAP_PRIVATE|MAP_FIXED_NOREPLACE,-1,0);
     if(mapped==MAP_FAILED){perror("mmap");return 2;}
@@ -252,6 +282,17 @@ int main(int argc,char **argv) {
         if((dma_first&0xc0000000u)!=0xc0000000u || !dma_translate_calls ||
            !dma_clean_calls) {
             puts("DWC2 channel DMA address/cache: FAIL");
+            running=0;pthread_join(worker,NULL);return 1;
+        }
+        /* HCCHAR[21:20] must specify at least one transaction per
+           microframe (USPi always writes 1). Earlier TinyUSB wrote 0
+           for *every* endpoint, even the root-hub control request. */
+        uint32_t channel0=first_hcchar;
+        printf("FIRST HCCHAR=%08x HCTSIZ=%08x LAST=%08x\n",
+               channel0,first_hctsiz,last_hcchar);
+        if (((channel0>>20)&3u)!=1u) {
+            printf("INVALID USB HOST HCCHAR MC=%u raw=%08x (expected 1)\n",
+                   (channel0>>20)&3u, channel0);
             running=0;pthread_join(worker,NULL);return 1;
         }
         printf("ROOT HUB simulated enumeration reset=%u enabled=%u EP0_SETUP=%u\n",

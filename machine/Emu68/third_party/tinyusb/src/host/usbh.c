@@ -1384,7 +1384,12 @@ static bool usbh_edpt_control_open(uint8_t dev_addr, uint8_t max_packet_size) {
     .bDescriptorType  = TUSB_DESC_ENDPOINT,
     .bEndpointAddress = 0,
     .bmAttributes     = { .xfer = TUSB_XFER_CONTROL },
-    .wMaxPacketSize   = max_packet_size,
+    /* USB descriptor fields are little-endian, including the synthetic
+     * EP0 descriptor. On AArch64-BE native assignment made MPS=8 appear
+     * as 0x0800 and tu_edpt_packet_size() masked it to ZERO. The DWC2
+     * root control channel was then armed with HCCHAR.MPS=0 and
+     * HCTSIZ.PKTCNT=0, preventing root-hub enumeration entirely. */
+    .wMaxPacketSize   = tu_htole16(max_packet_size),
     .bInterval        = 0
   };
 
