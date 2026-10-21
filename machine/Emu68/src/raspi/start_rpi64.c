@@ -329,6 +329,9 @@ static volatile uint32_t native_usb_detail, native_usb_aux;
 static volatile uint32_t native_usb_cpu1_seen, native_usb_cpu1_chip;
 static volatile uint32_t native_usb_ahb_config;
 static volatile uint32_t native_usb_ep0_hcchar,native_usb_ep0_hctsiz;
+#ifdef FRF_USB_DIAG_HOLD
+static volatile uint32_t native_usb_live[16];
+#endif
 
 #endif
 static void frf_post_draw(void)
@@ -352,7 +355,11 @@ static void frf_post_draw(void)
 #else
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
+#ifdef FRF_USB_DIAG_HOLD
+    post_text(x+10,y+25,"TINYUSB PI3 / BUS TRACE R9",cyan);
+#else
     post_text(x+10,y+25,"TINYUSB PI3 / EP0 FIX R8",cyan);
+#endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
 #endif
@@ -371,6 +378,12 @@ static void frf_post_draw(void)
     const uint32_t nr=__atomic_load_n(&native_usb_rc,__ATOMIC_ACQUIRE);
     const uint32_t cpu1=__atomic_load_n(&native_usb_cpu1_seen,__ATOMIC_ACQUIRE);
     const char *ns_status =
+#ifdef FRF_USB_DIAG_HOLD
+          (ns==8u && nr==(uint32_t)-8 &&
+           native_usb_live[13]>0u)?"HID NONBOOT":
+          (ns==8u && nr==(uint32_t)-8 &&
+           native_usb_live[12]>0u)?"DEVICES ONLY":
+#endif
           (ns==8u && nr==0u)?"HID READY":
           (ns==8u && nr==(uint32_t)-10)?"ENUM XFER FAIL":
           (ns==8u && nr==(uint32_t)-9)?"DMA ADDRESS":
@@ -418,6 +431,33 @@ static void frf_post_draw(void)
     post_hex(x+48,y+207,native_usb_ep0_hcchar,8,cyan);
     post_text(x+121,y+207,"SIZ:",cyan);
     post_hex(x+160,y+207,native_usb_ep0_hctsiz,8,cyan);
+#ifdef FRF_USB_DIAG_HOLD
+    /* Dedicated side panel: readings from the ACTUAL Pi3 controller,
+       not synthetic event counters or presumed USB attachment.
+       Only drawn on wide framebuffers, never covering the usual POST. */
+    if (x >= 330u && fb_height >= 380u) {
+        const uint32_t px=x-324u;
+        const uint32_t ph=354u;
+        const char *labels[16]={
+            "HPRT", "GINTSTS", "GINTMSK", "HAINT",
+            "HC0 CHAR", "HC0 SIZE", "HC0 DMA", "HC0 IRQ",
+            "HC0 IRQMSK", "HOST TASK", "CHAN IRQ#", "PORT IRQ#",
+            "DEV MOUNT", "HID MOUNT", "ENUM OK/ERR", "GUSBCFG"
+        };
+        post_rect(px,y,310u,ph,0x0822u);
+        post_rect(px,y,310u,2u,cyan);
+        post_rect(px,y,2u,ph,cyan);
+        post_rect(px+308u,y,2u,ph,cyan);
+        post_rect(px,y+ph-2u,310u,2u,cyan);
+        post_text(px+9u,y+8u,"R9 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
+        for (unsigned i=0;i<16;i++) {
+            const uint32_t ry=y+47u+i*18u;
+            post_text(px+10u,ry,labels[i],white);
+            post_hex(px+167u,ry,native_usb_live[i],8,cyan);
+        }
+    }
+#endif
 #else
     post_text(x+10,y+111,"USB KB/MS/GP/MSC:",white);
     uint32_t a=__atomic_load_n(&post_kb,__ATOMIC_RELAXED);
@@ -518,6 +558,14 @@ void frf_post_native_usb_ep0(unsigned hcchar,unsigned hctsiz)
         native_usb_ep0_hctsiz=hctsiz;
     }
 }
+#ifdef FRF_USB_DIAG_HOLD
+void frf_post_native_usb_trace(const uint32_t *snapshot,unsigned n)
+{
+    if (n>16u) n=16u;
+    for(unsigned i=0;i<n;i++) native_usb_live[i]=snapshot[i];
+    frf_post_draw();
+}
+#endif
 void frf_post_native_usb_ahb(unsigned raw)
 {
     native_usb_ahb_config=raw;

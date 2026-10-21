@@ -43,6 +43,11 @@ void* tusb_app_virt_to_phys(void *virtual_address)
     return (void *)(uintptr_t)((physical & 0x3fffffffu) | 0xc0000000u);
 }
 static volatile uint32_t frf_usb_hid_keyboard,frf_usb_hid_mouse,frf_usb_storage;
+#ifdef FRF_USB_DIAG_HOLD
+static volatile uint32_t frf_usb_hid_interfaces;
+static uint32_t frf_usb_diag_last_irq,frf_usb_diag_chan_irq,frf_usb_diag_port_irq;
+extern void frf_post_native_usb_trace(const uint32_t*,unsigned);
+#endif
 static volatile uint32_t frf_usb_reports,frf_usb_enumerations;
 /* CPU1 HCD first-transaction register telemetry (no logging from ISR). */
 static volatile uint32_t frf_pi3_ep_raw,frf_pi3_ep_mps,frf_pi3_desc_mps;
@@ -132,6 +137,11 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
 {
     (void)descriptor;(void)descriptor_len;
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+#ifdef FRF_USB_DIAG_HOLD
+    /* Any successful TinyUSB HID mount counts, even if this interface's
+       protocol is not boot keyboard/mouse (e.g. composite or gamepad). */
+    frf_usb_hid_interfaces++;
+#endif
     if(protocol==HID_ITF_PROTOCOL_KEYBOARD) frf_usb_hid_keyboard++;
     else if(protocol==HID_ITF_PROTOCOL_MOUSE) {
         frf_usb_hid_mouse++;
@@ -224,6 +234,10 @@ void frf_tinyusb_host_main(void)
        or mouse class mount callback. This does not invent a device: only
        tuh_hid_mount_cb() sets these flags. */
     const uint32_t enumeration_started=tusb_time_millis_api();
+#ifdef FRF_USB_DIAG_HOLD
+    uint32_t next_live_draw=enumeration_started;
+    uint32_t usb_task_ticks=0;
+#endif
     bool guest_released=false;
     bool last_connected=connected_before;
     uint32_t last_rescan=enumeration_started;
@@ -234,9 +248,47 @@ void frf_tinyusb_host_main(void)
        no USB devices ever mounted. Timed retry avoids endlessly queuing
        duplicate attachment events. */
     for(;;) {
+#ifdef FRF_USB_DIAG_HOLD
+        /* Observe before TinyUSB clears write-one-to-clear IRQ causes.
+           The register values come from real LE MMIO, not the software
+           test harness; this holds the Amiga guest while USB is tested. */
+        const uint32_t gint_status=pi3_dwc2_read(0x014u);
+        const uint32_t gint_mask=pi3_dwc2_read(0x018u);
+        const uint32_t observed=gint_status & gint_mask;
+        if(observed&(1u<<25)) frf_usb_diag_chan_irq++;
+        if(observed&(1u<<24)) frf_usb_diag_port_irq++;
+        const uint32_t channel_int=pi3_dwc2_read(0x508u);
+        if(channel_int) frf_usb_diag_last_irq=channel_int;
+        ++usb_task_ticks;
+#endif
         hcd_int_handler(0,false);
         tuh_task_ext(0,false);
         uint32_t now=tusb_time_millis_api();
+#ifdef FRF_USB_DIAG_HOLD
+        if((int32_t)(now-next_live_draw)>=0) {
+            next_live_draw=now+300u;
+            uint32_t status[16]={
+                pi3_dwc2_read(0x440u), /* HPRT */
+                pi3_dwc2_read(0x014u), /* GINTSTS */
+                pi3_dwc2_read(0x018u), /* GINTMSK */
+                pi3_dwc2_read(0x414u), /* HAINT */
+                pi3_dwc2_read(0x500u), /* HC0CHAR */
+                pi3_dwc2_read(0x510u), /* HC0SIZE */
+                pi3_dwc2_read(0x514u), /* HC0DMA */
+                frf_usb_diag_last_irq, /* last nonzero HC0INT */
+                pi3_dwc2_read(0x50cu), /* HC0INTMSK */
+                usb_task_ticks,       /* host tick progress */
+                frf_usb_diag_chan_irq,/* masked HCINT polls seen */
+                frf_usb_diag_port_irq,/* masked HPRT IRQ polls seen */
+                frf_usb_enumerations,  /* genuine mount callbacks */
+                frf_usb_hid_interfaces,/* any HID mount, incl generic */
+                ((frf_enum_success_xfers&0xffffu)<<16) |
+                   (frf_enum_failed_xfers&0xffffu),
+                pi3_dwc2_read(0x00cu)
+            };
+            frf_post_native_usb_trace(status,16u);
+        }
+#endif
         if(!guest_released &&
            (frf_usb_hid_keyboard || frf_usb_hid_mouse ||
              (uint32_t)(now-enumeration_started)>=5000u)) {

@@ -2193,6 +2193,13 @@ void boot(void *dtree)
         frf_boot_stage(2);
         __atomic_store_n(&frf_usb_host_start_allowed, 1u, __ATOMIC_RELEASE);
         __asm__ volatile("sev" ::: "memory");
+#ifdef FRF_USB_DIAG_HOLD
+        /* R9 diagnostic-only firmware: CPU1 still owns the live host.
+           Keep CPU0 out of AmigaOS, graphics takeover and guest input so
+           the POST can display real USB state indefinitely. This cannot
+           accidentally activate in the normal production build. */
+        for (;;) { __asm__ volatile("yield" ::: "memory"); }
+#endif
         extern volatile uint8_t frf_usb_boot_ready;
         extern volatile uint8_t frf_usb_mouse_present;
         extern volatile uint8_t frf_usb_mouse_seen;
