@@ -351,7 +351,7 @@ static void frf_post_draw(void)
 #else
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
-    post_text(x+10,y+25,"TINYUSB PI3 / USPI REFS6",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / LEFIX R7",cyan);
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
 #endif
@@ -371,6 +371,7 @@ static void frf_post_draw(void)
     const uint32_t cpu1=__atomic_load_n(&native_usb_cpu1_seen,__ATOMIC_ACQUIRE);
     const char *ns_status =
           (ns==8u && nr==0u)?"HID READY":
+          (ns==8u && nr==(uint32_t)-10)?"ENUM XFER FAIL":
           (ns==8u && nr==(uint32_t)-9)?"DMA ADDRESS":
           (ns==8u && nr==(uint32_t)-6)?"NO PORT PWR":
           (ns==8u && nr==(uint32_t)-7)?"NO ROOT HUB":

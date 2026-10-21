@@ -426,6 +426,21 @@ TU_ATTR_ALWAYS_INLINE static inline uint8_t cal_next_pid(uint8_t pid, uint8_t pa
  * - At least largest-EPsize*MulCount/4 (MulCount up to 3 for high-bandwidth ISO/interrupt)
 */
 static void dfifo_host_init(uint8_t rhport, bool is_hs_phy) {
+#ifdef FRF_USB_TINYUSB
+  /* Raspberry Pi 3 BCM2837 working USPi 1.2x host configuration:
+   * RX [0..1023], non-periodic TX [1024..2047],
+   * periodic TX [2048..3071], in DWORDs.
+   * Generic TinyUSB configured RX~500, NPTX~256 and PTX~3300.
+   * The BCM2837 controller in USPi does not reassign GDFIFOCFG's
+   * host channel metadata FIFO base; leave that register untouched.
+   */
+  (void)is_hs_phy;
+  dwc2_regs_t* dwc2=DWC2_REG(rhport);
+  dwc2->grxfsiz=1024u;
+  dwc2->gnptxfsiz=(1024u<<16)|1024u;
+  dwc2->hptxfsiz=(1024u<<16)|2048u;
+  return;
+#else
   const dwc2_controller_t* dwc2_controller = &_dwc2_controller[rhport];
   dwc2_regs_t* dwc2 = DWC2_REG(rhport);
   const uint8_t channel_count = dwc2_channel_count(dwc2);
@@ -463,6 +478,7 @@ static void dfifo_host_init(uint8_t rhport, bool is_hs_phy) {
 
   dfifo_top -= ptxfsiz;
   dwc2->hptxfsiz = tu_u32_from_u16(ptxfsiz, dfifo_top);
+#endif
 }
 
 //--------------------------------------------------------------------+

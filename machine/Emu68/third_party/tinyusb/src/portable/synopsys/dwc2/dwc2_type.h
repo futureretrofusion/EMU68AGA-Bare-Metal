@@ -686,17 +686,17 @@ typedef struct __attribute__((scalar_storage_order("little-endian"))) {
   volatile uint32_t grxstsr;            // 01c Receive Status Debug Read
   volatile uint32_t grxstsp;            // 020 Receive Status Read/Pop
   volatile uint32_t grxfsiz;            // 024 Receive FIFO Size
-  union {
+  union __attribute__((scalar_storage_order("little-endian"))) {
     volatile uint32_t dieptxf0;         // 028 EP0 Tx FIFO Size
     volatile uint32_t gnptxfsiz;        // 028 Non-periodic Transmit FIFO Size
   };
-  union {
+  union __attribute__((scalar_storage_order("little-endian"))) {
     volatile uint32_t hnptxsts;         // 02c Non-periodic Transmit FIFO/Queue Status
     volatile uint32_t gnptxsts;
   };
   volatile uint32_t gi2cctl;            // 030 I2C Address
   volatile uint32_t gpvndctl;           // 034 PHY Vendor Control
-  union {
+  union __attribute__((scalar_storage_order("little-endian"))) {
     volatile uint32_t ggpio;            // 038 General Purpose IO
     volatile uint32_t stm32_gccfg;      // 038 STM32 General Core Configuration
   };
@@ -705,7 +705,7 @@ typedef struct __attribute__((scalar_storage_order("little-endian"))) {
   volatile uint32_t ghwcfg1;            // 044 User Hardware Configuration1: endpoint dir (2 bit per ep)
   volatile uint32_t ghwcfg2;            // 048 User Hardware Configuration2
   volatile uint32_t ghwcfg3;            // 04C User Hardware Configuration3
-  union {
+  union __attribute__((scalar_storage_order("little-endian"))) {
     volatile uint32_t ghwcfg4;          // 050 User Hardware Configuration4
     volatile dwc2_ghwcfg4_t ghwcfg4_bm;
   };
@@ -760,7 +760,7 @@ typedef struct __attribute__((scalar_storage_order("little-endian"))) {
             uint32_t reserved8c0[16];   // 8C0..8FF
 
   //------------- Device Endpoint -----
-  union {
+  union __attribute__((scalar_storage_order("little-endian"))) {
     dwc2_dep_t ep[2][16];               // 0: IN, 1 OUT
     struct {
       dwc2_dep_t  epin[16];             // 900..AFF  IN Endpoints

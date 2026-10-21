@@ -44,6 +44,20 @@ void* tusb_app_virt_to_phys(void *virtual_address)
 }
 static volatile uint32_t frf_usb_hid_keyboard,frf_usb_hid_mouse,frf_usb_storage;
 static volatile uint32_t frf_usb_reports,frf_usb_enumerations;
+static volatile uint32_t frf_enum_fail_state,frf_enum_fail_result;
+static volatile uint32_t frf_enum_failed_xfers,frf_enum_success_xfers;
+
+/* Called from TinyUSB's actual USB enumeration transfer completion,
+   never from a synthetic test or timed retry. */
+void frf_tinyusb_enum_observe(uint32_t state,uint32_t result)
+{
+    if(result==0u) ++frf_enum_success_xfers;
+    else {
+        ++frf_enum_failed_xfers;
+        frf_enum_fail_state=state;
+        frf_enum_fail_result=result;
+    }
+}
 
 uint32_t tusb_time_millis_api(void)
 {
@@ -215,11 +229,17 @@ void frf_tinyusb_host_main(void)
                All statuses use actual registers and real callback counts. */
             int fail_rc=!(port&(1u<<12)) ? -6 :
                         !(port&1u) ? -7 :
-                        frf_usb_dma_invalid_address ? -9 : -8;
+                        frf_usb_dma_invalid_address ? -9 :
+                        frf_enum_failed_xfers ? -10 : -8;
+            uint32_t transfer_failure =
+                   (frf_enum_fail_state & 0xffffu)<<16 |
+                   (frf_enum_fail_result & 0xffffu);
             frf_post_native_usb_stage(8,mounted?0:fail_rc,
-                          mounted?mounted:port,
+                          mounted?mounted:
+                            (fail_rc==-10 ? transfer_failure : port),
                           mounted?frf_usb_enumerations:
-                            (frf_usb_dma_invalid_address ?
+                            (fail_rc==-10 ? port :
+                             frf_usb_dma_invalid_address ?
                              frf_usb_dma_invalid_address:pi3_dwc2_read(0x00cu)));
             frf_boot_stage(10);
             __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
@@ -245,7 +265,8 @@ void frf_tinyusb_host_main(void)
             last_rescan=now;
             root_attach_attempts++;
             hcd_event_device_attach(0,false);
-            frf_post_native_usb_stage(6,-2,root_attach_attempts,0);
+            /* A scheduled rescan is not a USB hardware error. */
+            frf_post_native_usb_stage(6,0,root_attach_attempts,0);
         }
         __asm__ volatile("yield");
     }

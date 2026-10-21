@@ -1893,6 +1893,11 @@ static void enum_new_device(hcd_event_t *event) {
 
 // process device enumeration
 static void process_enumeration(tuh_xfer_t *xfer) {
+#ifdef FRF_USB_TINYUSB
+  /* CPU1-only enumeration trace: real transfer callback and status. */
+  extern void frf_tinyusb_enum_observe(uint32_t state,uint32_t result);
+  frf_tinyusb_enum_observe((uint32_t)xfer->user_data,(uint32_t)xfer->result);
+#endif
   if (XFER_RESULT_FAILED == xfer->result || XFER_RESULT_TIMEOUT == xfer->result) {
     if (!enum_retry()) {
       enum_full_complete(false);

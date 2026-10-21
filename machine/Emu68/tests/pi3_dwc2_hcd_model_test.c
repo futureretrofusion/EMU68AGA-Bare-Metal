@@ -12,11 +12,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <unistd.h>
 #include "tusb.h"
 #include "host/hcd.h"
+#include "portable/synopsys/dwc2/dwc2_type.h"
 #include "common/tusb_fifo.h"
 void tu_hwfifo_write(volatile void *fifo,const uint8_t *b,uint16_t n,const tu_hwfifo_access_t *mode) {
  (void)mode;
@@ -46,6 +48,12 @@ void tu_hwfifo_read(const volatile void *fifo,uint8_t *b,uint16_t n,const tu_hwf
 /* Host-side stand-in for Pi3 GPU bus translation and cache hooks.
    The ARM integration calls mmu_virt2phys() and uses CPU cache operations. */
 static volatile unsigned dma_clean_calls,dma_invalidate_calls,dma_translate_calls;
+static volatile unsigned enum_trace_count,enum_failed_trace_count;
+void frf_tinyusb_enum_observe(uint32_t state,uint32_t result) {
+    (void)state;
+    ++enum_trace_count;
+    if(result) ++enum_failed_trace_count;
+}
 void arm_flush_cache(uintptr_t p,uint32_t n){(void)p;(void)n;dma_clean_calls++;}
 void arm_dcache_invalidate(uintptr_t p,uint32_t n){(void)p;(void)n;dma_invalidate_calls++;}
 void* tusb_app_virt_to_phys(void *p) {
@@ -130,12 +138,37 @@ static void* fake_controller(void *ctx) {
 }
 int main(int argc,char **argv) {
     if(argc>1) test_mode=atoi(argv[1]);
+    /* An ARM-BE host must transmit these exact USB little-endian SETUP
+       bytes over DMA. This is not covered by the DWC2 register ABI test. */
+    const tusb_control_request_t setup={
+       .bmRequestType=0x80u, .bRequest=6u,
+       .wValue=tu_htole16(0x0100u), .wIndex=tu_htole16(0),
+       .wLength=tu_htole16(8u)
+    };
+    static const uint8_t expected_setup[8]={0x80,6,0,1,0,0,8,0};
+    if(memcmp(&setup,expected_setup,8)) {
+       fprintf(stderr,"BAD USB SETUP endian bytes:");
+       const uint8_t *b=(const uint8_t*)&setup;
+       for(int i=0;i<8;i++) fprintf(stderr," %02x",b[i]);
+       fputc('\n',stderr);
+       return 7;
+    }
     void *mapped=mmap((void*)HW_BASE,HW_LEN,PROT_READ|PROT_WRITE,
                       MAP_ANONYMOUS|MAP_PRIVATE|MAP_FIXED_NOREPLACE,-1,0);
     if(mapped==MAP_FAILED){perror("mmap");return 2;}
     assert((uintptr_t)mapped==HW_BASE);
     dwc2_mmio=(volatile emulated_dwc2_mmio_t*)mapped;
     raw_bus_words=(volatile uint32_t*)mapped;
+    /* Deliberately verify a nested DWC2 register union before controller
+       initialization. Older AArch64-BE firmware decoded GNPTXSTS bytes
+       reversed because its anonymous union silently used BE storage. */
+    dwc2_mmio->reg[0x02cu/4]=0x13579bdfu;
+    const uint32_t fifo_alias=((volatile dwc2_regs_t*)mapped)->gnptxsts;
+    if (fifo_alias != 0x13579bdfu) {
+        fprintf(stderr,"DWC2 LE nested GNPTXSTS alias FAIL %08x\n",fifo_alias);
+        return 9;
+    }
+    dwc2_mmio->reg[0x02cu/4]=0u;
     dwc2_mmio->reg[GUSBCFG/4]=(1u<<4)|(1u<<3)|(1u<<20); /* begin in ULPI16+external-VBUS */
     dwc2_mmio->reg[GSNPSID/4]=test_mode==7?0u:0x4f54280au;
     dwc2_mmio->reg[GHWCFG2/4]=(2u<<6)|(2u<<3)|(7u<<14) |
@@ -156,6 +189,15 @@ int main(int argc,char **argv) {
     const uint32_t phy=dwc2_mmio->reg[GUSBCFG/4];
     const uint32_t port=dwc2_mmio->reg[HPRT/4];
     const uint32_t gahbcfg=dwc2_mmio->reg[0x008u/4];
+    /* Exact USPi-compatible Pi3 FIFO layout, not generic TinyUSB. */
+    if(ok && (dwc2_mmio->reg[0x024u/4]!=1024u ||
+              dwc2_mmio->reg[0x028u/4]!=0x04000400u ||
+              dwc2_mmio->reg[0x100u/4]!=0x04000800u)) {
+        printf("Pi3 FIFO MISMATCH RX=%08x NPTX=%08x PTX=%08x\n",
+              dwc2_mmio->reg[0x024u/4],dwc2_mmio->reg[0x028u/4],
+              dwc2_mmio->reg[0x100u/4]);
+        running=0;pthread_join(worker,NULL);return 1;
+    }
     printf("HCD init=%u elapsed=%ums PHYCFG=%08x HPRT=%08x PCGCCTL=%08x reset=%u tx=%u rx=%u power_samples=%u PHY_BEFORE_RESET=%08x\n",
            ok,elapsed,phy,port,dwc2_mmio->reg[PCGCCTL/4],core_resets,tx_flushes,rx_flushes,powered,phy_cfg_during_reset);
     const bool expected = test_mode==0 || test_mode==1 || test_mode==6 || test_mode==8;
