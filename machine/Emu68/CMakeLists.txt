@@ -21,6 +21,7 @@ option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1" OFF)
 option(FRF_USB_NATIVE_DWC2 "EXPERIMENTAL Pi3 native DWC2 root-port diagnostics; no HID/storage yet" OFF)
 option(FRF_USB_TINYUSB "Experimental Pi3 TinyUSB host integration (no public release)" OFF)
 option(FRF_USB_DIAG_HOLD "USB-only live DWC2 test POST; do not start Amiga guest" OFF)
+option(FRF_TINYUSB_MSC_WRITE "UNTESTED: permit guest USB MSC sector writes (read-only by default)" OFF)
 option(FRF_USB_PASSIVE_TEST "Preserve USPi input and show native DWC2 passive probe on HDMI POST" OFF)
 option(FRF_KBD_ACK_RECOVERY "Recover virtual CIA keyboard if guest SP handshake stalls over 250ms" OFF)
 if(FRF_KBD_ACK_RECOVERY)
@@ -416,6 +417,9 @@ if(FRF_USB_HOST)
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_native_keyboard.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_host.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_msc_bridge.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_pad.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_usb_mass_board.c
                 ${FRF_TUSB}/tusb.c
                 ${FRF_TUSB}/common/tusb_fifo.c
                 ${FRF_TUSB}/host/usbh.c
@@ -429,6 +433,9 @@ if(FRF_USB_HOST)
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/native ${CMAKE_SOURCE_DIR}/src/frf_usb)
             target_compile_definitions(Emu68.elf PRIVATE
                 FRF_USB_HOST=1 FRF_USB_NATIVE_DWC2=1 FRF_USB_TINYUSB=1)
+            if(FRF_TINYUSB_MSC_WRITE)
+                target_compile_definitions(Emu68.elf PRIVATE FRF_TINYUSB_MSC_WRITE=1)
+            endif()
             foreach(FRF_TINYUSB_SRC tusb.c common/tusb_fifo.c host/usbh.c
                     host/hub.c class/hid/hid_host.c class/msc/msc_host.c
                     portable/synopsys/dwc2/hcd_dwc2.c

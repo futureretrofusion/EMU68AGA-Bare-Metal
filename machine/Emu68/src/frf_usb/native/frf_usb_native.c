@@ -70,6 +70,10 @@ void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
 {
     frf_native_keyboard_report(&native_keyboard, report, native_key_emit, 0);
 }
+int frf_native_usb_reboot_requested(void)
+{
+    return frf_native_keyboard_take_reboot(&native_keyboard);
+}
 void frf_usb_guest_start(void) {}
 int frf_usb_early_startup_active(void) { return 0; }
 

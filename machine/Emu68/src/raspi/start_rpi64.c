@@ -329,6 +329,8 @@ static volatile uint32_t native_usb_detail, native_usb_aux;
 static volatile uint32_t native_usb_cpu1_seen, native_usb_cpu1_chip;
 static volatile uint32_t native_usb_ahb_config;
 static volatile uint32_t native_usb_ep0_hcchar,native_usb_ep0_hctsiz;
+static volatile uint32_t native_usb_storage_detected,native_usb_pad_detected;
+static volatile uint32_t native_usb_storage_blocks;
 #ifdef FRF_USB_DIAG_HOLD
 static volatile uint32_t native_usb_live[16];
 #endif
@@ -356,9 +358,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / HUB BE FIX R11",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / MSC PAD R12",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / HUB BE FIX R11",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / MSC PAD R12",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -429,10 +431,19 @@ static void frf_post_draw(void)
     post_text(x+175,y+183,"AHB:",white);
     post_hex(x+211,y+183,native_usb_ahb_config,8,cyan);
     post_rect(x+8,y+204,w-16,1,0x2965u);
+#ifdef FRF_USB_DIAG_HOLD
     post_text(x+10,y+207,"EP0:",cyan);
     post_hex(x+48,y+207,native_usb_ep0_hcchar,8,cyan);
     post_text(x+121,y+207,"SIZ:",cyan);
     post_hex(x+160,y+207,native_usb_ep0_hctsiz,8,cyan);
+#else
+    post_text(x+10,y+207,"MSC:",cyan);
+    post_dec(x+46,y+207,native_usb_storage_detected%100u,2,green);
+    post_text(x+90,y+207,"PAD:",cyan);
+    post_dec(x+126,y+207,native_usb_pad_detected%100u,2,green);
+    post_text(x+171,y+207,"BLKS:",cyan);
+    post_hex(x+220,y+207,native_usb_storage_blocks,8,cyan);
+#endif
 #ifdef FRF_USB_DIAG_HOLD
     /* Dedicated side panel: readings from the ACTUAL Pi3 controller,
        not synthetic event counters or presumed USB attachment.
@@ -451,7 +462,7 @@ static void frf_post_draw(void)
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R11 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R12 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;
@@ -551,6 +562,13 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
 {
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_native_usb_peripherals(uint32_t msc,uint32_t pads,uint32_t blocks)
+{
+    native_usb_storage_detected=msc;
+    native_usb_pad_detected=pads;
+    native_usb_storage_blocks=blocks;
     frf_post_draw();
 }
 void frf_post_native_usb_ep0(unsigned hcchar,unsigned hctsiz)

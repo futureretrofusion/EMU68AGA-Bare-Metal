@@ -75,7 +75,7 @@ TU_ATTR_ALWAYS_INLINE static inline msch_epbuf_t* get_epbuf(uint8_t daddr) {
 
 static bool data_stage_xfer(uint8_t daddr, msch_interface_t* p_msc, const msc_cbw_t* cbw) {
   const uint8_t  ep_data = (cbw->dir & TUSB_DIR_IN_MASK) ? p_msc->ep_in : p_msc->ep_out;
-  const uint16_t len     = (uint16_t) tu_min32(cbw->total_bytes - p_msc->data_xferred, MSCH_DATA_XFER_MAX);
+  const uint16_t len     = (uint16_t) tu_min32(tu_le32toh(cbw->total_bytes) - p_msc->data_xferred, MSCH_DATA_XFER_MAX);
   return usbh_edpt_xfer(daddr, ep_data, (uint8_t*) p_msc->buffer + p_msc->data_xferred, len);
 }
 
@@ -131,9 +131,19 @@ bool tuh_msc_ready(uint8_t dev_addr) {
 //--------------------------------------------------------------------+
 static inline void cbw_init(msc_cbw_t* cbw, uint8_t lun) {
   tu_memclr(cbw, sizeof(msc_cbw_t));
-  cbw->signature = MSC_CBW_SIGNATURE;
-  cbw->tag       = 0x54555342; // TUSB
+  cbw->signature = tu_htole32(MSC_CBW_SIGNATURE);
+  cbw->tag       = tu_htole32(0x54555342u); // TUSB wire LE
   cbw->lun       = lun;
+}
+
+/* Regression helper builds the same CBW fields used by the real
+ * READ10/WRITE10 routines. Verify their wire byte order on ARM64-BE. */
+void frf_msc_probe_cbw_wire(uint8_t out[12], uint32_t bytes)
+{
+    msc_cbw_t cbw;
+    cbw_init(&cbw,0u);
+    cbw.total_bytes=tu_htole32(bytes);
+    memcpy(out,&cbw,12u);
 }
 
 bool tuh_msc_scsi_command(uint8_t daddr, msc_cbw_t const* cbw, void* data,
@@ -167,7 +177,7 @@ bool tuh_msc_read_capacity(uint8_t dev_addr, uint8_t lun, scsi_read_capacity10_r
   msc_cbw_t cbw;
   cbw_init(&cbw, lun);
 
-  cbw.total_bytes = sizeof(scsi_read_capacity10_resp_t);
+  cbw.total_bytes = tu_htole32(sizeof(scsi_read_capacity10_resp_t));
   cbw.dir        = TUSB_DIR_IN_MASK;
   cbw.cmd_len    = sizeof(scsi_read_capacity10_t);
   cbw.command[0] = SCSI_CMD_READ_CAPACITY_10;
@@ -183,7 +193,7 @@ bool tuh_msc_inquiry(uint8_t dev_addr, uint8_t lun, scsi_inquiry_resp_t* respons
   msc_cbw_t cbw;
   cbw_init(&cbw, lun);
 
-  cbw.total_bytes = sizeof(scsi_inquiry_resp_t);
+  cbw.total_bytes = tu_htole32(sizeof(scsi_inquiry_resp_t));
   cbw.dir         = TUSB_DIR_IN_MASK;
   cbw.cmd_len     = sizeof(scsi_inquiry_t);
 
@@ -217,7 +227,7 @@ bool tuh_msc_request_sense(uint8_t dev_addr, uint8_t lun, void* response,
   msc_cbw_t cbw;
   cbw_init(&cbw, lun);
 
-  cbw.total_bytes = 18; // TODO sense response
+  cbw.total_bytes = tu_htole32(18u); // TODO sense response
   cbw.dir         = TUSB_DIR_IN_MASK;
   cbw.cmd_len     = sizeof(scsi_request_sense_t);
 
@@ -240,7 +250,7 @@ bool tuh_msc_read10(uint8_t dev_addr, uint8_t lun, void* buffer, uint32_t lba, u
 
   const uint32_t block_size = p_msc->capacity[lun].block_size;
   TU_VERIFY(block_count <= UINT32_MAX / tu_max32(block_size, 1)); // CBW data length is 32-bit
-  cbw.total_bytes = block_count * block_size;
+  cbw.total_bytes = tu_htole32(block_count * block_size);
   cbw.dir = TUSB_DIR_IN_MASK;
   cbw.cmd_len = sizeof(scsi_read10_t);
 
@@ -264,7 +274,7 @@ bool tuh_msc_write10(uint8_t dev_addr, uint8_t lun, void const* buffer, uint32_t
 
   const uint32_t block_size = p_msc->capacity[lun].block_size;
   TU_VERIFY(block_count <= UINT32_MAX / tu_max32(block_size, 1)); // CBW data length is 32-bit
-  cbw.total_bytes = block_count * block_size;
+  cbw.total_bytes = tu_htole32(block_count * block_size);
   cbw.dir         = TUSB_DIR_OUT;
   cbw.cmd_len     = sizeof(scsi_write10_t);
 
@@ -289,7 +299,7 @@ bool tuh_msc_reset(uint8_t dev_addr) {
     },
     .bRequest = MSC_REQ_RESET,
     .wValue   = 0,
-    .wIndex   = p_msc->itf_num,
+    .wIndex   = tu_htole16((uint16_t)p_msc->itf_num),
     .wLength  = 0
   };
   TU_ASSERT( usbh_control_xfer( dev_addr, &new_request, NULL ) );
@@ -335,7 +345,7 @@ bool msch_xfer_cb(uint8_t dev_addr, uint8_t ep_addr, xfer_result_t event, uint32
     case MSC_STAGE_CMD:
       // Must be Command Block
       TU_ASSERT(ep_addr == p_msc->ep_out && event == XFER_RESULT_SUCCESS && xferred_bytes == sizeof(msc_cbw_t));
-      if (cbw->total_bytes && p_msc->buffer) {
+      if (tu_le32toh(cbw->total_bytes) && p_msc->buffer) {
         // Data stage if any
         p_msc->stage = MSC_STAGE_DATA;
         p_msc->data_xferred = 0;
@@ -348,7 +358,7 @@ bool msch_xfer_cb(uint8_t dev_addr, uint8_t ep_addr, xfer_result_t event, uint32
     case MSC_STAGE_DATA:
       p_msc->data_xferred += xferred_bytes;
       if (event == XFER_RESULT_SUCCESS && xferred_bytes == MSCH_DATA_XFER_MAX &&
-          p_msc->data_xferred < cbw->total_bytes) {
+          p_msc->data_xferred < tu_le32toh(cbw->total_bytes)) {
         TU_ASSERT(data_stage_xfer(dev_addr, p_msc, cbw));
       } else {
         TU_ASSERT(status_stage_xfer(dev_addr, p_msc, csw));
@@ -430,8 +440,8 @@ bool msch_set_config(uint8_t daddr, uint8_t itf_num) {
       },
       .bRequest = MSC_REQ_GET_MAX_LUN,
       .wValue   = 0,
-      .wIndex   = itf_num,
-      .wLength  = 1
+      .wIndex   = tu_htole16((uint16_t)itf_num),
+      .wLength  = tu_htole16(1u)
   };
 
   uint8_t* enum_buf = usbh_get_enum_buf();

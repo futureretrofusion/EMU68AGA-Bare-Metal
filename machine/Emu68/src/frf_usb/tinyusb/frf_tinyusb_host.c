@@ -20,12 +20,25 @@ extern volatile uint8_t frf_usb_mouse_present;
 extern volatile uint8_t frf_usb_mouse_seen;
 extern volatile uint8_t frf_usb_mouse_buttons;
 extern void frf_native_usb_keyboard_boot_report(const uint8_t report[8]);
+extern int frf_native_usb_reboot_requested(void);
+extern void aga_reboot(int tryboot);
 extern void aga_virtual_mouse_update(int dx,int dy,unsigned buttons);
 extern void frf_boot_stage(unsigned stage);
 extern void frf_post_native_usb_stage(unsigned stage,int rc,
                                      uint32_t detail,uint32_t aux);
 extern void frf_post_native_usb_ahb(unsigned raw);
+extern void frf_post_native_usb_peripherals(uint32_t,uint32_t,uint32_t);
 extern void kprintf(const char *format,...);
+extern void frf_tinyusb_msc_mount(uint8_t addr);
+extern void frf_tinyusb_msc_unmount(uint8_t addr);
+extern void frf_tinyusb_msc_service(void);
+extern uint32_t frf_tinyusb_msc_devices(void);
+extern uint32_t frf_tinyusb_msc_capacity(void);
+extern void frf_tinyusb_pad_mount(uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern void frf_tinyusb_pad_unmount(uint8_t,uint8_t);
+extern void frf_tinyusb_pad_report(uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern uint32_t frf_tinyusb_gamepad_count(void);
+extern uint32_t frf_tinyusb_gamepad_reports(void);
 
 /* Pi3 GPU/DWC2 DMA sees CPU RAM through the 0xC0000000 bus alias.
    Translate every virtual pointer through Emu68's live stage-1 MMU tables.
@@ -130,8 +143,10 @@ void tu_hwfifo_read(const volatile void *fifo,uint8_t *dst,
 }
 void tuh_mount_cb(uint8_t daddr)
 {
+    uint16_t vid=0,pid=0;
+    (void)tuh_vid_pid_get(daddr,&vid,&pid);
     frf_usb_enumerations++;
-    kprintf("[FRF-TINYUSB] device mounted address=%u\\n",daddr);
+    kprintf("[FRF-TINYUSB] USB device mount addr=%u VID=%04x PID=%04x\\n",daddr,vid,pid);
 }
 void tuh_umount_cb(uint8_t daddr)
 {
@@ -142,6 +157,7 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
 {
     (void)descriptor;(void)descriptor_len;
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+    frf_tinyusb_pad_mount(addr,idx,descriptor,descriptor_len);
     /* All HID mounts count, even generic interfaces without boot report
        protocol (composite mice, modern keyboards, gamepads). */
     frf_usb_hid_interfaces++;
@@ -157,7 +173,7 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
 }
 void tuh_hid_umount_cb(uint8_t addr,uint8_t idx)
 {
-    (void)addr;(void)idx;
+    frf_tinyusb_pad_unmount(addr,idx);
 }
 void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
                                 const uint8_t *data,uint16_t len)
@@ -174,16 +190,20 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
         frf_usb_mouse_buttons=buttons;
         frf_usb_reports++;
     }
+    /* Generic Desktop Gamepad/Joystick report interfaces, independent
+       of keyboard/mouse boot protocol. */
+    frf_tinyusb_pad_report(addr,idx,data,len);
     (void)tuh_hid_receive_report(addr,idx);
 }
 void tuh_msc_mount_cb(uint8_t addr)
 {
+    frf_tinyusb_msc_mount(addr);
     ++frf_usb_storage;
     kprintf("[FRF-TINYUSB] MSC device enumerated address=%u; guest disk not mapped\\n",addr);
 }
 void tuh_msc_umount_cb(uint8_t addr)
 {
-    (void)addr;
+    frf_tinyusb_msc_unmount(addr);
     if(frf_usb_storage) --frf_usb_storage;
 }
 static uint32_t pi3_dwc2_read(unsigned offset)
@@ -245,6 +265,7 @@ void frf_tinyusb_host_main(void)
     bool last_connected=connected_before;
     uint32_t last_rescan=enumeration_started;
     uint32_t root_attach_attempts=connected_before?1u:0u;
+    uint32_t last_msc_post=~0u,last_pad_post=~0u,last_capacity_post=~0u;
     /* CPU1 processes the DWC2 interrupt status in one event/task context.
        Unlike earlier hand-written polling, TinyUSB owns hub TT scheduling.
        On an already-connected root hub, retry enumeration occasionally if
@@ -266,6 +287,23 @@ void frf_tinyusb_host_main(void)
 #endif
         hcd_int_handler(0,false);
         tuh_task_ext(0,false);
+        frf_tinyusb_msc_service(); /* CPU1 only; services 68k FRUM sector requests */
+        const uint32_t msc_total=frf_tinyusb_msc_devices();
+        const uint32_t pad_total=frf_tinyusb_gamepad_count();
+        const uint32_t blocks=frf_tinyusb_msc_capacity();
+        if(msc_total!=last_msc_post || pad_total!=last_pad_post ||
+           blocks!=last_capacity_post) {
+            frf_post_native_usb_peripherals(msc_total,pad_total,blocks);
+            last_msc_post=msc_total;
+            last_pad_post=pad_total;
+            last_capacity_post=blocks;
+        }
+        /* Reboot only from CPU1 worker context, never inside HID callback,
+           and only after a newly pressed Ctrl+LeftShift+F11 chord. */
+        if(frf_native_usb_reboot_requested()) {
+            kprintf("[FRF-TINYUSB] Ctrl+LeftShift+F11: host reboot\n");
+            aga_reboot(0);
+        }
         uint32_t now=tusb_time_millis_api();
 #ifdef FRF_USB_DIAG_HOLD
         if((int32_t)(now-next_live_draw)>=0) {

@@ -21,6 +21,19 @@
 #include "host/hub.h"
 #include "portable/synopsys/dwc2/dwc2_type.h"
 #include "common/tusb_fifo.h"
+#include "class/hid/hid_device.h"
+#include <stdarg.h>
+static uint16_t simulated_joy1;
+static int simulated_fire;
+void aga_virtual_joy_set(int port,uint16_t joy,int fire) {
+    if(port==1){ simulated_joy1=joy; simulated_fire=fire; }
+}
+void kprintf(const char *fmt,...) {(void)fmt;}
+extern void frf_tinyusb_pad_mount(uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern void frf_tinyusb_pad_unmount(uint8_t,uint8_t);
+extern void frf_tinyusb_pad_report(uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern uint32_t frf_tinyusb_gamepad_count(void);
+extern uint32_t frf_pad_is_joystick_usage(uint16_t,uint8_t);
 void tu_hwfifo_write(volatile void *fifo,const uint8_t *b,uint16_t n,const tu_hwfifo_access_t *mode) {
  (void)mode;
  for(uint16_t i=0;i<n;i+=4) {uint32_t word=0;
@@ -187,6 +200,41 @@ int main(int argc,char **argv) {
         return 14;
     }
     if(test_mode==0) puts("HUB PORT1 POWER/GET_STATUS/RESET/DESC BYTES and change flags PASS");
+    static const uint8_t standard_pad_descriptor[] = {
+        TUD_HID_REPORT_DESC_GAMEPAD()
+    };
+    if(!frf_pad_is_joystick_usage(HID_USAGE_PAGE_DESKTOP,HID_USAGE_DESKTOP_GAMEPAD) ||
+       frf_pad_is_joystick_usage(HID_USAGE_PAGE_DESKTOP,HID_USAGE_DESKTOP_MOUSE))
+      return 16;
+    frf_tinyusb_pad_mount(2u,0u,standard_pad_descriptor,
+                         (uint16_t)sizeof(standard_pad_descriptor));
+    if(frf_tinyusb_gamepad_count()!=1u) {
+        puts("GAMEPAD descriptor classification FAILED");return 17;
+    }
+    uint8_t left_fire[11]={0xc0u,0,0,0,0,0,0,1u,0,0,0};
+    frf_tinyusb_pad_report(2u,0u,left_fire,sizeof(left_fire));
+    if(simulated_joy1!=0x0300u || simulated_fire!=1) {
+        printf("GAMEPAD joystick/fire mapping FAILED joy=%04x fire=%d\n",simulated_joy1,simulated_fire);
+        return 18;
+    }
+    uint8_t neutral[11]={0};
+    frf_tinyusb_pad_report(2u,0u,neutral,sizeof(neutral));
+    if(simulated_joy1 || simulated_fire) return 19;
+    frf_tinyusb_pad_unmount(2u,0u);
+    if(frf_tinyusb_gamepad_count()!=0u) return 20;
+    if(test_mode==0) puts("HID GAMEPAD desc/mount, port2 movement/fire, neutral and unmount PASS");
+    extern void frf_msc_probe_cbw_wire(uint8_t out[12],uint32_t bytes);
+    uint8_t cbw_wire[12]={0};
+    const uint8_t cbw_expected[12]={
+        0x55u,0x53u,0x42u,0x43u, 0x42u,0x53u,0x55u,0x54u,
+        0x00u,0x02u,0x00u,0x00u
+    };
+    frf_msc_probe_cbw_wire(cbw_wire,512u);
+    if(memcmp(cbw_wire,cbw_expected,12u)) {
+        fprintf(stderr,"MSC CBW BIG-ENDIAN WIRE FIELDS FAILED\n");
+        return 15;
+    }
+    if(test_mode==0) puts("USB MSC READ10 CBW signature/tag/512-byte data length wire LE PASS");
     /* An ARM-BE host must transmit these exact USB little-endian SETUP
        bytes over DMA. This is not covered by the DWC2 register ABI test. */
     const tusb_control_request_t setup={

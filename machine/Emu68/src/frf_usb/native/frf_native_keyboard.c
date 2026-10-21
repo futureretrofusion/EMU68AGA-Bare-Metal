@@ -57,6 +57,12 @@ static void output(struct frf_native_keyboard *state, frf_key_emit_fn emit,
         state->transitions++;
     }
 }
+int frf_native_keyboard_take_reboot(struct frf_native_keyboard *s)
+{
+    if (!s || !s->host_reboot_pending) return 0;
+    s->host_reboot_pending=0;
+    return 1;
+}
 void frf_native_keyboard_report(struct frf_native_keyboard *s,
                                 const uint8_t report[8],
                                 frf_key_emit_fn emit, void *ctx)
@@ -70,6 +76,15 @@ void frf_native_keyboard_report(struct frf_native_keyboard *s,
     /* HID error rollover: do not release all keys on a corrupt report. */
     for (unsigned i=0; i<6; ++i)
         if (keys[i] >= 1 && keys[i] <= 3) return;
+    /* Host-only Pi reboot: CTRL (either side) + LEFT SHIFT + F11.
+       USB HID modifier bits: LCTRL=0x01, LSHIFT=0x02, RCTRL=0x10;
+       F11 usage=0x44. Edge-triggered: holding the chord cannot
+       repeatedly reboot the Pi. Do not send F11 to Amiga guest. */
+    const uint8_t chord=(uint8_t)(((modifiers & 0x11u)!=0u) &&
+                           ((modifiers & 0x02u)!=0u) &&
+                           contains(keys,0x44u));
+    if(chord && !s->host_reboot_held) s->host_reboot_pending=1u;
+    s->host_reboot_held=chord;
     for (unsigned i=0; i<8; ++i) {
         uint8_t bit = (uint8_t)(1u << i);
         if ((s->modifiers ^ modifiers) & bit)

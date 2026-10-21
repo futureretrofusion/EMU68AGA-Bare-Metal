@@ -655,14 +655,10 @@ static void config_driver_mount_complete(uint8_t daddr, uint8_t idx, uint8_t con
 uint8_t tuh_hid_parse_report_descriptor(tuh_hid_report_info_t* report_info_arr, uint8_t arr_count,
                                         uint8_t const* desc_report, uint16_t desc_len) {
   // Report Item 6.2.2.2 USB HID 1.11
-  union TU_ATTR_PACKED {
-    uint8_t byte;
-    struct TU_ATTR_PACKED {
-      uint8_t size : 2;
-      uint8_t type : 2;
-      uint8_t tag : 4;
-    };
-  } header;
+  /* HID short-item header layout is defined by numeric bit positions,
+   * not the host compiler's uint8_t bitfield allocation order. On BE ARM
+   * the old union reversed tag/type/size and skipped gamepad reports. */
+  uint8_t header_byte;
 
   tu_memclr(report_info_arr, arr_count * sizeof(tuh_hid_report_info_t));
 
@@ -675,12 +671,12 @@ uint8_t tuh_hid_parse_report_descriptor(tuh_hid_report_info_t* report_info_arr, 
 
   uint8_t ri_collection_depth = 0;
   while (desc_len && report_num < arr_count) {
-    header.byte = *desc_report++;
+    header_byte = *desc_report++;
     desc_len--;
 
-    uint8_t const tag = header.tag;
-    uint8_t const type = header.type;
-    uint8_t size = header.size;
+    uint8_t const tag = (uint8_t)(header_byte >> 4);
+    uint8_t const type = (uint8_t)((header_byte >> 2) & 3u);
+    uint8_t size = (uint8_t)(header_byte & 3u);
     if (size == 3) {
       size = 4; // HID 1.11 6.2.2.2 3 is 4 bytes
     }
@@ -726,8 +722,13 @@ uint8_t tuh_hid_parse_report_descriptor(tuh_hid_report_info_t* report_info_arr, 
             if (ri_collection_depth == 0) {
               // zero-extend: a shorter payload must not leave a stale high byte
               // from a previous usage page item in the same report
-              info->usage_page = 0;
-              memcpy(&info->usage_page, desc_report, TU_MIN(size, sizeof(info->usage_page)));
+              /* HID usage-page item is little-endian on the wire.
+               * memcpy(&uint16, one_byte, 1) on AARCH64-BE turns page 1
+               * into 0x0100. That prevents all Generic Desktop
+               * joystick/gamepad descriptor classification. */
+              info->usage_page = (uint16_t)data8;
+              if (size > 1u)
+                info->usage_page |= (uint16_t)((uint16_t)desc_report[1] << 8);
             }
             break;
 
