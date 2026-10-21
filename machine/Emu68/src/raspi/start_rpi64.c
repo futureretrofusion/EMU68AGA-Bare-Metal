@@ -327,6 +327,7 @@ static volatile uint32_t post_key_count;
 static volatile uint32_t native_usb_stage, native_usb_rc;
 static volatile uint32_t native_usb_detail, native_usb_aux;
 static volatile uint32_t native_usb_cpu1_seen, native_usb_cpu1_chip;
+static volatile uint32_t native_usb_ahb_config;
 
 #endif
 static void frf_post_draw(void)
@@ -350,7 +351,7 @@ static void frf_post_draw(void)
 #else
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
-    post_text(x+10,y+25,"TINYUSB PI3 / REV4",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / DMA REV5",cyan);
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
 #endif
@@ -368,12 +369,23 @@ static void frf_post_draw(void)
     const uint32_t ns=__atomic_load_n(&native_usb_stage,__ATOMIC_ACQUIRE);
     const uint32_t nr=__atomic_load_n(&native_usb_rc,__ATOMIC_ACQUIRE);
     const uint32_t cpu1=__atomic_load_n(&native_usb_cpu1_seen,__ATOMIC_ACQUIRE);
-    const char *ns_status = (ns>=7u && nr==0u)?"HID OK":
-                            (nr!=0u)?"ERROR":
-                            (ns>=6u)?"SCAN":
-                            (ns>=3u)?"DWC2":
-                            (ns>=1u)?"POWER":
-                            cpu1?"CORE1":"NO CPU1";
+    const char *ns_status =
+          (ns==8u && nr==0u)?"HID READY":
+          (ns==8u && nr==(uint32_t)-9)?"DMA ADDRESS":
+          (ns==8u && nr==(uint32_t)-6)?"NO PORT PWR":
+          (ns==8u && nr==(uint32_t)-7)?"NO ROOT HUB":
+          (ns==8u && nr!=(uint32_t)0)?"NO HID":
+          (ns==7u && nr==0u)?"HID FOUND":
+          (ns==4u && nr==(uint32_t)-7)?"NO HUB":
+          (ns==4u && nr==(uint32_t)-6)?"NO PORT PWR":
+          (ns==3u && nr!=(uint32_t)0)?"CORE FAIL":
+          (ns==2u && nr!=(uint32_t)0)?"PROBE FAIL":
+          (ns==1u && nr!=(uint32_t)0)?"FW PWR FAIL":
+          (nr!=(uint32_t)0)?"USB ERROR":
+          (ns>=6u)?"ENUM SCAN":
+          (ns>=3u)?"DWC2 DMA":
+          (ns>=1u)?"POWER":
+          cpu1?"CORE1":"NO CPU1";
     post_row(x+10,y+84,"USB HOST",ns_status,
              (ns>=7u&&nr==0u)?green:amber);
 #else
@@ -397,8 +409,8 @@ static void frf_post_draw(void)
     post_dec(x+62,y+183,cpu1,1,cpu1?green:amber);
     post_text(x+102,y+183,"AGA:",white);
     post_dec(x+143,y+183,native_usb_cpu1_chip,1,cyan);
-    post_text(x+175,y+183,"USB RC:",white);
-    post_hex(x+233,y+183,nr,8,nr?amber:green);
+    post_text(x+175,y+183,"AHB:",white);
+    post_hex(x+211,y+183,native_usb_ahb_config,8,cyan);
     post_rect(x+8,y+204,w-16,1,0x2965u);
     post_text(x+10,y+207,"NO USPI - NATIVE USB TEST",amber);
 #else
@@ -492,6 +504,11 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
 {
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_native_usb_ahb(unsigned raw)
+{
+    native_usb_ahb_config=raw;
     frf_post_draw();
 }
 void frf_post_native_usb_stage(unsigned stage, int rc,

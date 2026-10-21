@@ -4,8 +4,8 @@
  *
  * TinyUSB host task and DWC2 interrupt pump both live exclusively on CPU1.
  * ARM is big-endian but DWC2 register and FIFO words are little-endian.
- * DWC2 C translation units use little scalar storage order; the custom
- * FIFO helpers below explicitly convert words to/from USB bus byte order.
+ * Only DWC2 register types use LE scalar storage; the normal host stack
+ * remains BE. This version uses BCM2837 GPU-addressed internal DMA.
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -24,8 +24,24 @@ extern void aga_virtual_mouse_update(int dx,int dy,unsigned buttons);
 extern void frf_boot_stage(unsigned stage);
 extern void frf_post_native_usb_stage(unsigned stage,int rc,
                                      uint32_t detail,uint32_t aux);
+extern void frf_post_native_usb_ahb(unsigned raw);
 extern void kprintf(const char *format,...);
 
+/* Pi3 GPU/DWC2 DMA sees CPU RAM through the 0xC0000000 bus alias.
+   Translate every virtual pointer through Emu68's live stage-1 MMU tables.
+   DMA is attempted only for the Pi3 USB controller, never copied USPi code. */
+extern uintptr_t mmu_virt2phys(uintptr_t va);
+static volatile uint32_t frf_usb_dma_invalid_address;
+void* tusb_app_virt_to_phys(void *virtual_address)
+{
+    if (!virtual_address) return NULL;
+    uintptr_t physical=mmu_virt2phys((uintptr_t)virtual_address);
+    if (physical == (uintptr_t)-1 || physical >= 0x40000000u) {
+        frf_usb_dma_invalid_address++;
+        return NULL;
+    }
+    return (void *)(uintptr_t)((physical & 0x3fffffffu) | 0xc0000000u);
+}
 static volatile uint32_t frf_usb_hid_keyboard,frf_usb_hid_mouse,frf_usb_storage;
 static volatile uint32_t frf_usb_reports,frf_usb_enumerations;
 
@@ -86,8 +102,9 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
         frf_usb_hid_mouse++;
         frf_usb_mouse_present=1;
     }
-    frf_post_native_usb_stage(7,0,((uint32_t)frf_usb_hid_keyboard<<16)|
-                              frf_usb_hid_mouse,frf_usb_enumerations);
+    if(frf_usb_hid_keyboard || frf_usb_hid_mouse)
+        frf_post_native_usb_stage(7,0,((uint32_t)frf_usb_hid_keyboard<<16)|
+                                  frf_usb_hid_mouse,frf_usb_enumerations);
     (void)tuh_hid_receive_report(addr,idx);
 }
 void tuh_hid_umount_cb(uint8_t addr,uint8_t idx)
@@ -138,6 +155,7 @@ void frf_tinyusb_host_main(void)
     /* Show actual GUSBCFG PHY mode, HPRT and PCGCCTL power status;
        a successful return from hcd_init alone cannot prove port power. */
     uint32_t port_raw=pi3_dwc2_read(0x440u);
+    frf_post_native_usb_ahb(pi3_dwc2_read(0x008u)); /* DMAEN bit5 */
     frf_post_native_usb_stage(3,ok?0:-1,
                               pi3_dwc2_read(0x00cu),port_raw);
     if(!ok) {
@@ -191,12 +209,18 @@ void frf_tinyusb_host_main(void)
                RC=0 means a real HID mount; RC=-8 means a 5-second timeout.
                A failed mount preserves raw HPRT and PHY configuration. */
             uint32_t mounted=frf_usb_hid_keyboard+frf_usb_hid_mouse;
-            /* On HID timeout do NOT discard the evidence of the original
-               failure. DETAIL=raw HPRT and AUX=GUSBCFG allow decoding root
-               power bit12, physical hub connect bit0, PHY mode bit3/4. */
-            frf_post_native_usb_stage(8,mounted?0:-8,
-                          mounted?mounted:pi3_dwc2_read(0x440u),
-                          mounted?frf_usb_enumerations:pi3_dwc2_read(0x00cu));
+            uint32_t port=pi3_dwc2_read(0x440u);
+            /* Distinguish physical root power (bit 12), physical hub
+               presence (bit 0), DMA bus translation and HID timeout.
+               All statuses use actual registers and real callback counts. */
+            int fail_rc=!(port&(1u<<12)) ? -6 :
+                        !(port&1u) ? -7 :
+                        frf_usb_dma_invalid_address ? -9 : -8;
+            frf_post_native_usb_stage(8,mounted?0:fail_rc,
+                          mounted?mounted:port,
+                          mounted?frf_usb_enumerations:
+                            (frf_usb_dma_invalid_address ?
+                             frf_usb_dma_invalid_address:pi3_dwc2_read(0x00cu)));
             frf_boot_stage(10);
             __atomic_store_n(&frf_usb_boot_ready,1u,__ATOMIC_RELEASE);
             __asm__ volatile("sev" ::: "memory");

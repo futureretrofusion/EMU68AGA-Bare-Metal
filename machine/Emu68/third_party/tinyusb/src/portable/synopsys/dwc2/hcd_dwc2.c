@@ -784,7 +784,19 @@ static bool channel_xfer_start(dwc2_regs_t* dwc2, uint8_t ch_id, bool defer_peri
     channel->hcintmsk = HCINT_HALTED;
     dwc2->haintmsk |= TU_BIT(ch_id);
 
+#ifdef FRF_USB_TINYUSB
+    /* BCM2837 internal DMA requires GPU BUS address, not kernel VA.
+       Even zero-length control status phases require a valid DMA pointer. */
+    static uint8_t pi3_zero_dma[64] TU_ATTR_ALIGNED(64);
+    void *dma_buf=edpt->buffer ? edpt->buffer : pi3_zero_dma;
+    uintptr_t bus_addr=(uintptr_t)tusb_app_virt_to_phys(dma_buf);
+    TU_ASSERT(bus_addr >= 0xc0000000u && bus_addr <= 0xffffffffu);
+    channel->hcdma = (uint32_t)bus_addr;
+    if (hcchar_bm->ep_dir == TUSB_DIR_IN)
+        hcd_dcache_clean_invalidate(dma_buf,edpt->buflen ? edpt->buflen : 4u);
+#else
     channel->hcdma = (uintptr_t) edpt->buffer;
+#endif
 
     if (hcchar_bm->ep_dir == TUSB_DIR_IN) {
       periodic_frame = channel_send_in_token(dwc2, channel, is_period);
@@ -1634,11 +1646,13 @@ static void handle_channel_irq(uint8_t rhport, bool in_isr) {
         if (hcchar.ep_dir == TUSB_DIR_OUT) {
           is_done = handle_channel_out_dma(dwc2, ch_id, hcint);
         } else {
+          /* DWC2 HCDMA has a GPU bus address, not a CPU pointer.
+           * Invalidate the actual CPU buffer, never dereference HCDMA as a
+           * virtual pointer (previous DMA upstream code assumes identity). */
+          uint8_t *cpu_buffer=_hcd_data.edpt[xfer->ep_id].buffer;
           is_done = handle_channel_in_dma(dwc2, ch_id, hcint);
-          if (is_done && (channel->hcdma > xfer->xferred_bytes)) {
-            // hcdma is increased by word --> need to align4
-            hcd_dcache_invalidate((void*) tu_align4(channel->hcdma - xfer->xferred_bytes), xfer->xferred_bytes);
-          }
+          if (is_done && cpu_buffer && xfer->xferred_bytes)
+            hcd_dcache_invalidate(cpu_buffer,xfer->xferred_bytes);
         }
         #endif
       } else {

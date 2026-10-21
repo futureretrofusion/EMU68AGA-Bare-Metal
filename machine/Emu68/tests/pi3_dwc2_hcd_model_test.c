@@ -43,6 +43,16 @@ void tu_hwfifo_read(const volatile void *fifo,uint8_t *b,uint16_t n,const tu_hwf
 #define HPRT    0x440u
 #define PCGCCTL 0xe00u
 #define AHBIDLE 0x80000000u
+/* Host-side stand-in for Pi3 GPU bus translation and cache hooks.
+   The ARM integration calls mmu_virt2phys() and uses CPU cache operations. */
+static volatile unsigned dma_clean_calls,dma_invalidate_calls,dma_translate_calls;
+void arm_flush_cache(uintptr_t p,uint32_t n){(void)p;(void)n;dma_clean_calls++;}
+void arm_dcache_invalidate(uintptr_t p,uint32_t n){(void)p;(void)n;dma_invalidate_calls++;}
+void* tusb_app_virt_to_phys(void *p) {
+    if (!p) return NULL;
+    dma_translate_calls++;
+    return (void *)(uintptr_t)(0xc0100000u|((uintptr_t)p&0x000fffffu));
+}
 static volatile uint32_t *regs;
 static volatile int running=1;
 /* 0 healthy, 1 no root hub, 2 stalled core reset,
@@ -111,6 +121,7 @@ int main(int argc,char **argv) {
     uint32_t elapsed=tusb_time_millis_api()-before;
     const uint32_t phy=regs[GUSBCFG/4];
     const uint32_t port=regs[HPRT/4];
+    const uint32_t gahbcfg=regs[0x008u/4];
     printf("HCD init=%u elapsed=%ums PHYCFG=%08x HPRT=%08x PCGCCTL=%08x reset=%u tx=%u rx=%u power_samples=%u PHY_BEFORE_RESET=%08x\n",
            ok,elapsed,phy,port,regs[PCGCCTL/4],core_resets,tx_flushes,rx_flushes,powered,phy_cfg_during_reset);
     const bool expected = test_mode==0 || test_mode==1 || test_mode==6;
@@ -121,6 +132,10 @@ int main(int argc,char **argv) {
              (phy & (1u<<3))==0 && core_resets && tx_flushes && rx_flushes);
     const bool as_expected= test_mode==1?(worked && !hcd_port_connect_status(0)):
                            (expected ? worked : !ok);
+    if(ok && !(gahbcfg&(1u<<5))) {
+        puts("DMA GAHBCFG.ENABLE missing");
+        running=0;pthread_join(worker,NULL);return 1;
+    }
     printf("MODE %d expected %s: %s\n",test_mode,
            expected?"init success":"init failure",
            as_expected?"PASS":"FAIL");
@@ -137,6 +152,14 @@ int main(int argc,char **argv) {
             hcd_int_handler(0,false);
             tuh_task_ext(0,false);
             usleep(100);
+        }
+        const uint32_t dma_first=regs[(0x500u+0x14u)/4];
+        printf("FIRST CONTROL DMA bus=%08x translated=%u clean=%u invalidate=%u\n",
+               dma_first,dma_translate_calls,dma_clean_calls,dma_invalidate_calls);
+        if((dma_first&0xc0000000u)!=0xc0000000u || !dma_translate_calls ||
+           !dma_clean_calls) {
+            puts("DWC2 channel DMA address/cache: FAIL");
+            running=0;pthread_join(worker,NULL);return 1;
         }
         printf("ROOT HUB simulated enumeration reset=%u enabled=%u EP0_SETUP=%u\n",
                 port_reset_asserted,port_enabled_seen,ep0_setup_armed);
