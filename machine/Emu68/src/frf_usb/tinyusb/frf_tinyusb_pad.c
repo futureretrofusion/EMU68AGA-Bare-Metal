@@ -20,9 +20,12 @@ struct pad_itf {
     struct frf_hid_map desc_map;
 };
 static struct pad_itf pads[FRF_PAD_SLOTS];
+volatile uint8_t frf_r26_receiver_addr;
 static uint32_t active_pads,gamepad_reports;
 static uint32_t dyonder_report_ok,dyonder_report_ignore;
 static uint32_t pad_submit_deferred,pad_submit_recovered;
+static volatile uint32_t nr,so,sf,pt;
+void frf_r25_poll_stats(uint32_t *o){o[0]=nr;o[1]=so;o[2]=sf;o[3]=pt;}
 static volatile uint32_t descriptor_packets,descriptor_valid,descriptor_joy,descriptor_fire;
 static volatile uint32_t descriptor_last_address,descriptor_fields;
 extern int frf_r20_is_receiver(uint16_t,uint16_t,uint8_t);
@@ -126,6 +129,7 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         p->next_submit_ms=tusb_time_millis_api()+10u;
         ++active_pads;
         r20_dev=((uint32_t)addr<<16)|idx;
+        frf_r26_receiver_addr=addr;
         kprintf("[FRF-R21] 7E05:0920 HID controller claimed at USB %u interface %u, PAD=%u\n",
                 addr,idx,active_pads);
         return;
@@ -207,6 +211,7 @@ void frf_tinyusb_pad_unmount(uint8_t addr,uint8_t idx)
 {
     struct pad_itf *p=find(addr,idx);
     if(!p) return;
+    if(p->report_is_common==5u && frf_r26_receiver_addr==addr) frf_r26_receiver_addr=0;
     memset(p,0,sizeof(*p));
     if(active_pads) --active_pads;
     /* Port 2 is exclusively assigned to first mapped gamepad. */
@@ -283,6 +288,7 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
         p->next_submit_ms=tusb_time_millis_api()+10u;
         ++active_pads;
         r20_dev=((uint32_t)addr<<16)|idx;
+        frf_r26_receiver_addr=addr;
         kprintf("[FRF-R21] 7E05:0920 observed 24B controller candidate at USB %u HID %u\n",addr,idx);
     }
     ++r20_seen;
@@ -377,14 +383,14 @@ void frf_tinyusb_pad_retry_task(void)
         /* Only exact R21 HID receiver is paced at 100Hz to prevent
            its interrupt-IN reports starving genuine keyboard releases. */
         p->next_submit_ms=now+(p->report_is_common==5u?10u:500u);
-        if(!tuh_hid_receive_ready(p->addr,p->idx)) continue;
+        ++pt; if(!tuh_hid_receive_ready(p->addr,p->idx)){++nr;continue;}
         if(!tuh_hid_receive_report(p->addr,p->idx)) {
-            ++p->retries;
+            ++sf; ++p->retries;
             ++pad_submit_deferred;
-        } else if(p->retries) {
+        } else { ++so; if(p->retries) {
             ++p->recoveries;
             ++pad_submit_recovered;
             p->retries=0;
-        }
+        }}
     }
 }

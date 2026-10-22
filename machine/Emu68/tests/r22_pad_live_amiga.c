@@ -15,7 +15,7 @@ struct ExpansionBase *ExpansionBase;
 static uint32_t read32(volatile const uint32_t *p) {return *p;}
 int main(void)
 {
-    printf("EMU68AGA R23 live USB + keyboard isolation monitor - Zorro-II board\n");
+    printf("EMU68AGA R26 USPi-parity pad monitor - Zorro-II board\n");
     ExpansionBase=(struct ExpansionBase *)OpenLibrary("expansion.library",37);
     if(!ExpansionBase){puts("expansion.library unavailable");return 10;}
     struct ConfigDev *cd=FindConfigDev(NULL,0x6d73,0x69);
@@ -63,6 +63,9 @@ int main(void)
         const uint32_t kbd_q=read32(&d->kbd_cia_queue);
         const uint32_t kbd_drop=read32(&d->kbd_cia_drops);
         const uint32_t kbd_ack=read32(&d->kbd_cia_timeouts);
+        uint32_t full[6]; for(unsigned k=0;k<6u;k++) full[k]=read32(&d->raw24[k]);
+        uint32_t poll[4]; for(unsigned k=0;k<4u;k++)poll[k]=read32(&d->poll_stats[k]);
+        uint32_t ctrl[4];for(unsigned k=0;k<4u;k++)ctrl[k]=read32(&d->ctrl_stats[k]);
         const uint32_t seq2=read32(&d->sequence);
         if(seq1!=seq2 || (seq2&1u)){Delay(2);continue;}
         if(i==0) puts("Press Dyonder D-pad / stick / A: values update every ~0.5 sec");
@@ -82,12 +85,17 @@ int main(void)
              (unsigned long)kbd_bad,(unsigned long)kbd_keys,
              (unsigned long)kbd_held,(unsigned long)kbd_q,
              (unsigned long)kbd_drop,(unsigned long)kbd_ack);
+        if(read32(&d->version)>=3u) printf("    R24 DATA %08lX %08lX %08lX %08lX %08lX %08lX\n",
+            (unsigned long)full[0],(unsigned long)full[1],(unsigned long)full[2],
+            (unsigned long)full[3],(unsigned long)full[4],(unsigned long)full[5]);
+        if(read32(&d->version)>=4u)printf("R25 POLL notReady=%lu submitOK=%lu submitFail=%lu ticks=%lu\n",(unsigned long)poll[0],(unsigned long)poll[1],(unsigned long)poll[2],(unsigned long)poll[3]);
+        if(read32(&d->version)>=5u)printf("R26 GET tries=%lu OK=%lu ERR=%lu pending=%lu\n",(unsigned long)ctrl[0],(unsigned long)ctrl[1],(unsigned long)ctrl[2],(unsigned long)ctrl[3]);
         if(tick==last_tick && i>1u) puts("    WARNING: CPU1 telemetry clock has not advanced!");
         last_tick=tick;old_rx=rx;old_map=map;old_joy=state;
         Delay(25u);
     }
     (void)old_joy;
     CloseLibrary((struct Library *)ExpansionBase);
-    puts("R22 test complete.");
+    puts("R26 test complete.");
     return 0;
 }

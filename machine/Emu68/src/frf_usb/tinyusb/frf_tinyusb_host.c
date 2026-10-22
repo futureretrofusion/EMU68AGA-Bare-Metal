@@ -61,6 +61,7 @@ extern uint32_t frf_r20_seen(void),frf_r20_valid(void);
 extern uint32_t frf_r20_rejected(void),frf_r20_joy(void);
 extern uint32_t frf_r20_fire(void),frf_r20_dev(void);
 extern void frf_post_r20_compat(const uint32_t fields[6]);
+extern void frf_post_r26_get_stats(uint32_t,uint32_t,uint32_t,uint32_t);
 extern void frf_post_native_usb_device_event(uint32_t,uint32_t,uint32_t,uint32_t);
 extern void frf_post_native_usb_input_trace(const uint32_t *fields,unsigned count);
 extern void aga_virtual_joy_link_stats(uint32_t out[4]);
@@ -118,8 +119,14 @@ static volatile uint32_t frf_r23_keyboard_last_mount;
 static volatile uint32_t frf_hid_rx_count,frf_hid_raw_word0,frf_hid_raw_word1;
 static volatile uint32_t frf_r22_rx,frf_r22_len,frf_r22_word0,frf_r22_word1;
 static volatile uint32_t frf_r22_addr;
+static volatile uint32_t frf_r24_raw24[6];
+static uint8_t frf_r26_ctlbuf[32] __attribute__((aligned(64)));
+static uint8_t frf_r26_ctlpending;
+static uint32_t frf_r26_ctltime,frf_r26_lastrx_ms,frf_r26_ctlattempt,frf_r26_ctlok,frf_r26_ctlfail;
+extern volatile uint8_t frf_r26_receiver_addr;
 static uint32_t frf_r22_host_ticks;
 extern volatile struct frf_um_shared *frf_um_host;
+extern void frf_r25_poll_stats(uint32_t*);
 static void frf_r22_publish(uint32_t now)
 {
     volatile struct frf_um_shared *s=
@@ -162,6 +169,10 @@ static void frf_r22_publish(uint32_t now)
     frf_vcia_keyboard_stats(&depth,&peak,&drops,&ackbad,&ackok);
     d->kbd_cia_queue=depth;d->kbd_cia_drops=drops;
     d->kbd_cia_timeouts=ackbad;d->kbd_cia_acks=ackok;
+    for(unsigned i=0;i<6u;i++) d->raw24[i]=frf_r24_raw24[i];
+    uint32_t poll[4];frf_r25_poll_stats(poll);for(unsigned i=0;i<4u;i++)d->poll_stats[i]=poll[i];
+    d->ctrl_stats[0]=frf_r26_ctlattempt;d->ctrl_stats[1]=frf_r26_ctlok;
+    d->ctrl_stats[2]=frf_r26_ctlfail;d->ctrl_stats[3]=frf_r26_ctlpending;
     __atomic_thread_fence(__ATOMIC_RELEASE);
     d->sequence=seq+2u;
     __atomic_thread_fence(__ATOMIC_RELEASE);
@@ -316,12 +327,22 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
                                   frf_usb_hid_mouse,frf_usb_enumerations);
     (void)tuh_hid_receive_report(addr,idx);
 }
+void tuh_hid_get_report_complete_cb(uint8_t a,uint8_t idx,uint8_t id,uint8_t type,uint16_t len)
+{
+    (void)id;
+    if(a!=frf_r26_receiver_addr || idx!=0u || type!=HID_REPORT_TYPE_INPUT)return;
+    frf_r26_ctlpending=0;
+    if(len==24u && frf_r20_compat_receive(a,idx,frf_r26_ctlbuf,len)) {
+        ++frf_r26_ctlok;
+    } else ++frf_r26_ctlfail;
+}
 void tuh_hid_umount_cb(uint8_t addr,uint8_t idx)
 {
     if(frf_r23_keyboard_last_mount==(((uint32_t)addr<<16)|idx)) {
         frf_native_usb_keyboard_force_release();
         frf_r23_keyboard_last_mount=0u;
     }
+    if(frf_r26_receiver_addr==addr && idx==0u)frf_r26_ctlpending=0;
     frf_tinyusb_pad_unmount(addr,idx);
 }
 void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
@@ -335,10 +356,13 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
         if(tuh_vid_pid_get(addr,&vid,&pid) &&
            vid==0x7e05u && pid==0x0920u) {
             ++frf_r22_rx;
+            frf_r26_lastrx_ms=tusb_time_millis_api();
             frf_r22_addr=((uint32_t)addr<<16)|idx;
             frf_r22_len=len;
             frf_r22_word0=pack4(data,len,0u);
             frf_r22_word1=pack4(data,len,4u);
+            if(len==24u) for(unsigned i=0;i<6u;i++)
+                frf_r24_raw24[i]=pack4(data,len,(uint16_t)(4u*i));
         }
     }
     frf_hid_meta=((uint32_t)len<<16)|((uint32_t)(len?data[0]:0u)<<8)|protocol;
@@ -503,6 +527,17 @@ void frf_tinyusb_host_main(void)
         tuh_task_ext(0,false);
         frf_tinyusb_xpad_task(); /* vendor class Xbox controllers, CPU1 only */
         frf_tinyusb_pad_retry_task(); /* RC9-style initial HID pad retry */
+        /* USPi USBGamePadDeviceGetReport fallback, only when the exact
+           receiver has not produced interrupt-IN packets recently. */
+        const uint32_t ctl_now=tusb_time_millis_api();
+        if(frf_r26_receiver_addr && !frf_r26_ctlpending &&
+           (uint32_t)(ctl_now-frf_r26_lastrx_ms)>=800u &&
+           (uint32_t)(ctl_now-frf_r26_ctltime)>=500u) {
+            frf_r26_ctltime=ctl_now; ++frf_r26_ctlattempt;
+            frf_r26_ctlpending=tuh_hid_get_report(frf_r26_receiver_addr,0u,0u,
+                HID_REPORT_TYPE_INPUT,frf_r26_ctlbuf,24u) ? 1u:0u;
+            if(!frf_r26_ctlpending) ++frf_r26_ctlfail;
+        }
         frf_tinyusb_msc_service(); /* CPU1 only; services 68k FRUM sector requests */
         /* Only refresh HDMI telemetry at most 4Hz; never draw from
            a USB interrupt callback or on every HID report. */
@@ -551,6 +586,7 @@ void frf_tinyusb_host_main(void)
                 frf_r20_joy(),frf_r20_fire(),frf_r20_dev()
             };
             frf_post_r20_compat(r20);
+            frf_post_r26_get_stats(frf_r26_ctlattempt,frf_r26_ctlok,frf_r26_ctlfail,frf_r26_ctlpending);
             last_link_draw=dy_now;
         }
         if((dy_ok!=last_dy_ok || dy_ignore!=last_dy_ignore) &&

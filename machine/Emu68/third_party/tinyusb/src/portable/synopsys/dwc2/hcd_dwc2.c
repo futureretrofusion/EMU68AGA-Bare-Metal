@@ -1540,6 +1540,14 @@ static bool handle_channel_in_dma(dwc2_regs_t* dwc2, uint8_t ch_id, uint32_t hci
       // Persistent split bulk/control IN NAK (e.g. idle polled endpoint): re-enabling immediately storms
       // the ISR and starves the task. Disable + re-arm on the resulting halt to throttle (like the slave
       // path); no frame deferral. Programming Guide 3.5 (p73) Note permits disable on NAK/FrmOvrn splits.
+      #ifdef FRF_USB_TINYUSB
+      extern volatile uint8_t frf_r26_receiver_addr;
+      if ((hcint & HCINT_NAK) && frf_r26_receiver_addr && hcchar.dev_addr==frf_r26_receiver_addr && hcchar.ep_type==HCCHAR_EPTYPE_INTERRUPT) {
+        edpt->next_pid=hctsiz.pid;
+        channel_dealloc(dwc2,ch_id);
+        periodic_xfer_defer(dwc2,edpt,0);
+      } else
+#endif
       if ((hcint & HCINT_NAK) && hcsplt.split_en && !channel_is_periodic(channel->hcchar)) {
         xfer->retry_disabled = 1;
         channel_disable(dwc2, channel);

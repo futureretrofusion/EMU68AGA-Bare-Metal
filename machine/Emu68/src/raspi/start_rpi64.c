@@ -347,6 +347,7 @@ static volatile uint32_t native_usb_probe[7];
 static volatile uint32_t native_usb_packet_words[55];
 static volatile uint32_t native_r19_map[6];
 static volatile uint32_t native_r20_compat[6];
+static volatile uint32_t native_r26_get[4];
 
 
 #ifdef FRF_USB_DIAG_HOLD
@@ -376,9 +377,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / KBD R23",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R26",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / KBD R23",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R26",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -570,7 +571,13 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,ph,cyan);
         post_rect(px+pw-2u,py,2u,ph,cyan);
         post_rect(px,py+ph-2u,pw,2u,cyan);
-        post_text(px+10u,py+8u,"R21 LIVE PAD REPORT / MAPPING",white);
+        post_text(px+10u,py+8u,"R26 LIVE PAD / USB INPUT",white);
+        post_text(px+285u,py+8u,"GET",white);
+        post_hex(px+323u,py+8u,native_r26_get[0],4,cyan);
+        post_text(px+402u,py+8u,"OK",white);
+        post_hex(px+434u,py+8u,native_r26_get[1],4,green);
+        post_text(px+500u,py+8u,"ERR",white);
+        post_hex(px+540u,py+8u,native_r26_get[2],4,amber);
         post_text(px+10u,py+29u,"SOURCE (1=HID,2=VENDOR):",white);
         post_hex(px+276u,py+29u,native_usb_packet_words[0],8,green);
         post_text(px+10u,py+47u,"RX:",white);
@@ -721,6 +728,11 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
 {
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_r26_get_stats(uint32_t a,uint32_t ok,uint32_t fail,uint32_t pending)
+{
+    native_r26_get[0]=a;native_r26_get[1]=ok;native_r26_get[2]=fail;native_r26_get[3]=pending;
     frf_post_draw();
 }
 void frf_post_r20_compat(const uint32_t fields[6])

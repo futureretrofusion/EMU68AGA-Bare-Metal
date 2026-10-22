@@ -9,7 +9,7 @@
 #include <stdint.h>
 #define FRF_R22_DIAG_OFFSET 0x3400u
 #define FRF_R22_DIAG_MAGIC 0x50414432u /* "PAD2" */
-#define FRF_R22_DIAG_VERSION 2u
+#define FRF_R22_DIAG_VERSION 5u
 struct frf_r22_diag {
   volatile uint32_t magic,version,sequence;
   volatile uint32_t tick_ms,host_ticks,pad_count;
@@ -23,5 +23,8 @@ struct frf_r22_diag {
   volatile uint32_t kbd_boot_ok,kbd_receiver_blocked,kbd_bad_length,kbd_last;
   volatile uint32_t kbd_reports,kbd_transitions,kbd_held,kbd_modifiers;
   volatile uint32_t kbd_cia_queue,kbd_cia_drops,kbd_cia_timeouts,kbd_cia_acks;
+  volatile uint32_t raw24[6];
+  volatile uint32_t poll_stats[4];
+  volatile uint32_t ctrl_stats[4];
 };
 #endif
