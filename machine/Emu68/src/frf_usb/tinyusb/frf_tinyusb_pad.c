@@ -21,9 +21,9 @@ struct pad_itf {
     uint32_t next_submit_ms,retries,recoveries;
     struct frf_hid_map desc_map;
     uint16_t joy_report_state;
-    uint16_t joy_id02_state;
+    uint16_t joy_id02_state,joy_id03_state;
     uint16_t joy_by_report[4];
-    uint8_t id02_seen;
+    uint8_t id02_seen,id03_seen;
     uint8_t fire_report_state;
     uint32_t buttons_state;
     uint16_t published_joy;
@@ -432,12 +432,15 @@ int frf_r27_receive(uint8_t addr,uint8_t idx,const uint8_t *data,uint16_t len)
         /* ID02 physically observed on R28. Never clear ID01 fire. */
         p->joy_id02_state=joy;
         p->id02_seen=1;
+    } else if(frf_r37_id03(data,len,&joy)) {
+        p->joy_id03_state=joy;
+        p->id03_seen=1;
     } else {
         ++r27_bad;
         return 1;
     }
     ++r27_ok;
-    r27_joy=frf_r33_merge_joy(p->joy_report_state,p->joy_id02_state);
+    r27_joy=frf_r33_merge_joy(p->joy_report_state,frf_r33_merge_joy(p->joy_id02_state,p->joy_id03_state));
     r27_fire=p->fire_report_state;
     frf_pad_publish_report(p,(uint16_t)r27_joy,(int)r27_fire,p->buttons_state);
     ++gamepad_reports;

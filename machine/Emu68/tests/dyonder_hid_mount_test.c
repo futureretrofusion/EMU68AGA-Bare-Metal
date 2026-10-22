@@ -174,6 +174,15 @@ int main(void)
     raw01[1]=0;
     assert(frf_r27_receive(4,0,raw01,27));
     assert(joy==0 && !fire);
+    uint8_t raw03[27]={3,0,3,128,128,128,128};
+    assert(frf_r27_receive(4,0,raw03,27));
+    assert(joy==2u && !fire);
+    raw03[2]=6u;
+    assert(frf_r27_receive(4,0,raw03,27));
+    assert(joy==0x300u && !fire);
+    raw03[2]=7u;
+    assert(frf_r27_receive(4,0,raw03,27));
+    assert(joy==0 && !fire);
     frf_tinyusb_pad_unmount(4,0);
     /* R36: two interfaces on ONE physical USB pad do not overwrite
        each other's Amiga direction and CIA fire registers. */

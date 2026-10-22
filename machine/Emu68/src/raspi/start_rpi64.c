@@ -377,9 +377,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R36",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R37",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R36",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R37",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -571,7 +571,7 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,ph,cyan);
         post_rect(px+pw-2u,py,2u,ph,cyan);
         post_rect(px,py+ph-2u,pw,2u,cyan);
-        post_text(px+10u,py+8u,"R36 DUAL AMIGA JOYSTICK PORTS",white);
+        post_text(px+10u,py+8u,"R37 ID03 PAD INPUT RESTORED",white);
         extern uint32_t frf_r31_target_mode(void);
         extern void frf_r33_report_counts(uint32_t[3]);
         uint32_t ids33[3]={0};frf_r33_report_counts(ids33);
@@ -613,7 +613,7 @@ static void frf_post_draw(void)
             const uint32_t difference=native_usb_packet_words[9u+i*3u];
             post_hex(px+435u,yy,difference,8,difference?amber:cyan);
         }
-        post_text(px+10u,py+396u,"R36 PAD RX:",white);
+        post_text(px+10u,py+396u,"R37 PAD RX:",white);
         post_hex(px+143u,py+396u,native_r20_compat[0],4,cyan);
         post_text(px+221u,py+396u,"OK:",white);
         post_hex(px+252u,py+396u,native_r20_compat[1],4,green);
