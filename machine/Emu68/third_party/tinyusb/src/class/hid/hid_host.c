@@ -445,9 +445,13 @@ bool hidh_deinit(void) {
   return true;
 }
 
-bool hidh_xfer_cb(uint8_t daddr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
-  (void) result;
+static volatile uint32_t frf_hid_xfer_errors;
+uint32_t frf_hid_xfer_error_count(void) { return frf_hid_xfer_errors; }
 
+bool hidh_xfer_cb(uint8_t daddr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
+  /* An errored interrupt transaction is not a valid input report.\n     The CPU1 HID watchdog will resubmit an idle interface later. */
+
+  if (result != XFER_RESULT_SUCCESS)++frf_hid_xfer_errors;
   uint8_t const dir = tu_edpt_dir(ep_addr);
   uint8_t const idx = get_idx_by_epaddr(daddr, ep_addr);
 
@@ -458,9 +462,13 @@ bool hidh_xfer_cb(uint8_t daddr, uint8_t ep_addr, xfer_result_t result, uint32_t
   if (dir == TUSB_DIR_IN) {
     TU_LOG_DRV("  [idx=%u] Get Report callback\r\n", idx);
     TU_LOG3_MEM(epbuf->epin, xferred_bytes, 2);
-    tuh_hid_report_received_cb(daddr, idx, epbuf->epin, (uint16_t) xferred_bytes);
+    if (result == XFER_RESULT_SUCCESS && xferred_bytes &&
+        xferred_bytes <= sizeof(epbuf->epin)) {
+      tuh_hid_report_received_cb(daddr, idx, epbuf->epin, (uint16_t) xferred_bytes);
+    }
   } else {
-    tuh_hid_report_sent_cb(daddr, idx, epbuf->epout, (uint16_t) xferred_bytes);
+    if (result == XFER_RESULT_SUCCESS)
+      tuh_hid_report_sent_cb(daddr, idx, epbuf->epout, (uint16_t) xferred_bytes);
   }
 
   return true;

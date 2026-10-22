@@ -89,6 +89,7 @@ extern void frf_post_native_usb_pad_stats(uint32_t,uint32_t);
 extern void frf_tinyusb_xpad_task(void);
 extern uint32_t frf_tinyusb_xpad_count(void);
 extern uint32_t frf_tinyusb_xpad_packets(void);
+extern uint32_t frf_hid_xfer_error_count(void);
 
 /* Pi3 GPU/DWC2 DMA sees CPU RAM through the 0xC0000000 bus alias.
    Translate every virtual pointer through Emu68's live stage-1 MMU tables.
@@ -107,6 +108,51 @@ void* tusb_app_virt_to_phys(void *virtual_address)
 }
 static volatile uint32_t frf_usb_hid_keyboard,frf_usb_hid_mouse,frf_usb_storage;
 static volatile uint32_t frf_usb_hid_interfaces;
+static volatile uint32_t frf_enum_failed_xfers; /* tracked from USB enumeration callbacks */
+uint32_t tusb_time_millis_api(void);
+/* R38: Every HID interrupt-IN endpoint must be polled even if we have not
+   identified it as a gamepad. The old retry task only visited claimed pads,
+   so an early missed transfer could leave PAD=0 until an unrelated button
+   event. Callback resubmission is still preferred; this only repairs idle
+   interfaces and never submits an endpoint that is busy. */
+#define FRF_HID_WATCH_SLOTS 16u
+static struct {
+    uint8_t addr,idx;
+    uint32_t due_ms;
+} frf_hid_watch[FRF_HID_WATCH_SLOTS];
+static volatile uint32_t frf_hid_retry_attempts,frf_hid_retry_ok,frf_hid_retry_failed;
+static void frf_hid_watch_mount(uint8_t addr,uint8_t idx) {
+    if(!addr)return;
+    for(unsigned i=0;i<FRF_HID_WATCH_SLOTS;i++)
+        if(frf_hid_watch[i].addr==addr && frf_hid_watch[i].idx==idx)return;
+    for(unsigned i=0;i<FRF_HID_WATCH_SLOTS;i++) {
+        if(frf_hid_watch[i].addr)continue;
+        frf_hid_watch[i].addr=addr;
+        frf_hid_watch[i].idx=idx;
+        frf_hid_watch[i].due_ms=tusb_time_millis_api()+30u;
+        return;
+    }
+}
+static void frf_hid_watch_unmount(uint8_t addr,uint8_t idx) {
+    for(unsigned i=0;i<FRF_HID_WATCH_SLOTS;i++){
+        if(frf_hid_watch[i].addr==addr && frf_hid_watch[i].idx==idx)
+            frf_hid_watch[i].addr=0u;
+    }
+}
+static void frf_hid_watch_retry(void) {
+    const uint32_t now=tusb_time_millis_api();
+    for(unsigned i=0;i<FRF_HID_WATCH_SLOTS;i++) {
+        uint8_t addr=frf_hid_watch[i].addr;
+        const uint8_t idx=frf_hid_watch[i].idx;
+        if(!addr || (int32_t)(now-frf_hid_watch[i].due_ms)<0)continue;
+        frf_hid_watch[i].due_ms=now+25u;
+        if(!tuh_hid_receive_ready(addr,idx))continue;
+        ++frf_hid_retry_attempts;
+        if(tuh_hid_receive_report(addr,idx))++frf_hid_retry_ok;
+        else ++frf_hid_retry_failed;
+    }
+}
+
 #ifdef FRF_USB_DIAG_HOLD
 static uint32_t frf_usb_diag_last_irq,frf_usb_diag_chan_irq,frf_usb_diag_port_irq;
 extern void frf_post_native_usb_trace(const uint32_t*,unsigned);
@@ -182,6 +228,13 @@ static void frf_r22_publish(uint32_t now)
     uint32_t physical[4]={0};frf_pad_port_snapshot(physical);
     d->pad_button_bits[0]=physical[0];d->pad_joy_fire[0]=physical[1];
     d->pad_button_bits[1]=physical[2];d->pad_joy_fire[1]=physical[3];
+    d->hid_mounts=frf_usb_hid_interfaces;
+    d->hid_retries=frf_hid_retry_attempts;
+    d->hid_retry_ok=frf_hid_retry_ok;
+    d->hid_retry_failed=frf_hid_retry_failed;
+    d->hid_transfer_errors=frf_hid_xfer_error_count();
+    d->usb_device_mounts=frf_usb_enumerations;
+    d->enum_failures=frf_enum_failed_xfers;
     d->id02_count=r33_count02;
     for(unsigned i=0;i<7u;i++)d->id02_raw[i]=r33_raw02[i];
     for(unsigned i=0;i<7u;i++){d->id01_raw[i]=r29_raw01[i];d->id03_raw[i]=r29_raw03[i];}
@@ -337,6 +390,7 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
     if(frf_usb_hid_keyboard || frf_usb_hid_mouse)
         frf_post_native_usb_stage(7,0,((uint32_t)frf_usb_hid_keyboard<<16)|
                                   frf_usb_hid_mouse,frf_usb_enumerations);
+    frf_hid_watch_mount(addr,idx);
     (void)tuh_hid_receive_report(addr,idx);
 }
 void tuh_hid_get_report_complete_cb(uint8_t a,uint8_t idx,uint8_t id,uint8_t type,uint16_t len)
@@ -350,6 +404,7 @@ void tuh_hid_get_report_complete_cb(uint8_t a,uint8_t idx,uint8_t id,uint8_t typ
 }
 void tuh_hid_umount_cb(uint8_t addr,uint8_t idx)
 {
+    frf_hid_watch_unmount(addr,idx);
     if(frf_r23_keyboard_last_mount==(((uint32_t)addr<<16)|idx)) {
         frf_native_usb_keyboard_force_release();
         frf_r23_keyboard_last_mount=0u;
@@ -576,6 +631,7 @@ void frf_tinyusb_host_main(void)
         tuh_task_ext(0,false);
         frf_tinyusb_xpad_task(); /* vendor class Xbox controllers, CPU1 only */
         frf_tinyusb_pad_retry_task(); /* RC9-style initial HID pad retry */
+        frf_hid_watch_retry(); /* R38: recover ALL idle HID IN endpoints */
         /* USPi USBGamePadDeviceGetReport fallback, only when the exact
            receiver has not produced interrupt-IN packets recently. */
         const uint32_t ctl_now=tusb_time_millis_api();

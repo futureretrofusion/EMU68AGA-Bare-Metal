@@ -15,7 +15,7 @@ struct ExpansionBase *ExpansionBase;
 static uint32_t read32(volatile const uint32_t *p) {return *p;}
 int main(void)
 {
-    printf("EMU68AGA R37 INPUT REPORTS ID01/02/03 pad monitor - Zorro-II board\n");
+    printf("EMU68AGA R38 HID POLLING + INPUT REPORTS ID01/02/03 pad monitor - Zorro-II board\n");
     ExpansionBase=(struct ExpansionBase *)OpenLibrary("expansion.library",37);
     if(!ExpansionBase){puts("expansion.library unavailable");return 10;}
     struct ConfigDev *cd=FindConfigDev(NULL,0x6d73,0x69);
@@ -115,12 +115,22 @@ int main(void)
               (unsigned long)read32(&d->pad_button_bits[1]),
               (unsigned long)read32(&d->pad_joy_fire[1]));
         }
+        if(read32(&d->version)>=9u){
+           printf("R38 HID mounts=%lu retry=%lu accepted=%lu failed=%lu xferERR=%lu USBmount=%lu enumERR=%lu\n",
+            (unsigned long)read32(&d->hid_mounts),
+            (unsigned long)read32(&d->hid_retries),
+            (unsigned long)read32(&d->hid_retry_ok),
+            (unsigned long)read32(&d->hid_retry_failed),
+            (unsigned long)read32(&d->hid_transfer_errors),
+            (unsigned long)read32(&d->usb_device_mounts),
+            (unsigned long)read32(&d->enum_failures));
+        }
         if(tick==last_tick && i>1u) puts("    WARNING: CPU1 telemetry clock has not advanced!");
         last_tick=tick;old_rx=rx;old_map=map;old_joy=state;
         Delay(25u);
     }
     (void)old_joy;
     CloseLibrary((struct Library *)ExpansionBase);
-    puts("R37 test complete.");
+    puts("R38 test complete.");
     return 0;
 }
