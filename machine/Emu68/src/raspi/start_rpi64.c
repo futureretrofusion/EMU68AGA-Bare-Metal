@@ -377,9 +377,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R35",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R36",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R35",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R36",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -571,7 +571,7 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,ph,cyan);
         post_rect(px+pw-2u,py,2u,ph,cyan);
         post_rect(px,py+ph-2u,pw,2u,cyan);
-        post_text(px+10u,py+8u,"R35 USB HID PAD BY REPORT ID",white);
+        post_text(px+10u,py+8u,"R36 DUAL AMIGA JOYSTICK PORTS",white);
         extern uint32_t frf_r31_target_mode(void);
         extern void frf_r33_report_counts(uint32_t[3]);
         uint32_t ids33[3]={0};frf_r33_report_counts(ids33);
@@ -589,9 +589,10 @@ static void frf_post_draw(void)
         post_hex(px+203u,py+29u,counts34[1],4,green);
         post_text(px+297u,py+29u,"LATE",white);
         post_hex(px+348u,py+29u,counts34[2],4,amber);
-        extern uint32_t frf_r32_button_mask(void);
+        extern void frf_pad_port_snapshot(uint32_t[4]);
+        uint32_t port_r36[4]={0};frf_pad_port_snapshot(port_r36);
         post_text(px+400u,py+29u,"BTN",white);
-        post_hex(px+453u,py+29u,frf_r32_button_mask(),8,green);
+        post_hex(px+453u,py+29u,port_r36[2],8,green);
         post_text(px+10u,py+47u,"RX:",white);
         post_hex(px+49u,py+47u,native_usb_packet_words[1],8,cyan);
         post_text(px+201u,py+47u,"CHANGED PKTS:",white);
@@ -612,14 +613,14 @@ static void frf_post_draw(void)
             const uint32_t difference=native_usb_packet_words[9u+i*3u];
             post_hex(px+435u,yy,difference,8,difference?amber:cyan);
         }
-        post_text(px+10u,py+396u,"R35 PAD RX:",white);
+        post_text(px+10u,py+396u,"R36 PAD RX:",white);
         post_hex(px+143u,py+396u,native_r20_compat[0],4,cyan);
         post_text(px+221u,py+396u,"OK:",white);
         post_hex(px+252u,py+396u,native_r20_compat[1],4,green);
         post_text(px+329u,py+396u,"JOY:",white);
-        post_hex(px+367u,py+396u,native_r20_compat[3],4,green);
+        post_hex(px+367u,py+396u,port_r36[3]&0xffffu,4,green);
         post_text(px+449u,py+396u,"F:",white);
-        post_hex(px+475u,py+396u,native_r20_compat[4],2,green);
+        post_hex(px+475u,py+396u,(port_r36[3]>>16)&1u,2,green);
     }
 #endif
 #ifdef FRF_USB_DIAG_HOLD

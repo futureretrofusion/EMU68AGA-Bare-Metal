@@ -178,6 +178,10 @@ static void frf_r22_publish(uint32_t now)
     d->ctrl_stats[0]=frf_r26_ctlattempt;d->ctrl_stats[1]=frf_r26_ctlok;
     d->ctrl_stats[2]=frf_r26_ctlfail;d->ctrl_stats[3]=frf_r26_ctlpending;
     d->id01_count=r29_count01;d->id03_count=r29_count03;
+    extern void frf_pad_port_snapshot(uint32_t[4]);
+    uint32_t physical[4]={0};frf_pad_port_snapshot(physical);
+    d->pad_button_bits[0]=physical[0];d->pad_joy_fire[0]=physical[1];
+    d->pad_button_bits[1]=physical[2];d->pad_joy_fire[1]=physical[3];
     d->id02_count=r33_count02;
     for(unsigned i=0;i<7u;i++)d->id02_raw[i]=r33_raw02[i];
     for(unsigned i=0;i<7u;i++){d->id01_raw[i]=r29_raw01[i];d->id03_raw[i]=r29_raw03[i];}

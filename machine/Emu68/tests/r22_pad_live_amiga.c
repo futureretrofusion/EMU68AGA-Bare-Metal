@@ -15,7 +15,7 @@ struct ExpansionBase *ExpansionBase;
 static uint32_t read32(volatile const uint32_t *p) {return *p;}
 int main(void)
 {
-    printf("EMU68AGA R35 220D:330C ID01/02/03 pad monitor - Zorro-II board\n");
+    printf("EMU68AGA R36 INPUT PORTS ID01/02/03 pad monitor - Zorro-II board\n");
     ExpansionBase=(struct ExpansionBase *)OpenLibrary("expansion.library",37);
     if(!ExpansionBase){puts("expansion.library unavailable");return 10;}
     struct ConfigDev *cd=FindConfigDev(NULL,0x6d73,0x69);
@@ -108,12 +108,19 @@ int main(void)
            printf("R33 ID02=%lu DATA %08lX %08lX %08lX %08lX %08lX %08lX %08lX\n",
               (unsigned long)id02,(unsigned long)raw02[0],(unsigned long)raw02[1],(unsigned long)raw02[2],(unsigned long)raw02[3],(unsigned long)raw02[4],(unsigned long)raw02[5],(unsigned long)raw02[6]);
         }
+        if(read32(&d->version)>=8u){
+            printf("R36 PORT1 buttons=%08lX JOY/F=%08lX | PORT2 buttons=%08lX JOY/F=%08lX\n",
+              (unsigned long)read32(&d->pad_button_bits[0]),
+              (unsigned long)read32(&d->pad_joy_fire[0]),
+              (unsigned long)read32(&d->pad_button_bits[1]),
+              (unsigned long)read32(&d->pad_joy_fire[1]));
+        }
         if(tick==last_tick && i>1u) puts("    WARNING: CPU1 telemetry clock has not advanced!");
         last_tick=tick;old_rx=rx;old_map=map;old_joy=state;
         Delay(25u);
     }
     (void)old_joy;
     CloseLibrary((struct Library *)ExpansionBase);
-    puts("R35 test complete.");
+    puts("R36 test complete.");
     return 0;
 }

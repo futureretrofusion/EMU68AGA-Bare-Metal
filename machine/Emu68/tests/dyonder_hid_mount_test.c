@@ -10,8 +10,8 @@
 #include "tusb.h"
 #include "class/hid/hid_host.h"
 
-static uint16_t joy;
-static int fire;
+static uint16_t joy,joy0;
+static int fire,fire0;
 static uint32_t calls;
 static uint32_t fake_ms,submit_attempts,fail_first=1,endpoint_busy;
 uint32_t tusb_time_millis_api(void) {return fake_ms;}
@@ -26,7 +26,9 @@ bool tuh_hid_receive_report(uint8_t addr,uint8_t idx) {
     return true;
 }
 void aga_virtual_joy_set(int port,uint16_t value,int f) {
-    assert(port==1);joy=value;fire=f; ++calls;
+    assert(port==0 || port==1);
+    if(port==0){joy0=value;fire0=f;return;}
+    joy=value;fire=f; ++calls;
 }
 void kprintf(const char *fmt,...) {(void)fmt;}
 uint32_t frf_tinyusb_xpad_count(void) {return 0;}
@@ -168,6 +170,42 @@ int main(void)
     assert(frf_r27_receive(4,0,raw01,27));
     assert(joy==0 && !fire);
     frf_tinyusb_pad_unmount(4,0);
+    /* R36: two interfaces on ONE physical USB pad do not overwrite
+       each other's Amiga direction and CIA fire registers. */
+    frf_tinyusb_pad_mount(4,0,mouse_only,3);
+    frf_tinyusb_pad_mount(4,2,mouse_only,3);
+    assert(frf_tinyusb_gamepad_count()==1u);
+    uint8_t direction[27]={2,0,7,128,0,128,128};
+    uint8_t press[27]={1,1,15,128,128,128,128};
+    assert(frf_r27_receive(4,0,direction,27));
+    assert(joy==0x100u && fire==0);
+    assert(frf_r27_receive(4,2,press,27));
+    assert(joy==0x100u && fire==1);
+    direction[4]=128;
+    assert(frf_r27_receive(4,0,direction,27));
+    assert(joy==0 && fire==1);
+    press[1]=0;
+    assert(frf_r27_receive(4,2,press,27));
+    assert(joy==0 && fire==0);
+    frf_tinyusb_pad_unmount(4,0);
+    frf_tinyusb_pad_unmount(4,2);
+    assert(frf_tinyusb_gamepad_count()==0u);
+    /* R36: two DISTINCT USB devices must remain on separate Amiga ports.
+       Port 2 direction must not depend on port 1 fire. */
+    frf_tinyusb_pad_mount(4,0,mouse_only,3);
+    frf_tinyusb_pad_mount(3,0,desc24,sizeof(desc24));
+    assert(frf_tinyusb_gamepad_count()==2u);
+    uint8_t firstup[27]={2,0,7,128,0,128,128};
+    assert(frf_r27_receive(4,0,firstup,27));
+    assert(joy==0x100u && fire==0);
+    rpt24[0]=0;rpt24[1]=128;rpt24[2]=8;rpt24[3]=1;
+    frf_tinyusb_pad_report(3,0,rpt24,24);
+    assert(joy==0x100u && fire==0);
+    assert(joy0==0x300u && fire0==1);
+    frf_tinyusb_pad_unmount(3,0);
+    assert(joy==0x100u && fire==0 && joy0==0 && fire0==0);
+    frf_tinyusb_pad_unmount(4,0);
+    assert(joy==0 && fire==0);
     /* R34: The same 220D:330C receiver may expose its HID report on
        another non-boot interface. A hard-coded idx==0 gave PAD:00. */
     frf_tinyusb_pad_mount(4,2,mouse_only,3);

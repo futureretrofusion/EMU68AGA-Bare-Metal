@@ -26,6 +26,8 @@ struct pad_itf {
     uint8_t id02_seen;
     uint8_t fire_report_state;
     uint32_t buttons_state;
+    uint16_t published_joy;
+    uint8_t published_fire, published_valid;
 };
 static struct pad_itf pads[FRF_PAD_SLOTS];
 volatile uint8_t frf_r26_receiver_addr;
@@ -104,7 +106,15 @@ extern void kprintf(const char*,...);
 
 extern uint32_t frf_tinyusb_xpad_count(void);
 uint32_t frf_tinyusb_gamepad_count(void) {
-    return active_pads+frf_tinyusb_xpad_count();
+    uint8_t unique[FRF_PAD_SLOTS]={0};
+    unsigned n=0;
+    for(unsigned i=0;i<FRF_PAD_SLOTS;i++){
+        if(!pads[i].addr)continue;
+        bool found=false;
+        for(unsigned j=0;j<n;j++)if(unique[j]==pads[i].addr)found=true;
+        if(!found)unique[n++]=pads[i].addr;
+    }
+    return n+frf_tinyusb_xpad_count();
 }
 uint32_t frf_tinyusb_gamepad_reports(void) { return gamepad_reports; }
 
@@ -117,6 +127,64 @@ static struct pad_itf *find(uint8_t addr,uint8_t idx) {
     for(unsigned i=0;i<FRF_PAD_SLOTS;++i)
         if(pads[i].addr==addr && pads[i].idx==idx) return &pads[i];
     return 0;
+}
+/* One physical USB address is one Amiga controller.
+   A composite HID device may have independent direction and button
+   interfaces; combine their states before publishing any guest register.
+   First distinct device -> port 2, second -> port 1. */
+static int frf_pad_device_port(uint8_t addr) {
+    uint8_t unique[2]={0,0};
+    unsigned count=0;
+    for(unsigned i=0;i<FRF_PAD_SLOTS;i++) {
+        const uint8_t a=pads[i].addr;
+        if(!a)continue;
+        bool exists=false;
+        for(unsigned j=0;j<count;j++)if(unique[j]==a)exists=true;
+        if(exists)continue;
+        if(count>=2u)break;
+        unique[count++]=a;
+    }
+    for(unsigned j=0;j<count;j++)
+        if(unique[j]==addr)return j==0u?1:0;
+    return -1;
+}
+static void frf_pad_publish_device(uint8_t addr) {
+    const int port=frf_pad_device_port(addr);
+    if(port<0)return;
+    uint16_t joy=0;
+    uint32_t buttons=0;
+    int fire=0;
+    for(unsigned i=0;i<FRF_PAD_SLOTS;i++){
+        const struct pad_itf *p=&pads[i];
+        if(p->addr!=addr || !p->published_valid)continue;
+        joy=frf_r33_merge_joy(joy,p->published_joy);
+        fire|=p->published_fire!=0;
+        buttons|=p->buttons_state;
+    }
+    /* Primary fire and button 2/3 have independent Amiga paths. */
+    aga_virtual_joy_set(port,joy,fire);
+    aga_virtual_pad_buttons(port,buttons);
+}
+static void frf_pad_publish_report(struct pad_itf *p,uint16_t joy,
+                                   int fire,uint32_t buttons) {
+    p->published_joy=joy;
+    p->published_fire=(uint8_t)(fire!=0);
+    p->buttons_state=buttons;
+    p->published_valid=1u;
+    frf_pad_publish_device(p->addr);
+}
+void frf_pad_port_snapshot(uint32_t out[4]) {
+    for(unsigned n=0;n<4u;n++)out[n]=0;
+    for(unsigned i=0;i<FRF_PAD_SLOTS;i++){
+        struct pad_itf *p=&pads[i];
+        if(!p->addr || !p->published_valid)continue;
+        int port=frf_pad_device_port(p->addr);
+        if(port<0)continue;
+        out[port*2u]|=p->buttons_state;
+        uint32_t old=out[port*2u+1u];
+        out[port*2u+1u]=(uint32_t)frf_r33_merge_joy((uint16_t)old,p->published_joy) |
+            ((old | ((uint32_t)p->published_fire<<16))&0x10000u);
+    }
 }
 uint32_t frf_pad_is_joystick_usage(uint16_t page,uint8_t usage)
 {
@@ -262,13 +330,33 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
 void frf_tinyusb_pad_unmount(uint8_t addr,uint8_t idx)
 {
     struct pad_itf *p=find(addr,idx);
-    if(!p) return;
-    if(p->report_is_common==5u && frf_r26_receiver_addr==addr) frf_r26_receiver_addr=0;
-    if((p->report_is_common==4u||p->report_is_common==6u) && frf_r32_receiver_addr==addr)frf_r32_receiver_addr=0;
+    if(!p)return;
+    const int oldport=frf_pad_device_port(addr);
+    bool had_other=false;
+    for(unsigned i=0;i<FRF_PAD_SLOTS;i++)
+        if(pads[i].addr && pads[i].addr!=addr)had_other=true;
+    if(p->report_is_common==5u && frf_r26_receiver_addr==addr)
+        frf_r26_receiver_addr=0;
+    if((p->report_is_common==4u || p->report_is_common==6u) &&
+        frf_r32_receiver_addr==addr)
+        frf_r32_receiver_addr=0;
     memset(p,0,sizeof(*p));
-    if(active_pads) --active_pads;
-    /* Port 2 is exclusively assigned to first mapped gamepad. */
-    if(!active_pads){aga_virtual_joy_set(1,0,0);aga_virtual_pad_buttons(1,0);frf_r32_last_buttons=0;}
+    if(active_pads)--active_pads;
+    /* Disconnect releases direction, CIA fire and both POTGOR buttons. */
+    if(oldport>=0){
+        aga_virtual_joy_set(oldport,0,0);
+        aga_virtual_pad_buttons(oldport,0);
+    }
+    if(!active_pads)frf_r32_last_buttons=0;
+    for(unsigned i=0;i<FRF_PAD_SLOTS;i++){
+        if(pads[i].addr && pads[i].published_valid)
+            frf_pad_publish_device(pads[i].addr);
+    }
+    /* A second device may have moved from port 1 to port 2. */
+    if(oldport==1 && had_other && active_pads){
+        aga_virtual_joy_set(0,0,0);
+        aga_virtual_pad_buttons(0,0);
+    }
 }
 static void map_standard_report(const uint8_t *data)
 {
@@ -339,7 +427,7 @@ int frf_r27_receive(uint8_t addr,uint8_t idx,const uint8_t *data,uint16_t len)
     ++r27_ok;
     r27_joy=frf_r33_merge_joy(p->joy_report_state,p->joy_id02_state);
     r27_fire=p->fire_report_state;
-    aga_virtual_joy_set(1,(uint16_t)r27_joy,(int)r27_fire);
+    frf_pad_publish_report(p,(uint16_t)r27_joy,(int)r27_fire,p->buttons_state);
     ++gamepad_reports;
     ++p->reports;
     return 1;
@@ -377,17 +465,9 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
     if(frf_r20_decode(data,len,&joy,&fire)) {
         ++r20_valid;
         r20_joy=joy;r20_fire=(uint32_t)fire;
-        /* Only first connected mapped controller owns Amiga port 2. */
-        for(unsigned i=0;i<FRF_PAD_SLOTS;i++) {
-            if(pads[i].addr) {
-                if(&pads[i]==p) {
-                    aga_virtual_joy_set(1,joy,fire);
-                    ++gamepad_reports;
-                    ++p->reports;
-                }
-                break;
-            }
-        }
+        frf_pad_publish_report(p,joy,fire,(uint32_t)(fire!=0));
+        ++gamepad_reports;
+        ++p->reports;
     } else ++r20_rejected;
     return 1;
 }
@@ -424,21 +504,12 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
             for(unsigned rid=0;rid<4u;rid++)
                 joy=frf_r33_merge_joy(joy,p->joy_by_report[rid]);
             fire=p->fire_report_state;
-            /* Preserve first registered gamepad ownership of port 2;
-               mouse and non-controller reports never reach this path. */
-            for(unsigned i=0;i<FRF_PAD_SLOTS;i++)
-                if(pads[i].addr) {
-                    if(&pads[i]==p) {
-                        aga_virtual_joy_set(1,joy,fire);
-                        aga_virtual_pad_buttons(1,p->buttons_state);
-                        descriptor_joy=joy;
-                        descriptor_fire=(uint32_t)fire;
-                        ++descriptor_valid;
-                        ++p->reports;
-                        ++gamepad_reports;
-                    }
-                    break;
-                }
+            frf_pad_publish_report(p,joy,fire,p->buttons_state);
+            descriptor_joy=joy;
+            descriptor_fire=(uint32_t)fire;
+            ++descriptor_valid;
+            ++p->reports;
+            ++gamepad_reports;
         }
         return;
     }
