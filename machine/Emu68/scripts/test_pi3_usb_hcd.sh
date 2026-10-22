@@ -17,6 +17,7 @@ gcc -std=gnu17 -O2 -pthread \
   "$T/host/usbh.c" "$T/host/hub.c" \
   "$root/src/frf_usb/tinyusb/frf_tinyusb_pad.c" \
   "$I/frf_r19_hid_descriptor.c" \
+  "$I/frf_r20_hardware_profile.c" \
   "$root/src/frf_usb/tinyusb/frf_tinyusb_xpad_vendor.c" \
   "$root/src/frf_usb/tinyusb/frf_usb_packet_capture.c" \
   "$T/class/hid/hid_host.c" "$T/class/msc/msc_host.c" \

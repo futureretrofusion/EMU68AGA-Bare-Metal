@@ -25,6 +25,17 @@ static uint32_t dyonder_report_ok,dyonder_report_ignore;
 static uint32_t pad_submit_deferred,pad_submit_recovered;
 static volatile uint32_t descriptor_packets,descriptor_valid,descriptor_joy,descriptor_fire;
 static volatile uint32_t descriptor_last_address,descriptor_fields;
+extern int frf_r20_is_receiver(uint16_t,uint16_t,uint8_t);
+extern int frf_r20_observed_neutral(const uint8_t*,uint16_t);
+extern int frf_r20_decode(const uint8_t*,uint16_t,uint16_t*,int*);
+static volatile uint32_t r20_seen,r20_valid,r20_rejected,r20_joy,r20_fire,r20_dev;
+uint32_t frf_r20_seen(void){return r20_seen;}
+uint32_t frf_r20_valid(void){return r20_valid;}
+uint32_t frf_r20_rejected(void){return r20_rejected;}
+uint32_t frf_r20_joy(void){return r20_joy;}
+uint32_t frf_r20_fire(void){return r20_fire;}
+uint32_t frf_r20_dev(void){return r20_dev;}
+
 uint32_t frf_r19_hid_packet_count(void){return descriptor_packets;}
 uint32_t frf_r19_hid_valid_count(void){return descriptor_valid;}
 uint32_t frf_r19_hid_last_joy(void){return descriptor_joy;}
@@ -224,6 +235,54 @@ int frf_dyonder_decode_report(const uint8_t *b,uint16_t len)
         (right?0x0002u:0u) |
         (((right!=0)^(down!=0))?0x0001u:0u));
     aga_virtual_joy_set(1,joy,(buttons&0x7fffu)!=0u);
+    return 1;
+}
+/* Return true only for an accepted report from the exact hardware
+   candidate. Attach lazily after observing a specific real neutral
+   24-byte fingerprint, not merely from an untrusted HID mount label.
+   The original HID class driver stays mounted and feeds reports. */
+int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
+                            const uint8_t *data,uint16_t len)
+{
+    if(!data || len!=24u) return 0;
+    struct pad_itf *p=find(addr,idx);
+    if(!p || p->report_is_common!=5u) {
+        uint16_t vid=0,pid=0;
+        if(!tuh_vid_pid_get(addr,&vid,&pid) ||
+           !frf_r20_is_receiver(vid,pid,idx)) return 0;
+        if(!frf_r20_observed_neutral(data,len)) {
+            ++r20_rejected;
+            return 0;
+        }
+        if(p) return 0; /* Another genuine HID pad owns the interface. */
+        const int slot=first_free();
+        if(slot<0) return 0;
+        p=&pads[slot];
+        memset(p,0,sizeof(*p));
+        p->addr=addr;p->idx=idx;p->report_is_common=5u;
+        p->next_submit_ms=tusb_time_millis_api()+500u;
+        ++active_pads;
+        r20_dev=((uint32_t)addr<<16)|idx;
+        kprintf("[FRF-R20] 220D:330C observed 24B controller candidate at USB %u HID %u\n",addr,idx);
+    }
+    ++r20_seen;
+    uint16_t joy=0;
+    int fire=0;
+    if(frf_r20_decode(data,len,&joy,&fire)) {
+        ++r20_valid;
+        r20_joy=joy;r20_fire=(uint32_t)fire;
+        /* Only first connected mapped controller owns Amiga port 2. */
+        for(unsigned i=0;i<FRF_PAD_SLOTS;i++) {
+            if(pads[i].addr) {
+                if(&pads[i]==p) {
+                    aga_virtual_joy_set(1,joy,fire);
+                    ++gamepad_reports;
+                    ++p->reports;
+                }
+                break;
+            }
+        }
+    } else ++r20_rejected;
     return 1;
 }
 void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,

@@ -346,6 +346,7 @@ static volatile uint32_t native_usb_link[15];
 static volatile uint32_t native_usb_probe[7];
 static volatile uint32_t native_usb_packet_words[55];
 static volatile uint32_t native_r19_map[6];
+static volatile uint32_t native_r20_compat[6];
 
 
 #ifdef FRF_USB_DIAG_HOLD
@@ -375,9 +376,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / HID R19",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R20",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / HID R19",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R20",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -569,7 +570,7 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,ph,cyan);
         post_rect(px+pw-2u,py,2u,ph,cyan);
         post_rect(px,py+ph-2u,pw,2u,cyan);
-        post_text(px+10u,py+8u,"R19 LIVE USB REPORT / MAPPING",white);
+        post_text(px+10u,py+8u,"R20 LIVE PAD REPORT / MAPPING",white);
         post_text(px+10u,py+29u,"SOURCE (1=HID,2=VENDOR):",white);
         post_hex(px+276u,py+29u,native_usb_packet_words[0],8,green);
         post_text(px+10u,py+47u,"RX:",white);
@@ -592,16 +593,14 @@ static void frf_post_draw(void)
             const uint32_t difference=native_usb_packet_words[9u+i*3u];
             post_hex(px+435u,yy,difference,8,difference?amber:cyan);
         }
-        post_text(px+10u,py+396u,"R19 MAP FIELDS",white);
-        post_hex(px+166u,py+396u,native_r19_map[5],2,cyan);
-        post_text(px+209u,py+396u,"RX",white);
-        post_hex(px+240u,py+396u,native_r19_map[0],4,cyan);
-        post_text(px+305u,py+396u,"OK",white);
-        post_hex(px+334u,py+396u,native_r19_map[1],4,green);
-        post_text(px+400u,py+396u,"JOY",white);
-        post_hex(px+439u,py+396u,native_r19_map[2],4,green);
-        post_text(px+511u,py+396u,"F",white);
-        post_hex(px+531u,py+396u,native_r19_map[3],2,green);
+        post_text(px+10u,py+396u,"R20 PAD RX:",white);
+        post_hex(px+143u,py+396u,native_r20_compat[0],4,cyan);
+        post_text(px+221u,py+396u,"OK:",white);
+        post_hex(px+252u,py+396u,native_r20_compat[1],4,green);
+        post_text(px+329u,py+396u,"JOY:",white);
+        post_hex(px+367u,py+396u,native_r20_compat[3],4,green);
+        post_text(px+449u,py+396u,"F:",white);
+        post_hex(px+475u,py+396u,native_r20_compat[4],2,green);
     }
 #endif
 #ifdef FRF_USB_DIAG_HOLD
@@ -622,7 +621,7 @@ static void frf_post_draw(void)
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R19 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R20 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;
@@ -722,6 +721,12 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
 {
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_r20_compat(const uint32_t fields[6])
+{
+    if(!fields) return;
+    for(unsigned i=0;i<6u;i++)native_r20_compat[i]=fields[i];
     frf_post_draw();
 }
 void frf_post_r19_hid_map(const uint32_t fields[6])
