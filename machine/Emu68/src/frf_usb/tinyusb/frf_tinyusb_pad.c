@@ -9,6 +9,7 @@
 #include "class/hid/hid_host.h"
 #include "frf_r19_hid_descriptor.h"
 #include "frf_r27_220d.h"
+#include "frf_r33_id02.h"
 
 #define FRF_PAD_SLOTS 8u
 struct pad_itf {
@@ -20,6 +21,9 @@ struct pad_itf {
     uint32_t next_submit_ms,retries,recoveries;
     struct frf_hid_map desc_map;
     uint16_t joy_report_state;
+    uint16_t joy_id02_state;
+    uint16_t joy_by_report[4];
+    uint8_t id02_seen;
     uint8_t fire_report_state;
     uint32_t buttons_state;
 };
@@ -313,14 +317,29 @@ int frf_r27_receive(uint8_t addr,uint8_t idx,const uint8_t *data,uint16_t len)
 {
     struct pad_itf *p=find(addr,idx);
     if(!p || p->report_is_common!=6u)return 0;
-    ++r27_seen;uint16_t joy=0;int fire=0;
+    ++r27_seen;
+    uint16_t joy=0;
+    int fire=0;
     if(frf_r27_decode(data,len,&joy,&fire)) {
-        ++r27_ok;r27_joy=joy;r27_fire=(uint32_t)fire;
-        aga_virtual_joy_set(1,joy,fire);
-        ++gamepad_reports;++p->reports;
-    } else ++r27_bad;
+        p->joy_report_state=joy;
+        p->fire_report_state=(uint8_t)(fire!=0);
+    } else if(frf_r33_id02(data,len,&joy)) {
+        /* ID02 physically observed on R28. Never clear ID01 fire. */
+        p->joy_id02_state=joy;
+        p->id02_seen=1;
+    } else {
+        ++r27_bad;
+        return 1;
+    }
+    ++r27_ok;
+    r27_joy=frf_r33_merge_joy(p->joy_report_state,p->joy_id02_state);
+    r27_fire=p->fire_report_state;
+    aga_virtual_joy_set(1,(uint16_t)r27_joy,(int)r27_fire);
+    ++gamepad_reports;
+    ++p->reports;
     return 1;
 }
+
 int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
                             const uint8_t *data,uint16_t len)
 {
@@ -379,14 +398,21 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
         if(frf_hid_gamepad_decode(&p->desc_map,data,len,&joy,&fire)) {
             const unsigned caps=frf_hid_gamepad_report_capabilities(
                 &p->desc_map,p->desc_map.has_ids?data[0]:0u);
-            if(caps&1u)p->joy_report_state=joy;
+            if(caps&1u){
+                unsigned rid=p->desc_map.has_ids?(unsigned)data[0]:0u;
+                if(rid<4u)p->joy_by_report[rid]=joy;
+                else p->joy_report_state=joy;
+            }
             uint32_t state=0,present=0;
             if(frf_hid_gamepad_decode_buttons(&p->desc_map,data,len,&state,&present)) {
               p->buttons_state=(p->buttons_state&~present)|(state&present);
               p->fire_report_state=(uint8_t)((p->buttons_state&1u)!=0u);
               frf_r32_last_buttons=p->buttons_state;
             }
-            joy=p->joy_report_state;fire=p->fire_report_state;
+            joy=p->joy_report_state;
+            for(unsigned rid=0;rid<4u;rid++)
+                joy=frf_r33_merge_joy(joy,p->joy_by_report[rid]);
+            fire=p->fire_report_state;
             /* Preserve first registered gamepad ownership of port 2;
                mouse and non-controller reports never reach this path. */
             for(unsigned i=0;i<FRF_PAD_SLOTS;i++)

@@ -66,6 +66,7 @@ extern uint32_t frf_tinyusb_pad_deferred(void);
 extern uint32_t frf_tinyusb_pad_recovered(void);
 extern uint32_t frf_r19_hid_valid_count(void);
 extern int frf_r20_compat_receive(uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern int frf_r27_receive(uint8_t,uint8_t,const uint8_t*,uint16_t);
 extern uint32_t frf_r20_seen(void),frf_r20_valid(void);
 extern int frf_r20_is_receiver(uint16_t,uint16_t,uint8_t);
 
@@ -149,6 +150,23 @@ int main(void)
     assert(joy==0x0300u && fire==1);
     frf_tinyusb_pad_unmount(4,0);
     assert(joy==0 && fire==0);
+    /* R33: observed 220D:330C with non-gamepad descriptor: fallback
+       must accept ID02 directions without requiring an ID01/fire. */
+    frf_tinyusb_pad_mount(4,0,mouse_only,3);
+    assert(frf_tinyusb_gamepad_count()==1);
+    uint8_t raw02[27]={2,0,7,128,0,128,128};
+    assert(frf_r27_receive(4,0,raw02,27));
+    assert(joy==0x100 && !fire);
+    uint8_t raw01[27]={1,1,15,128,128,128,128};
+    assert(frf_r27_receive(4,0,raw01,27));
+    assert(joy==0x100 && fire);
+    raw02[4]=128;
+    assert(frf_r27_receive(4,0,raw02,27));
+    assert(joy==0 && fire);
+    raw01[1]=0;
+    assert(frf_r27_receive(4,0,raw01,27));
+    assert(joy==0 && !fire);
+    frf_tinyusb_pad_unmount(4,0);
     /* R21 real Pi3 photograph: USB daddr1 VID=7E05 PID=0920,
        HID interface 0; R20 wrongly used 220D:330C.
        Detect at HID class mount BEFORE any neutral report arrives. */

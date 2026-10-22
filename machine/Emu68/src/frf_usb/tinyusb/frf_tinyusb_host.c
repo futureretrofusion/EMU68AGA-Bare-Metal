@@ -122,7 +122,8 @@ static volatile uint32_t frf_hid_rx_count,frf_hid_raw_word0,frf_hid_raw_word1;
 static volatile uint32_t frf_r22_rx,frf_r22_len,frf_r22_word0,frf_r22_word1;
 static volatile uint32_t frf_r22_addr;
 static volatile uint32_t frf_r24_raw24[6];
-static volatile uint32_t r29_count01,r29_count03,r29_raw01[7],r29_raw03[7];
+static volatile uint32_t r29_count01,r29_count03,r29_raw01[7],r29_raw03[7],r33_count02,r33_raw02[7];
+void frf_r33_report_counts(uint32_t o[3]){o[0]=r29_count01;o[1]=r33_count02;o[2]=r29_count03;}
 static uint8_t frf_r26_ctlbuf[32] __attribute__((aligned(64)));
 static uint8_t frf_r26_ctlpending;
 static uint32_t frf_r26_ctltime,frf_r26_lastrx_ms,frf_r26_ctlattempt,frf_r26_ctlok,frf_r26_ctlfail;
@@ -177,6 +178,8 @@ static void frf_r22_publish(uint32_t now)
     d->ctrl_stats[0]=frf_r26_ctlattempt;d->ctrl_stats[1]=frf_r26_ctlok;
     d->ctrl_stats[2]=frf_r26_ctlfail;d->ctrl_stats[3]=frf_r26_ctlpending;
     d->id01_count=r29_count01;d->id03_count=r29_count03;
+    d->id02_count=r33_count02;
+    for(unsigned i=0;i<7u;i++)d->id02_raw[i]=r33_raw02[i];
     for(unsigned i=0;i<7u;i++){d->id01_raw[i]=r29_raw01[i];d->id03_raw[i]=r29_raw03[i];}
     __atomic_thread_fence(__ATOMIC_RELEASE);
     d->sequence=seq+2u;
@@ -356,19 +359,21 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
     frf_usb_packet_capture(1u,addr,idx,data,len);
     ++frf_hid_rx_count;
-    if(idx==0u && len==27u && (data[0]==1u || data[0]==3u)){
+    if(idx==0u && len==27u && (data[0]==1u || data[0]==2u || data[0]==3u)){
         uint16_t v=0,pid=0;
         if(tuh_vid_pid_get(addr,&v,&pid) && v==0x220du && pid==0x330cu){
-            volatile uint32_t *dst=data[0]==1u?r29_raw01:r29_raw03;
+            volatile uint32_t *dst=data[0]==1u?r29_raw01:(data[0]==2u?r33_raw02:r29_raw03);
             for(unsigned k=0;k<7u;k++)dst[k]=pack4(data,len,(uint16_t)(k*4u));
-            if(data[0]==1u)++r29_count01;else ++r29_count03;
+            if(data[0]==1u)++r29_count01;
+            else if(data[0]==2u)++r33_count02;
+            else ++r29_count03;
         }
     }
     if(idx==0u) {
         uint16_t vid=0,pid=0;
         if(tuh_vid_pid_get(addr,&vid,&pid) &&
            ((vid==0x7e05u && pid==0x0920u) ||
-            (vid==0x220du && pid==0x330cu && len==27u && (data[0]==1u || data[0]==3u)))) {
+            (vid==0x220du && pid==0x330cu && len==27u && (data[0]==1u || data[0]==2u || data[0]==3u)))) {
             ++frf_r22_rx;
             frf_r26_lastrx_ms=tusb_time_millis_api();
             frf_r22_addr=((uint32_t)addr<<16)|idx;

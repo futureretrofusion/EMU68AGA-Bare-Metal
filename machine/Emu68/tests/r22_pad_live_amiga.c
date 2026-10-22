@@ -15,7 +15,7 @@ struct ExpansionBase *ExpansionBase;
 static uint32_t read32(volatile const uint32_t *p) {return *p;}
 int main(void)
 {
-    printf("EMU68AGA R29 220D:330C FIRE and ID01/03 pad monitor - Zorro-II board\n");
+    printf("EMU68AGA R33 220D:330C ID01/02/03 pad monitor - Zorro-II board\n");
     ExpansionBase=(struct ExpansionBase *)OpenLibrary("expansion.library",37);
     if(!ExpansionBase){puts("expansion.library unavailable");return 10;}
     struct ConfigDev *cd=FindConfigDev(NULL,0x6d73,0x69);
@@ -71,6 +71,11 @@ int main(void)
             ids[0]=read32(&d->id01_count);ids[1]=read32(&d->id03_count);
             for(unsigned k=0;k<7u;k++){rawids[0][k]=read32(&d->id01_raw[k]);rawids[1][k]=read32(&d->id03_raw[k]);}
         }
+        uint32_t id02=0,raw02[7]={0};
+        if(read32(&d->version)>=7u){
+           id02=read32(&d->id02_count);
+           for(unsigned k=0;k<7u;k++)raw02[k]=read32(&d->id02_raw[k]);
+        }
         const uint32_t seq2=read32(&d->sequence);
         if(seq1!=seq2 || (seq2&1u)){Delay(2);continue;}
         if(i==0) puts("Press Dyonder D-pad / stick / A: values update every ~0.5 sec");
@@ -99,12 +104,16 @@ int main(void)
             printf("R29 ID01=%lu ID03=%lu\n",(unsigned long)ids[0],(unsigned long)ids[1]);
             for(unsigned k=0;k<2u;k++)printf("ID0%u %08lX %08lX %08lX %08lX %08lX %08lX %08lX\n",k?3u:1u,(unsigned long)rawids[k][0],(unsigned long)rawids[k][1],(unsigned long)rawids[k][2],(unsigned long)rawids[k][3],(unsigned long)rawids[k][4],(unsigned long)rawids[k][5],(unsigned long)rawids[k][6]);
         }
+        if(read32(&d->version)>=7u){
+           printf("R33 ID02=%lu DATA %08lX %08lX %08lX %08lX %08lX %08lX %08lX\n",
+              (unsigned long)id02,(unsigned long)raw02[0],(unsigned long)raw02[1],(unsigned long)raw02[2],(unsigned long)raw02[3],(unsigned long)raw02[4],(unsigned long)raw02[5],(unsigned long)raw02[6]);
+        }
         if(tick==last_tick && i>1u) puts("    WARNING: CPU1 telemetry clock has not advanced!");
         last_tick=tick;old_rx=rx;old_map=map;old_joy=state;
         Delay(25u);
     }
     (void)old_joy;
     CloseLibrary((struct Library *)ExpansionBase);
-    puts("R29 test complete.");
+    puts("R33 test complete.");
     return 0;
 }
