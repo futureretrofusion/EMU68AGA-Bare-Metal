@@ -27,7 +27,7 @@ static inline int frf_r27_decode(const uint8_t *b,unsigned n,uint16_t *joy,int *
                     ((right^down)?0x0001u:0u));
     /* Candidate buttons at byte 1; neutral capture has zero.
      * Do not reuse ID03 bytes as buttons or clear ID01 joystick state. */
-    *fire=(b[1]&0x0fu)!=0u;
+    *fire=((b[1]&0x0fu)!=0u) || ((b[2]&0xf0u)!=0u);
     return 1;
 }
 #endif

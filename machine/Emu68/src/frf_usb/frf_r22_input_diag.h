@@ -9,7 +9,7 @@
 #include <stdint.h>
 #define FRF_R22_DIAG_OFFSET 0x3400u
 #define FRF_R22_DIAG_MAGIC 0x50414432u /* "PAD2" */
-#define FRF_R22_DIAG_VERSION 5u
+#define FRF_R22_DIAG_VERSION 6u
 struct frf_r22_diag {
   volatile uint32_t magic,version,sequence;
   volatile uint32_t tick_ms,host_ticks,pad_count;
@@ -26,5 +26,7 @@ struct frf_r22_diag {
   volatile uint32_t raw24[6];
   volatile uint32_t poll_stats[4];
   volatile uint32_t ctrl_stats[4];
+  volatile uint32_t id01_count,id03_count;
+  volatile uint32_t id01_raw[7],id03_raw[7];
 };
 #endif

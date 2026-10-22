@@ -15,7 +15,7 @@ struct ExpansionBase *ExpansionBase;
 static uint32_t read32(volatile const uint32_t *p) {return *p;}
 int main(void)
 {
-    printf("EMU68AGA R28 220D:330C ID1/27B pad monitor - Zorro-II board\n");
+    printf("EMU68AGA R29 220D:330C FIRE and ID01/03 pad monitor - Zorro-II board\n");
     ExpansionBase=(struct ExpansionBase *)OpenLibrary("expansion.library",37);
     if(!ExpansionBase){puts("expansion.library unavailable");return 10;}
     struct ConfigDev *cd=FindConfigDev(NULL,0x6d73,0x69);
@@ -66,6 +66,11 @@ int main(void)
         uint32_t full[6]; for(unsigned k=0;k<6u;k++) full[k]=read32(&d->raw24[k]);
         uint32_t poll[4]; for(unsigned k=0;k<4u;k++)poll[k]=read32(&d->poll_stats[k]);
         uint32_t ctrl[4];for(unsigned k=0;k<4u;k++)ctrl[k]=read32(&d->ctrl_stats[k]);
+        uint32_t ids[2]={0};uint32_t rawids[2][7]={{0}};
+        if(read32(&d->version)>=6u){
+            ids[0]=read32(&d->id01_count);ids[1]=read32(&d->id03_count);
+            for(unsigned k=0;k<7u;k++){rawids[0][k]=read32(&d->id01_raw[k]);rawids[1][k]=read32(&d->id03_raw[k]);}
+        }
         const uint32_t seq2=read32(&d->sequence);
         if(seq1!=seq2 || (seq2&1u)){Delay(2);continue;}
         if(i==0) puts("Press Dyonder D-pad / stick / A: values update every ~0.5 sec");
@@ -90,12 +95,16 @@ int main(void)
             (unsigned long)full[3],(unsigned long)full[4],(unsigned long)full[5]);
         if(read32(&d->version)>=4u)printf("R25 POLL notReady=%lu submitOK=%lu submitFail=%lu ticks=%lu\n",(unsigned long)poll[0],(unsigned long)poll[1],(unsigned long)poll[2],(unsigned long)poll[3]);
         if(read32(&d->version)>=5u)printf("R26 GET tries=%lu OK=%lu ERR=%lu pending=%lu\n",(unsigned long)ctrl[0],(unsigned long)ctrl[1],(unsigned long)ctrl[2],(unsigned long)ctrl[3]);
+        if(read32(&d->version)>=6u){
+            printf("R29 ID01=%lu ID03=%lu\n",(unsigned long)ids[0],(unsigned long)ids[1]);
+            for(unsigned k=0;k<2u;k++)printf("ID0%u %08lX %08lX %08lX %08lX %08lX %08lX %08lX\n",k?3u:1u,(unsigned long)rawids[k][0],(unsigned long)rawids[k][1],(unsigned long)rawids[k][2],(unsigned long)rawids[k][3],(unsigned long)rawids[k][4],(unsigned long)rawids[k][5],(unsigned long)rawids[k][6]);
+        }
         if(tick==last_tick && i>1u) puts("    WARNING: CPU1 telemetry clock has not advanced!");
         last_tick=tick;old_rx=rx;old_map=map;old_joy=state;
         Delay(25u);
     }
     (void)old_joy;
     CloseLibrary((struct Library *)ExpansionBase);
-    puts("R28 test complete.");
+    puts("R29 test complete.");
     return 0;
 }

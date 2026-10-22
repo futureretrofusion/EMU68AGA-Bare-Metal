@@ -12,6 +12,9 @@ int main(void)
     p[4]=255;assert(frf_r27_decode(p,27,&joy,&fire)&&joy==1);
     p[4]=128;p[2]=6;assert(frf_r27_decode(p,27,&joy,&fire)&&joy==0x300);
     p[2]=15;p[1]=1;assert(frf_r27_decode(p,27,&joy,&fire)&&fire==1);
+    p[1]=0;p[2]=0x1f;assert(frf_r27_decode(p,27,&joy,&fire)&&fire==1);
+    p[2]=0x2f;assert(frf_r27_decode(p,27,&joy,&fire)&&fire==1);
+    p[2]=0x0f;assert(frf_r27_decode(p,27,&joy,&fire)&&fire==0);
     p[0]=3;assert(!frf_r27_decode(p,27,&joy,&fire)); /* status report cannot zero motion */
     p[0]=1;assert(!frf_r27_decode(p,26,&joy,&fire));
     return 0;
