@@ -174,6 +174,7 @@ static uint8_t frf_r26_ctlbuf[32] __attribute__((aligned(64)));
 static uint8_t frf_r26_ctlpending;
 static uint32_t frf_r26_ctltime,frf_r26_lastrx_ms,frf_r26_ctlattempt,frf_r26_ctlok,frf_r26_ctlfail;
 extern volatile uint8_t frf_r26_receiver_addr;
+extern volatile uint8_t frf_r26_receiver_idx;
 static uint32_t frf_r22_host_ticks;
 extern volatile struct frf_um_shared *frf_um_host;
 extern void frf_r25_poll_stats(uint32_t*);
@@ -396,7 +397,7 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
 void tuh_hid_get_report_complete_cb(uint8_t a,uint8_t idx,uint8_t id,uint8_t type,uint16_t len)
 {
     (void)id;
-    if(a!=frf_r26_receiver_addr || idx!=0u || type!=HID_REPORT_TYPE_INPUT)return;
+    if(a!=frf_r26_receiver_addr || idx!=frf_r26_receiver_idx || type!=HID_REPORT_TYPE_INPUT)return;
     frf_r26_ctlpending=0;
     if(len==24u && frf_r20_compat_receive(a,idx,frf_r26_ctlbuf,len)) {
         ++frf_r26_ctlok;
@@ -409,7 +410,7 @@ void tuh_hid_umount_cb(uint8_t addr,uint8_t idx)
         frf_native_usb_keyboard_force_release();
         frf_r23_keyboard_last_mount=0u;
     }
-    if(frf_r26_receiver_addr==addr && idx==0u)frf_r26_ctlpending=0;
+    if(frf_r26_receiver_addr==addr && idx==frf_r26_receiver_idx)frf_r26_ctlpending=0;
     frf_tinyusb_pad_unmount(addr,idx);
 }
 void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
@@ -639,7 +640,7 @@ void frf_tinyusb_host_main(void)
            (uint32_t)(ctl_now-frf_r26_lastrx_ms)>=800u &&
            (uint32_t)(ctl_now-frf_r26_ctltime)>=500u) {
             frf_r26_ctltime=ctl_now; ++frf_r26_ctlattempt;
-            frf_r26_ctlpending=tuh_hid_get_report(frf_r26_receiver_addr,0u,0u,
+            frf_r26_ctlpending=tuh_hid_get_report(frf_r26_receiver_addr,frf_r26_receiver_idx,0u,
                 HID_REPORT_TYPE_INPUT,frf_r26_ctlbuf,24u) ? 1u:0u;
             if(!frf_r26_ctlpending) ++frf_r26_ctlfail;
         }

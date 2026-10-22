@@ -260,7 +260,8 @@ int main(int argc,char **argv) {
     extern int frf_r20_is_receiver(uint16_t,uint16_t,uint8_t);
     if(!frf_r20_is_receiver(0x7e05u,0x0920u,0u) ||
        frf_r20_is_receiver(0x220du,0x330cu,0u) ||
-       frf_r20_is_receiver(0x7e05u,0x0920u,1u)) return 29;
+       !frf_r20_is_receiver(0x7e05u,0x0920u,1u) ||
+       !frf_r20_is_receiver(0x7e05u,0x0920u,3u)) return 29;
     extern int frf_pad_is_dyonder(uint16_t vid,uint16_t pid);
     extern int frf_dyonder_decode_report(const uint8_t *b,uint16_t len);
     if(!frf_pad_is_dyonder(0x2563u,0x0576u) ||

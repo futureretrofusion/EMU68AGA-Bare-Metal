@@ -236,10 +236,11 @@ int main(void)
        Detect at HID class mount BEFORE any neutral report arrives. */
     assert(frf_r20_is_receiver(0x7e05u,0x0920u,0u));
     assert(!frf_r20_is_receiver(0x220du,0x330cu,0u));
-    assert(!frf_r20_is_receiver(0x7e05u,0x0920u,1u));
+    assert(frf_r20_is_receiver(0x7e05u,0x0920u,1u));
+    assert(frf_r20_is_receiver(0x7e05u,0x0920u,3u));
     frf_tinyusb_pad_mount(5,1,mouse_only,3); /* same VID, ordinary mouse */
     assert(frf_tinyusb_gamepad_count()==0);
-    frf_tinyusb_pad_mount(5,0,mouse_only,3); /* descriptor does NOT say pad */
+    frf_tinyusb_pad_mount(5,3,mouse_only,3); /* real POST: HID instance 3 */
     assert(frf_tinyusb_gamepad_count()==1);
     /* R23: gamepad IN polling paced at 10ms while keyboard stays
        independent. Never repeatedly submit in the same clock tick. */
@@ -262,24 +263,24 @@ int main(void)
     uint8_t hw[24]={0};
     hw[3]=0;hw[4]=128;hw[5]=hw[6]=128;hw[9]=0xffu;
     hw[1]=1; /* FIRST arriving report has active left/fire, not neutral */
-    assert(frf_r20_compat_receive(5,0,hw,23u)==0); /* reject truncation */
-    assert(frf_r20_compat_receive(5,0,hw,24u)==1);
+    assert(frf_r20_compat_receive(5,3,hw,23u)==0); /* reject truncation */
+    assert(frf_r20_compat_receive(5,3,hw,24u)==1);
     assert(joy==0x0300u && fire==1);
     hw[3]=128;hw[4]=0;hw[1]=0;
-    assert(frf_r20_compat_receive(5,0,hw,24u)==1);
+    assert(frf_r20_compat_receive(5,3,hw,24u)==1);
     assert(joy==0x0100u && !fire);
     assert(frf_r20_seen()==2 && frf_r20_valid()==2);
-    frf_tinyusb_pad_unmount(5,0);
+    frf_tinyusb_pad_unmount(5,3);
     assert(frf_tinyusb_gamepad_count()==0 && joy==0 && !fire);
     /* LATE ATTACH still works after any complete 24-byte frame, no
        requirement for neutral p[9]=FF or centered sticks. */
     hw[3]=0;hw[4]=128;hw[1]=1;hw[9]=0;
-    assert(frf_r20_compat_receive(6,0,hw,24u)==1);
+    assert(frf_r20_compat_receive(6,3,hw,24u)==1);
     assert(frf_tinyusb_gamepad_count()==1);
     assert(joy==0x0200u && fire==1); /* left + hat-up */
-    frf_tinyusb_pad_unmount(6,0);
+    frf_tinyusb_pad_unmount(6,3);
     assert(frf_tinyusb_gamepad_count()==0 && joy==0 && !fire);
-    puts("R21 7E05:0920 HID mount -> PAD=1 before reports, active first packet -> JOY1DAT/fire, late fallback PASS");
+    puts("R39 7E05:0920 runtime HID instance 3 -> PAD=1 before reports; no idx0 dependency PASS");
     puts("R19 actual HID mount -> 24B report -> Amiga JOY1DAT/fire, truncated reject PASS");
     puts("R15 DYONDER composite HID boot-mouse/ID1 pad, ID5 mouse isolate, 0575, retry, generic HID PASS");
     return 0;

@@ -31,6 +31,7 @@ struct pad_itf {
 };
 static struct pad_itf pads[FRF_PAD_SLOTS];
 volatile uint8_t frf_r26_receiver_addr;
+volatile uint8_t frf_r26_receiver_idx;
 volatile uint8_t frf_r32_receiver_addr;
 static uint32_t active_pads,gamepad_reports;
 static volatile uint32_t r34_mount_calls,r34_claimed,r34_late_claimed;
@@ -221,7 +222,8 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         ++active_pads;
         r20_dev=((uint32_t)addr<<16)|idx;
         frf_r26_receiver_addr=addr;
-        kprintf("[FRF-R21] 7E05:0920 HID controller claimed at USB %u interface %u, PAD=%u\n",
+        frf_r26_receiver_idx=idx;
+        kprintf("[FRF-R39] 7E05:0920 HID controller claimed at USB %u interface %u, PAD=%u\n",
                 addr,idx,active_pads);
         return;
     }
@@ -335,8 +337,11 @@ void frf_tinyusb_pad_unmount(uint8_t addr,uint8_t idx)
     bool had_other=false;
     for(unsigned i=0;i<FRF_PAD_SLOTS;i++)
         if(pads[i].addr && pads[i].addr!=addr)had_other=true;
-    if(p->report_is_common==5u && frf_r26_receiver_addr==addr)
+    if(p->report_is_common==5u && frf_r26_receiver_addr==addr &&
+       frf_r26_receiver_idx==idx) {
         frf_r26_receiver_addr=0;
+        frf_r26_receiver_idx=0;
+    }
     if((p->report_is_common==4u || p->report_is_common==6u) &&
         frf_r32_receiver_addr==addr)
         frf_r32_receiver_addr=0;
@@ -472,7 +477,8 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
         ++active_pads;
         r20_dev=((uint32_t)addr<<16)|idx;
         frf_r26_receiver_addr=addr;
-        kprintf("[FRF-R21] 7E05:0920 observed 24B controller candidate at USB %u HID %u\n",addr,idx);
+        frf_r26_receiver_idx=idx;
+        kprintf("[FRF-R39] 7E05:0920 observed 24B controller candidate at USB %u HID %u\n",addr,idx);
     }
     ++r20_seen;
     uint16_t joy=0;
