@@ -257,6 +257,10 @@ int main(int argc,char **argv) {
     if(test_mode==0)
         puts("R16 vendor 2404:0078 FF/00/FF passive-only, no guessed Amiga input PASS");
     if(test_mode==0) puts("VENDOR XINPUT 360 / Nacon / Xbox One GIP detect and JOY1/fire PASS");
+    extern int frf_r20_is_receiver(uint16_t,uint16_t,uint8_t);
+    if(!frf_r20_is_receiver(0x7e05u,0x0920u,0u) ||
+       frf_r20_is_receiver(0x220du,0x330cu,0u) ||
+       frf_r20_is_receiver(0x7e05u,0x0920u,1u)) return 29;
     extern int frf_pad_is_dyonder(uint16_t vid,uint16_t pid);
     extern int frf_dyonder_decode_report(const uint8_t *b,uint16_t len);
     if(!frf_pad_is_dyonder(0x2563u,0x0576u) ||

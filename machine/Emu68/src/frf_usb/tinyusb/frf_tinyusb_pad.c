@@ -111,6 +111,25 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
        HID usage; only claim a boot-mouse interface if it also advertises
        a joystick or gamepad collection. Never claim a boot keyboard. */
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+    /* R21: exact hardware 7E05:0920, interface 0, HID protocol 0.
+       R20 incorrectly searched for 220D:330C and required idle reports
+       before allowing a candidate. Physical R18/R20 device table shows
+       7E050920 at address 1. Claim this controller at HID mount.
+       Never claim an ordinary boot keyboard/mouse interface. */
+    if(have_vidpid && frf_r20_is_receiver(vid,pid,idx) &&
+       protocol==HID_ITF_PROTOCOL_NONE) {
+        const int slot=first_free();
+        if(slot<0)return;
+        struct pad_itf *p=&pads[slot];
+        memset(p,0,sizeof(*p));
+        p->addr=addr;p->idx=idx;p->report_is_common=5u;
+        p->next_submit_ms=tusb_time_millis_api()+500u;
+        ++active_pads;
+        r20_dev=((uint32_t)addr<<16)|idx;
+        kprintf("[FRF-R21] 7E05:0920 HID controller claimed at USB %u interface %u, PAD=%u\n",
+                addr,idx,active_pads);
+        return;
+    }
     if(protocol==HID_ITF_PROTOCOL_KEYBOARD) return;
     tuh_hid_report_info_t info[8];
     uint8_t n=(desc && desc_len)?
@@ -250,11 +269,12 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
         uint16_t vid=0,pid=0;
         if(!tuh_vid_pid_get(addr,&vid,&pid) ||
            !frf_r20_is_receiver(vid,pid,idx)) return 0;
-        if(!frf_r20_observed_neutral(data,len)) {
-            ++r20_rejected;
+        /* R21 fallback: any complete 24-byte report from exact VID:PID
+           and interface identifies the mounted receiver. Active sticks
+           and pressed buttons must not prevent initial detection. */
+        if(tuh_hid_interface_protocol(addr,idx)!=HID_ITF_PROTOCOL_NONE)
             return 0;
-        }
-        if(p) return 0; /* Another genuine HID pad owns the interface. */
+        if(p) return 0; /* Another genuine HID pad owns this interface. */
         const int slot=first_free();
         if(slot<0) return 0;
         p=&pads[slot];
@@ -263,7 +283,7 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
         p->next_submit_ms=tusb_time_millis_api()+500u;
         ++active_pads;
         r20_dev=((uint32_t)addr<<16)|idx;
-        kprintf("[FRF-R20] 220D:330C observed 24B controller candidate at USB %u HID %u\n",addr,idx);
+        kprintf("[FRF-R21] 7E05:0920 observed 24B controller candidate at USB %u HID %u\n",addr,idx);
     }
     ++r20_seen;
     uint16_t joy=0;

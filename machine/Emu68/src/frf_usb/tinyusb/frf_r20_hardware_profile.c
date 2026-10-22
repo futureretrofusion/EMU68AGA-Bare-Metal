@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-only
- * R20 experimental 24-byte receiver compatibility profile.
- * Restricted to observed VID:PID 220D:330C, HID interface zero.
+ * R21 hardware-observed 24-byte receiver compatibility profile.
+ * Restricted to device VID:PID 7E05:0920, HID interface zero.
  * This is an inferred report layout from R18 live packet evidence,
  * not a vendor-published specification. Tested separately.
  */
 #include <stdint.h>
 #include <stdbool.h>
 int frf_r20_is_receiver(uint16_t vid,uint16_t pid,uint8_t itf) {
- return vid==0x220du && pid==0x330cu && itf==0u;
+ return vid==0x7e05u && pid==0x0920u && itf==0u;
 }
 int frf_r20_observed_neutral(const uint8_t *p,uint16_t size) {
  if(!p || size!=24u || p[0]!=0u) return 0;

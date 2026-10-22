@@ -376,9 +376,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R20",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R21",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R20",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R21",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -570,7 +570,7 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,ph,cyan);
         post_rect(px+pw-2u,py,2u,ph,cyan);
         post_rect(px,py+ph-2u,pw,2u,cyan);
-        post_text(px+10u,py+8u,"R20 LIVE PAD REPORT / MAPPING",white);
+        post_text(px+10u,py+8u,"R21 LIVE PAD REPORT / MAPPING",white);
         post_text(px+10u,py+29u,"SOURCE (1=HID,2=VENDOR):",white);
         post_hex(px+276u,py+29u,native_usb_packet_words[0],8,green);
         post_text(px+10u,py+47u,"RX:",white);
@@ -593,7 +593,7 @@ static void frf_post_draw(void)
             const uint32_t difference=native_usb_packet_words[9u+i*3u];
             post_hex(px+435u,yy,difference,8,difference?amber:cyan);
         }
-        post_text(px+10u,py+396u,"R20 PAD RX:",white);
+        post_text(px+10u,py+396u,"R21 PAD RX:",white);
         post_hex(px+143u,py+396u,native_r20_compat[0],4,cyan);
         post_text(px+221u,py+396u,"OK:",white);
         post_hex(px+252u,py+396u,native_r20_compat[1],4,green);
@@ -621,7 +621,7 @@ static void frf_post_draw(void)
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R20 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R21 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;
