@@ -7,6 +7,7 @@
 #include <string.h>
 #include "tusb.h"
 #include "class/hid/hid_host.h"
+#include "frf_r19_hid_descriptor.h"
 
 #define FRF_PAD_SLOTS 8u
 struct pad_itf {
@@ -16,17 +17,36 @@ struct pad_itf {
 
     uint32_t reports;
     uint32_t next_submit_ms,retries,recoveries;
+    struct frf_hid_map desc_map;
 };
 static struct pad_itf pads[FRF_PAD_SLOTS];
 static uint32_t active_pads,gamepad_reports;
 static uint32_t dyonder_report_ok,dyonder_report_ignore;
 static uint32_t pad_submit_deferred,pad_submit_recovered;
+static volatile uint32_t descriptor_packets,descriptor_valid,descriptor_joy,descriptor_fire;
+static volatile uint32_t descriptor_last_address,descriptor_fields;
+uint32_t frf_r19_hid_packet_count(void){return descriptor_packets;}
+uint32_t frf_r19_hid_valid_count(void){return descriptor_valid;}
+uint32_t frf_r19_hid_last_joy(void){return descriptor_joy;}
+uint32_t frf_r19_hid_last_fire(void){return descriptor_fire;}
+uint32_t frf_r19_hid_last_address(void){return descriptor_last_address;}
+uint32_t frf_r19_hid_field_count(void){return descriptor_fields;}
+
 extern uint32_t tusb_time_millis_api(void);
 uint32_t frf_tinyusb_pad_deferred(void) {return pad_submit_deferred;}
 uint32_t frf_tinyusb_pad_recovered(void) {return pad_submit_recovered;}
 
 uint32_t frf_tinyusb_dyonder_reports(void) {return dyonder_report_ok;}
 uint32_t frf_tinyusb_dyonder_ignored(void) {return dyonder_report_ignore;}
+int frf_r19_hid_mapped_interface(uint8_t addr,uint8_t idx)
+{
+    for(unsigned i=0;i<FRF_PAD_SLOTS;i++) {
+        const struct pad_itf *p=&pads[i];
+        if(p->addr==addr && p->idx==idx && p->report_is_common==4u)
+            return 1;
+    }
+    return 0;
+}
 int frf_tinyusb_pad_is_dyonder_interface(uint8_t addr,uint8_t idx)
 {
     const struct pad_itf *p;
@@ -89,7 +109,10 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         if(frf_pad_is_joystick_usage(info[j].usage_page,info[j].usage))
             gamepad_collection=true;
     }
-    if(protocol==HID_ITF_PROTOCOL_MOUSE && !gamepad_collection) return;
+    struct frf_hid_map parsed={0};
+    const int descriptor_supported=frf_hid_gamepad_parse(&parsed,desc,desc_len);
+    if(protocol==HID_ITF_PROTOCOL_MOUSE &&
+       !gamepad_collection && !descriptor_supported) return;
     if(have_vidpid && frf_pad_is_dyonder(vid,pid)) {
         int slot=first_free();
         if(slot<0) return;
@@ -100,6 +123,24 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         ++active_pads;
         kprintf("[FRF-DYONDER] ShanWan %04x:%04x HID candidate addr=%u itf=%u mode=%u (ID1=10B, ID5 mouse)\n",
                 vid,pid,addr,idx,p->report_is_common);
+        return;
+    }
+    /* Prefer descriptor-driven real offsets, 24B or any legal report.
+       This is the only generic path which may update JOY1DAT.
+       No fallback uses unrelated keyboard/mouse values. */
+    if(descriptor_supported) {
+        int slot=first_free();
+        if(slot>=0) {
+            struct pad_itf *p=&pads[slot];
+            p->addr=addr;p->idx=idx;p->report_is_common=4u;
+            p->desc_map=parsed;p->report_id=parsed.first_id;
+            p->next_submit_ms=tusb_time_millis_api()+500u;
+            ++active_pads;
+            descriptor_fields=parsed.count;
+            descriptor_last_address=((uint32_t)addr<<16)|idx;
+            kprintf("[FRF-R19] HID descriptor gamepad dev=%u interface=%u fields=%u id=%u\n",
+                    addr,idx,parsed.count,parsed.first_id);
+        }
         return;
     }
     for(uint8_t j=0;j<n;++j) {
@@ -190,6 +231,27 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
 {
     struct pad_itf *p=find(addr,idx);
     if(!p || !data) return;
+    if(p->report_is_common==4u) {
+        ++descriptor_packets;
+        uint16_t joy=0;int fire=0;
+        if(frf_hid_gamepad_decode(&p->desc_map,data,len,&joy,&fire)) {
+            /* Preserve first registered gamepad ownership of port 2;
+               mouse and non-controller reports never reach this path. */
+            for(unsigned i=0;i<FRF_PAD_SLOTS;i++)
+                if(pads[i].addr) {
+                    if(&pads[i]==p) {
+                        aga_virtual_joy_set(1,joy,fire);
+                        descriptor_joy=joy;
+                        descriptor_fire=(uint32_t)fire;
+                        ++descriptor_valid;
+                        ++p->reports;
+                        ++gamepad_reports;
+                    }
+                    break;
+                }
+        }
+        return;
+    }
     if(p->report_is_common==2u || p->report_is_common==3u) {
         /* Keep HID report ID in-place. The old driver validated length=10
            including ID1; stripping it silently broke the R13 decoder.

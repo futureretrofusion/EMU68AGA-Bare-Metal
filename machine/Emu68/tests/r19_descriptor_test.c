@@ -1,0 +1,66 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <assert.h>
+#include <string.h>
+#include "frf_r19_hid_descriptor.h"
+static const uint8_t gamepad24[]={
+  0x05,0x01,0x09,0x05,0xa1,0x01,
+  0x15,0x00,0x26,0xff,0x00,0x75,0x08,0x95,0x02,
+  0x09,0x30,0x09,0x31,0x81,0x02,
+  0x15,0x00,0x25,0x07,0x75,0x04,0x95,0x01,0x09,0x39,0x81,0x02,
+  0x75,0x04,0x95,0x01,0x81,0x03,
+  0x05,0x09,0x19,0x01,0x29,0x10,0x15,0x00,0x25,0x01,
+  0x75,0x01,0x95,0x10,0x81,0x02,
+  0x06,0x00,0xff,0x75,0x08,0x95,0x13,0x81,0x03,0xc0
+};
+static const uint8_t gamepad_signed[]={
+  0x05,0x01,0x09,0x04,0xa1,0x01,0x85,0x03,
+  0x15,0x81,0x25,0x7f,0x75,0x08,0x95,0x02,
+  0x09,0x30,0x09,0x31,0x81,0x02,
+  0x05,0x09,0x09,0x01,0x15,0x00,0x25,0x01,
+  0x75,0x01,0x95,0x01,0x81,0x02,
+  0x75,0x07,0x95,0x01,0x81,0x03,0xc0
+};
+static void check(const struct frf_hid_map*m,const uint8_t *p,
+                   unsigned n,uint16_t want,int firewant) {
+  uint16_t joy=0xffff;int fire=-1;
+  int ok=frf_hid_gamepad_decode(m,p,(uint16_t)n,&joy,&fire);
+  if(!ok || joy!=want || fire!=firewant) {
+    printf("FAIL decode ok=%d joy=%04x want=%04x fire=%d want=%d\n",
+           ok,joy,want,fire,firewant);
+    assert(0);
+  }
+}
+int main(void) {
+  struct frf_hid_map m={0};
+  assert(frf_hid_gamepad_parse(&m,gamepad24,sizeof(gamepad24)));
+  assert(m.count>=19 && m.field[0].kind==1 && m.field[0].bit==0);
+  uint8_t p[24]={0};
+  p[0]=128;p[1]=128;p[2]=8;
+  check(&m,p,24,0,0);
+  p[0]=0;
+  check(&m,p,24,0x0300,0);
+  p[0]=255;
+  check(&m,p,24,0x0003,0);
+  p[0]=128;p[2]=0; /* hat up */
+  check(&m,p,24,0x0100,0);
+  p[2]=8;p[3]=1; /* button 1 */
+  check(&m,p,24,0,1);
+  p[3]=0x02; /* button 2 */
+  check(&m,p,24,0,1);
+  assert(!frf_hid_gamepad_decode(&m,p,1,&(uint16_t){0},&(int){0}));
+  assert(!frf_hid_gamepad_parse(&m,(uint8_t[]){5,1,9,6,0xa1,1,0xc0},7));
+  assert(frf_hid_gamepad_parse(&m,gamepad_signed,sizeof(gamepad_signed)));
+  assert(m.count==3 && m.first_id==3 && m.has_ids==1);
+  uint8_t signp[]={3,0,0,0};
+  check(&m,signp,4,0,0);
+  signp[1]=0x81; /* -127 X */
+  check(&m,signp,4,0x0300,0);
+  signp[1]=0x7f;signp[2]=0x81; /* right + up */
+  check(&m,signp,4,0x0103,0);
+  signp[1]=0;signp[2]=0;signp[3]=1;
+  check(&m,signp,4,0,1);
+  signp[0]=4;
+  assert(!frf_hid_gamepad_decode(&m,signp,4,&(uint16_t){0},&(int){0}));
+  printf("R19 24-byte + report-ID + unsigned/signed axes, hat, fire, keyboard rejection PASS\n");
+}

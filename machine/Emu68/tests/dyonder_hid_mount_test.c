@@ -34,6 +34,7 @@ bool tuh_vid_pid_get(uint8_t addr,uint16_t *vid,uint16_t *pid) {
     if(addr==1) {*vid=0x2563;*pid=0x0576;return true;}
     if(addr==2) {*vid=0x2563;*pid=0x0575;return true;}
     if(addr==3) {*vid=0x046d;*pid=0xc216;return true;}
+    if(addr==4) {*vid=0x220du;*pid=0x330cu;return true;}
     return false;
 }
 uint8_t tuh_hid_interface_protocol(uint8_t addr,uint8_t idx) {
@@ -62,6 +63,7 @@ extern uint32_t frf_tinyusb_dyonder_ignored(void);
 extern void frf_tinyusb_pad_retry_task(void);
 extern uint32_t frf_tinyusb_pad_deferred(void);
 extern uint32_t frf_tinyusb_pad_recovered(void);
+extern uint32_t frf_r19_hid_valid_count(void);
 int main(void)
 {
     uint8_t desc[3]={5,1,9};
@@ -115,6 +117,34 @@ int main(void)
     assert(frf_tinyusb_gamepad_count()==1);
     frf_tinyusb_pad_unmount(3,0);
     assert(frf_tinyusb_gamepad_count()==0);
+    /* R19 end-to-end actual TinyUSB mount -> HID packet -> Amiga
+       JOY1DAT/fire, with a non-legacy 24-byte report format. */
+    const uint8_t desc24[]={
+      0x05,0x01,0x09,0x05,0xa1,0x01,
+      0x15,0x00,0x26,0xff,0x00,0x75,0x08,0x95,0x02,
+      0x09,0x30,0x09,0x31,0x81,0x02,
+      0x15,0x00,0x25,0x07,0x75,0x04,0x95,0x01,0x09,0x39,0x81,0x02,
+      0x75,0x04,0x95,0x01,0x81,0x03,
+      0x05,0x09,0x19,0x01,0x29,0x10,0x15,0x00,0x25,0x01,
+      0x75,0x01,0x95,0x10,0x81,0x02,
+      0x06,0x00,0xff,0x75,0x08,0x95,0x13,0x81,0x03,0xc0
+    };
+    frf_tinyusb_pad_mount(4,0,desc24,sizeof(desc24));
+    assert(frf_tinyusb_gamepad_count()==1);
+    uint8_t rpt24[24]={0};
+    rpt24[0]=128; rpt24[1]=128; rpt24[2]=8;
+    frf_tinyusb_pad_report(4,0,rpt24,24);
+    assert(joy==0 && !fire);
+    rpt24[0]=0; rpt24[3]=1;
+    frf_tinyusb_pad_report(4,0,rpt24,24);
+    assert(joy==0x0300u && fire==1);
+    assert(frf_r19_hid_valid_count()==2);
+    rpt24[0]=255; rpt24[3]=0;
+    frf_tinyusb_pad_report(4,0,rpt24,2); /* truncated: no guest update */
+    assert(joy==0x0300u && fire==1);
+    frf_tinyusb_pad_unmount(4,0);
+    assert(joy==0 && fire==0);
+    puts("R19 actual HID mount -> 24B report -> Amiga JOY1DAT/fire, truncated reject PASS");
     puts("R15 DYONDER composite HID boot-mouse/ID1 pad, ID5 mouse isolate, 0575, retry, generic HID PASS");
     return 0;
 }

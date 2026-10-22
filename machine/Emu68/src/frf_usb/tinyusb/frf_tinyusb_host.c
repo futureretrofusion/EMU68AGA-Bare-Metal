@@ -45,6 +45,7 @@ extern uint32_t frf_tinyusb_dyonder_reports(void);
 extern uint32_t frf_tinyusb_dyonder_ignored(void);
 extern void frf_tinyusb_pad_retry_task(void);
 extern int frf_tinyusb_pad_is_dyonder_interface(uint8_t,uint8_t);
+extern int frf_r19_hid_mapped_interface(uint8_t,uint8_t);
 extern void frf_post_native_usb_device_event(uint32_t,uint32_t,uint32_t,uint32_t);
 extern void frf_post_native_usb_input_trace(const uint32_t *fields,unsigned count);
 extern void aga_virtual_joy_link_stats(uint32_t out[4]);
@@ -57,6 +58,13 @@ extern void frf_post_native_usb_probe_trace(const uint32_t fields[7]);
 extern void frf_usb_packet_capture(uint8_t,uint8_t,uint8_t,const uint8_t*,uint16_t);
 extern void frf_usb_packet_capture_snapshot(uint32_t out[55]);
 extern void frf_post_native_usb_packet_bytes(const uint32_t words[55]);
+extern void frf_post_r19_hid_map(const uint32_t fields[6]);
+extern uint32_t frf_r19_hid_packet_count(void);
+extern uint32_t frf_r19_hid_valid_count(void);
+extern uint32_t frf_r19_hid_last_joy(void);
+extern uint32_t frf_r19_hid_last_fire(void);
+extern uint32_t frf_r19_hid_last_address(void);
+extern uint32_t frf_r19_hid_field_count(void);
 
 
 extern void frf_post_native_usb_pad_stats(uint32_t,uint32_t);
@@ -244,6 +252,14 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
     frf_hid_source=((uint32_t)addr<<16)|idx;
     frf_hid_raw_word0=pack4(data,len,0u);
     frf_hid_raw_word1=pack4(data,len,4u);
+    /* A real descriptor-backed gamepad can expose an HID boot-mouse
+       interface in a composite controller. Don't interpret stick
+       and button reports as boot mouse movements. */
+    if(frf_r19_hid_mapped_interface(addr,idx)) {
+        frf_tinyusb_pad_report(addr,idx,data,len);
+        (void)tuh_hid_receive_report(addr,idx);
+        return;
+    }
     /* Dyonder ID1 joystick and ID5 relative mouse can share the very
        same Boot-Mouse HID interface. Route by report ID before applying
        the ordinary three-byte boot-mouse decoding. */
@@ -407,6 +423,15 @@ void frf_tinyusb_host_main(void)
             uint32_t bytes[55]={0};
             frf_usb_packet_capture_snapshot(bytes);
             frf_post_native_usb_packet_bytes(bytes);
+            const uint32_t r19[6]={
+                frf_r19_hid_packet_count(),
+                frf_r19_hid_valid_count(),
+                frf_r19_hid_last_joy(),
+                frf_r19_hid_last_fire(),
+                frf_r19_hid_last_address(),
+                frf_r19_hid_field_count()
+            };
+            frf_post_r19_hid_map(r19);
             last_link_draw=dy_now;
         }
         if((dy_ok!=last_dy_ok || dy_ignore!=last_dy_ignore) &&
