@@ -377,9 +377,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R31",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R32",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R31",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R32",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -571,7 +571,7 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,ph,cyan);
         post_rect(px+pw-2u,py,2u,ph,cyan);
         post_rect(px,py+ph-2u,pw,2u,cyan);
-        post_text(px+10u,py+8u,"R31 LIVE PAD / USB INPUT",white);
+        post_text(px+10u,py+8u,"R32 LIVE PAD / USB INPUT",white);
         extern uint32_t frf_r31_target_mode(void);
         post_text(px+285u,py+8u,"MODE",white);
         post_hex(px+323u,py+8u,frf_r31_target_mode(),4,cyan);
@@ -581,6 +581,9 @@ static void frf_post_draw(void)
         post_hex(px+540u,py+8u,native_r26_get[2],4,amber);
         post_text(px+10u,py+29u,"SOURCE (1=HID,2=VENDOR):",white);
         post_hex(px+276u,py+29u,native_usb_packet_words[0],8,green);
+        extern uint32_t frf_r32_button_mask(void);
+        post_text(px+400u,py+29u,"BTN",white);
+        post_hex(px+453u,py+29u,frf_r32_button_mask(),8,green);
         post_text(px+10u,py+47u,"RX:",white);
         post_hex(px+49u,py+47u,native_usb_packet_words[1],8,cyan);
         post_text(px+201u,py+47u,"CHANGED PKTS:",white);
@@ -601,7 +604,7 @@ static void frf_post_draw(void)
             const uint32_t difference=native_usb_packet_words[9u+i*3u];
             post_hex(px+435u,yy,difference,8,difference?amber:cyan);
         }
-        post_text(px+10u,py+396u,"R31 PAD RX:",white);
+        post_text(px+10u,py+396u,"R32 PAD RX:",white);
         post_hex(px+143u,py+396u,native_r20_compat[0],4,cyan);
         post_text(px+221u,py+396u,"OK:",white);
         post_hex(px+252u,py+396u,native_r20_compat[1],4,green);

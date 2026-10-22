@@ -461,3 +461,5 @@ int main(int argc,char **argv) {
     running=0;pthread_join(worker,NULL);
     return 0;
 }
+
+void aga_virtual_pad_buttons(int port, uint32_t buttons){(void)port;(void)buttons;}

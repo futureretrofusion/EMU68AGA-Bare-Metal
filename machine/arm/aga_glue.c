@@ -181,6 +181,8 @@ void aga_virtual_joy_link_stats(uint32_t out[4])
 /* Paula POTGO high-byte state. OUT/DAT pairs are:
    15/14 RY, 13/12 RX, 11/10 LY (port-1 right mouse), 9/8 LX. */
 static volatile uint16_t frf_potgo;
+static volatile uint16_t frf_pad_potgor[2];
+static volatile uint32_t frf_pad_fullbuttons[2];
 
 uint8_t aga_virtual_ciaa_buttons(void)
 {
@@ -199,6 +201,15 @@ void aga_virtual_joy_set(int port, uint16_t joydat, int fire)
     uint8_t bit = (uint8_t)(1u << port);
     if (fire) __atomic_fetch_or(&frf_fire_bits, bit, __ATOMIC_ACQ_REL);
     else      __atomic_fetch_and(&frf_fire_bits, (uint8_t)~bit, __ATOMIC_ACQ_REL);
+}
+void aga_virtual_pad_buttons(int port,uint32_t buttons)
+{
+ if((unsigned)port>1u)return;
+ __atomic_store_n(&frf_pad_fullbuttons[port],buttons,__ATOMIC_RELEASE);
+ uint16_t mask=0;
+ if(buttons&2u)mask|=port?0x4000u:0x0400u;
+ if(buttons&4u)mask|=port?0x1000u:0x0100u;
+ __atomic_store_n(&frf_pad_potgor[port],mask,__ATOMIC_RELEASE);
 }
 void aga_virtual_mouse_update(int dx, int dy, unsigned buttons)
 {
@@ -235,6 +246,11 @@ static uint16_t hook_ext_read(void *u, uint32_t reg)
         if (frf_usb_early_startup_active()) mb |= 3u;
         if (mb & 2u) v &= (uint16_t)~0x0400u;
         if (mb & 4u) v &= (uint16_t)~0x0100u;
+        uint16_t pad=__atomic_load_n(&frf_pad_potgor[0],__ATOMIC_ACQUIRE) | __atomic_load_n(&frf_pad_potgor[1],__ATOMIC_ACQUIRE);
+        if(!(pg&0x8000u))v&=(uint16_t)~(pad&0x4000u);
+        if(!(pg&0x2000u))v&=(uint16_t)~(pad&0x1000u);
+        if(!(pg&0x0800u))v&=(uint16_t)~(pad&0x0400u);
+        if(!(pg&0x0200u))v&=(uint16_t)~(pad&0x0100u);
         return v;
     }
     /* No receive-side serial device is attached. Real Paula reports the

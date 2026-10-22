@@ -21,9 +21,11 @@ struct pad_itf {
     struct frf_hid_map desc_map;
     uint16_t joy_report_state;
     uint8_t fire_report_state;
+    uint32_t buttons_state;
 };
 static struct pad_itf pads[FRF_PAD_SLOTS];
 volatile uint8_t frf_r26_receiver_addr;
+volatile uint8_t frf_r32_receiver_addr;
 static uint32_t active_pads,gamepad_reports;
 static volatile uint32_t r27_seen,r27_ok,r27_bad,r27_joy,r27_fire;
 uint32_t frf_r27_seen(void){return r27_seen;}
@@ -54,6 +56,8 @@ uint32_t frf_r19_hid_last_joy(void){return descriptor_joy;}
 uint32_t frf_r19_hid_last_fire(void){return descriptor_fire;}
 uint32_t frf_r19_hid_last_address(void){return descriptor_last_address;}
 uint32_t frf_r19_hid_field_count(void){return descriptor_fields;}
+static volatile uint32_t frf_r32_last_buttons;
+uint32_t frf_r32_button_mask(void){return frf_r32_last_buttons;}
 uint32_t frf_r31_target_mode(void){for(unsigned i=0;i<FRF_PAD_SLOTS;i++)if(pads[i].addr && pads[i].report_is_common==4u)return 4u;else if(pads[i].addr && pads[i].report_is_common==6u)return 6u;return 0u;}
 
 extern uint32_t tusb_time_millis_api(void);
@@ -88,6 +92,7 @@ int frf_pad_is_dyonder(uint16_t vid,uint16_t pid)
     return vid==0x2563u && (pid==0x0576u || pid==0x0575u);
 }
 extern void aga_virtual_joy_set(int port,uint16_t joydat,int fire);
+extern void aga_virtual_pad_buttons(int port,uint32_t buttons);
 extern void kprintf(const char*,...);
 
 extern uint32_t frf_tinyusb_xpad_count(void);
@@ -153,6 +158,7 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         struct pad_itf *p=&pads[slot];
         memset(p,0,sizeof(*p));
         p->addr=addr;p->idx=idx;
+        frf_r32_receiver_addr=addr;
         p->next_submit_ms=tusb_time_millis_api()+10u;
         if(desc && desc_len &&
            frf_hid_gamepad_parse(&p->desc_map,desc,desc_len)) {
@@ -249,10 +255,11 @@ void frf_tinyusb_pad_unmount(uint8_t addr,uint8_t idx)
     struct pad_itf *p=find(addr,idx);
     if(!p) return;
     if(p->report_is_common==5u && frf_r26_receiver_addr==addr) frf_r26_receiver_addr=0;
+    if((p->report_is_common==4u||p->report_is_common==6u) && frf_r32_receiver_addr==addr)frf_r32_receiver_addr=0;
     memset(p,0,sizeof(*p));
     if(active_pads) --active_pads;
     /* Port 2 is exclusively assigned to first mapped gamepad. */
-    if(!active_pads) aga_virtual_joy_set(1,0,0);
+    if(!active_pads){aga_virtual_joy_set(1,0,0);aga_virtual_pad_buttons(1,0);frf_r32_last_buttons=0;}
 }
 static void map_standard_report(const uint8_t *data)
 {
@@ -373,7 +380,12 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
             const unsigned caps=frf_hid_gamepad_report_capabilities(
                 &p->desc_map,p->desc_map.has_ids?data[0]:0u);
             if(caps&1u)p->joy_report_state=joy;
-            if(caps&2u)p->fire_report_state=(uint8_t)(fire!=0);
+            uint32_t state=0,present=0;
+            if(frf_hid_gamepad_decode_buttons(&p->desc_map,data,len,&state,&present)) {
+              p->buttons_state=(p->buttons_state&~present)|(state&present);
+              p->fire_report_state=(uint8_t)((p->buttons_state&1u)!=0u);
+              frf_r32_last_buttons=p->buttons_state;
+            }
             joy=p->joy_report_state;fire=p->fire_report_state;
             /* Preserve first registered gamepad ownership of port 2;
                mouse and non-controller reports never reach this path. */
@@ -381,6 +393,7 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
                 if(pads[i].addr) {
                     if(&pads[i]==p) {
                         aga_virtual_joy_set(1,joy,fire);
+                        aga_virtual_pad_buttons(1,p->buttons_state);
                         descriptor_joy=joy;
                         descriptor_fire=(uint32_t)fire;
                         ++descriptor_valid;

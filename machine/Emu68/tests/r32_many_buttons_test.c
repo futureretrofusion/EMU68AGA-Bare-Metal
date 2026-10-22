@@ -1,0 +1,20 @@
+#include <stdint.h>
+#include <assert.h>
+#include "../src/frf_usb/tinyusb/frf_r19_hid_descriptor.h"
+static const uint8_t desc[]={
+0x05,0x01,0x09,0x05,0xa1,0x01,0x85,0x01,
+0x09,0x30,0x09,0x31,0x15,0x00,0x26,0xff,0x00,0x75,0x08,0x95,0x02,0x81,0x02,
+0x85,0x03,0x05,0x09,0x19,0x01,0x29,0x18,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x18,0x81,0x02,0xc0
+};
+int main(void){
+struct frf_hid_map m={0};uint32_t b=0,p=0;
+assert(frf_hid_gamepad_parse(&m,desc,sizeof(desc)));
+assert(m.count>=26u);
+uint8_t axis[]={1,0,128};
+assert(!frf_hid_gamepad_decode_buttons(&m,axis,sizeof(axis),&b,&p));assert(p==0);
+uint8_t buttons[]={3,1,0,128};
+assert(frf_hid_gamepad_decode_buttons(&m,buttons,sizeof(buttons),&b,&p));
+assert(b==0x800001u && p==0xffffffu);
+buttons[1]=0;buttons[3]=0;
+assert(frf_hid_gamepad_decode_buttons(&m,buttons,sizeof(buttons),&b,&p));
+assert(b==0 && p==0xffffffu);return 0;}

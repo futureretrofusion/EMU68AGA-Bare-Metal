@@ -386,10 +386,11 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
     extern int frf_r30_descriptor_receiver(uint8_t,uint8_t);
     if(frf_r30_descriptor_receiver(addr,idx)) {
         frf_tinyusb_pad_report(addr,idx,data,len);
+        if(tuh_hid_receive_ready(addr,idx))(void)tuh_hid_receive_report(addr,idx);
         return;
     }
     if(frf_r27_receive(addr,idx,data,len)) {
-        /* R27 receiver is paced by CPU1 retry task, not callback. */
+        if(tuh_hid_receive_ready(addr,idx))(void)tuh_hid_receive_report(addr,idx);
         return;
     }
     if(frf_r20_compat_receive(addr,idx,data,len)) {

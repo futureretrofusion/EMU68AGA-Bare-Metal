@@ -1542,7 +1542,9 @@ static bool handle_channel_in_dma(dwc2_regs_t* dwc2, uint8_t ch_id, uint32_t hci
       // path); no frame deferral. Programming Guide 3.5 (p73) Note permits disable on NAK/FrmOvrn splits.
       #ifdef FRF_USB_TINYUSB
       extern volatile uint8_t frf_r26_receiver_addr;
-      if ((hcint & HCINT_NAK) && frf_r26_receiver_addr && hcchar.dev_addr==frf_r26_receiver_addr && hcchar.ep_type==HCCHAR_EPTYPE_INTERRUPT) {
+      extern volatile uint8_t frf_r32_receiver_addr;
+      if ((hcint & HCINT_NAK) && ((frf_r26_receiver_addr && hcchar.dev_addr==frf_r26_receiver_addr) ||
+      (frf_r32_receiver_addr && hcchar.dev_addr==frf_r32_receiver_addr)) && hcchar.ep_type==HCCHAR_EPTYPE_INTERRUPT) {
         edpt->next_pid=hctsiz.pid;
         channel_dealloc(dwc2,ch_id);
         periodic_xfer_defer(dwc2,edpt,0);

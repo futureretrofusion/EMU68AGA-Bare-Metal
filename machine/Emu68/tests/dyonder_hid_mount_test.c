@@ -202,3 +202,5 @@ int main(void)
     puts("R15 DYONDER composite HID boot-mouse/ID1 pad, ID5 mouse isolate, 0575, retry, generic HID PASS");
     return 0;
 }
+
+void aga_virtual_pad_buttons(int port, uint32_t buttons){(void)port;(void)buttons;}

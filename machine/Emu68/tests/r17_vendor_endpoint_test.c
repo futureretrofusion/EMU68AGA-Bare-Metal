@@ -81,3 +81,5 @@ int main(void)
   puts("R17 AArch64 BE REAL vendor class open BULK/INT, set-config, IN submit/receive PASS");
   return 0;
 }
+
+void aga_virtual_pad_buttons(int port, uint32_t buttons){(void)port;(void)buttons;}
