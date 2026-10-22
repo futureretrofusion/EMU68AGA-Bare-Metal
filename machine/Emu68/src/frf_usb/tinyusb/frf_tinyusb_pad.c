@@ -384,7 +384,8 @@ static void map_standard_report(const uint8_t *data)
  * report 01 [2 button bytes] [hat 0..8] [X,Y,Rx,Ry 0..255] [2 vendor].
  * ID05 is a relative mouse report, ID02 is output; NEVER joystick input.
  * Return 1 only for a verified 10-byte ID1 report. */
-int frf_dyonder_decode_report(const uint8_t *b,uint16_t len)
+static int frf_dyonder_extract(const uint8_t *b,uint16_t len,
+                               uint16_t *out_joy,uint32_t *out_buttons)
 {
     if(!b || len!=10u || b[0]!=1u) return 0;
     const uint32_t buttons=(uint32_t)b[1] |
@@ -399,7 +400,18 @@ int frf_dyonder_decode_report(const uint8_t *b,uint16_t len)
         (((left!=0)^(up!=0))?0x0100u:0u) |
         (right?0x0002u:0u) |
         (((right!=0)^(down!=0))?0x0001u:0u));
-    aga_virtual_joy_set(1,joy,(buttons&0x7fffu)!=0u);
+    if(!out_joy || !out_buttons)return 0;
+    *out_joy=joy;
+    *out_buttons=buttons;
+    return 1;
+}
+int frf_dyonder_decode_report(const uint8_t *data,uint16_t len)
+{
+    uint16_t joy=0;uint32_t buttons=0;
+    if(!frf_dyonder_extract(data,len,&joy,&buttons))return 0;
+    /* Working USPi pad_status: only physical button 1 is primary fire. */
+    aga_virtual_joy_set(1,joy,(buttons&1u)!=0u);
+    aga_virtual_pad_buttons(1,buttons);
     return 1;
 }
 /* Return true only for an accepted report from the exact hardware
@@ -517,7 +529,12 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
         /* Keep HID report ID in-place. The old driver validated length=10
            including ID1; stripping it silently broke the R13 decoder.
            0575 is mode-switch capable: promote only after a real ID1. */
-        if(frf_dyonder_decode_report(data,len)) {
+        uint16_t decoded_joy=0;uint32_t decoded_buttons=0;
+        if(frf_dyonder_extract(data,len,&decoded_joy,&decoded_buttons)) {
+            /* Same state transfer as working USPi: axes/hat + 15 buttons
+               are stored on the owning physical controller before publishing. */
+            frf_pad_publish_report(p,decoded_joy,
+                                   (decoded_buttons&1u)!=0u,decoded_buttons);
             if(p->report_is_common==3u) {
                 p->report_is_common=2u;
                 kprintf("[FRF-DYONDER] 0575 mode supplied valid 10B ID1 pad input\n");

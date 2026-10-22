@@ -12,6 +12,7 @@
 
 static uint16_t joy,joy0;
 static int fire,fire0;
+static uint32_t buttons_port1;
 static uint32_t calls;
 static uint32_t fake_ms,submit_attempts,fail_first=1,endpoint_busy;
 uint32_t tusb_time_millis_api(void) {return fake_ms;}
@@ -112,6 +113,10 @@ int main(void)
     uint8_t mouse[6]={5,1,2,3,4,5};
     frf_tinyusb_pad_report(1,0,mouse,6);
     assert(calls==2); /* report ID 5 is mouse, no stale joystick output */
+    uint8_t other_buttons[10]={1,0x80u,0x40u,6,128,128,128,128,0,0};
+    frf_tinyusb_pad_report(1,0,other_buttons,10);
+    assert(joy==0x0300u && fire==0 && calls==3);
+    assert(buttons_port1==0x4080u);
     frf_tinyusb_pad_unmount(1,0);
     assert(frf_tinyusb_gamepad_count()==0 && joy==0 && fire==0);
     frf_tinyusb_pad_mount(2,0,desc,3); /* mode-changing 0575 candidate */
@@ -119,7 +124,7 @@ int main(void)
     frf_tinyusb_pad_report(2,0,mouse,6);
     assert(frf_tinyusb_dyonder_ignored()==3);
     frf_tinyusb_pad_report(2,0,left_fire,10); /* promote only on ID1/10B */
-    assert(frf_tinyusb_dyonder_reports()==4);
+    assert(frf_tinyusb_dyonder_reports()==5);
     assert(joy==0x0300 && fire);
     frf_tinyusb_pad_unmount(2,0);
     frf_tinyusb_pad_mount(3,0,desc,3); /* existing generic HID still works */
@@ -271,4 +276,4 @@ int main(void)
     return 0;
 }
 
-void aga_virtual_pad_buttons(int port, uint32_t buttons){(void)port;(void)buttons;}
+void aga_virtual_pad_buttons(int port, uint32_t buttons){if(port==1)buttons_port1=buttons;}
