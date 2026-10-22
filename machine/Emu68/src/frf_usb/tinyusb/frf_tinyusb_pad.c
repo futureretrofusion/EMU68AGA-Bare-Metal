@@ -141,7 +141,7 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
                 addr,idx,active_pads);
         return;
     }
-    /* R27: observed receiver USB D04 ID3/27B. */
+    /* R28: observed receiver USB D04 ID1/27B gameplay plus ID3 status. */
     if(have_vidpid && vid==0x220du && pid==0x330cu && idx==0u && protocol==HID_ITF_PROTOCOL_NONE) {
         int slot=first_free();if(slot<0)return;
         struct pad_itf *p=&pads[slot];memset(p,0,sizeof(*p));

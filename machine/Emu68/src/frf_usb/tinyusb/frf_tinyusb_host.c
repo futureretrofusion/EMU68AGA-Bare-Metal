@@ -357,7 +357,7 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
         uint16_t vid=0,pid=0;
         if(tuh_vid_pid_get(addr,&vid,&pid) &&
            ((vid==0x7e05u && pid==0x0920u) ||
-            (vid==0x220du && pid==0x330cu && len==27u && data[0]==3u))) {
+            (vid==0x220du && pid==0x330cu && len==27u && (data[0]==1u || data[0]==3u)))) {
             ++frf_r22_rx;
             frf_r26_lastrx_ms=tusb_time_millis_api();
             frf_r22_addr=((uint32_t)addr<<16)|idx;
