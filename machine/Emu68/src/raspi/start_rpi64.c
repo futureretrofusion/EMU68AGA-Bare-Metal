@@ -343,6 +343,7 @@ struct frf_device_snapshot {
 static struct frf_device_snapshot native_usb_addr[FRF_USB_ADDR_MAX];
 static volatile uint32_t native_usb_addr_events;
 static volatile uint32_t native_usb_link[15];
+static volatile uint32_t native_usb_probe[7];
 
 
 #ifdef FRF_USB_DIAG_HOLD
@@ -372,9 +373,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / INPUT R16",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / USB EP R17",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / INPUT R16",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / USB EP R17",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -473,25 +474,18 @@ static void frf_post_draw(void)
         post_rect(px,vpy,2u,164u,cyan);
         post_rect(px+308u,vpy,2u,164u,cyan);
         post_rect(px,vpy+162u,310u,2u,cyan);
-        post_text(px+9u,vpy+8u,"R15 LAST IF (HISTORY)",white);
-        post_text(px+10u,vpy+36u,"LAST VID:",white);
-        post_hex(px+167u,vpy+36u,native_vendor_id,8,cyan);
-        post_text(px+10u,vpy+59u,"LAST CLS:",white);
-        post_hex(px+167u,vpy+59u,native_vendor_iface,8,cyan);
-        post_text(px+10u,vpy+82u,"PROTOCOL:",white);
-        post_hex(px+167u,vpy+82u,native_vendor_kind,8,cyan);
-        if(native_vendor_kind==4u || native_vendor_kind==5u) {
-            post_text(px+10u,vpy+105u,"DY RX/IGN:",white);
-            post_hex(px+167u,vpy+105u,
-                     ((native_dyonder_ok&0xffffu)<<16) |
-                     (native_dyonder_ignored&0xffffu),8,cyan);
-        } else {
-            post_text(px+10u,vpy+105u,"VEN EVENTS:",white);
-            post_hex(px+167u,vpy+105u,native_vendor_mounts,8,cyan);
+        post_text(px+9u,vpy+8u,"R17 2404:0078 USB IN PROBE",white);
+        static const char *const lbl[7]={
+            "STAGE/ADDR","LAST EP/TYP",
+            "OPEN EVENTS","IN SUBMIT OK","IN SUBMIT NO",
+            "IN RX OK","IN RX ERR"
+        };
+        for(unsigned i=0;i<7u;i++) {
+            const uint32_t ry=vpy+28u+i*18u;
+            post_text(px+10u,ry,lbl[i],white);
+            post_hex(px+164u,ry,native_usb_probe[i],8,
+                     i==5u?green:cyan);
         }
-        post_text(px+10u,vpy+128u,"PAD/MSC:",white);
-        post_hex(px+167u,vpy+128u,(native_usb_pad_detected<<16) |
-                 (native_usb_storage_detected&0xffffu),8,cyan);
     }
 #endif
 #if defined(FRF_USB_TINYUSB)
@@ -506,7 +500,7 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,panelh,cyan);
         post_rect(px+308u,py,2u,panelh,cyan);
         post_rect(px,py+panelh-2u,310u,2u,cyan);
-        post_text(px+9u,py+8u,"R16 EACH USB DEVICE / ADDRESS",white);
+        post_text(px+9u,py+8u,"R17 EACH USB DEVICE / ADDRESS",white);
         post_text(px+9u,py+27u,"FLAGS 01=DEV 02=HID 04=MSC",amber);
         post_text(px+9u,py+45u,"      08=VENDOR INTERFACE",amber);
         unsigned shown=0;
@@ -550,7 +544,7 @@ static void frf_post_draw(void)
         post_rect(px,ipy,2u,ph,cyan);
         post_rect(px+308u,ipy,2u,ph,cyan);
         post_rect(px,ipy+ph-2u,310u,2u,cyan);
-        post_text(px+10u,ipy+6u,"R16 USB -> AMIGA INPUT LINK",white);
+        post_text(px+10u,ipy+6u,"R17 USB -> AMIGA INPUT LINK",white);
         for(unsigned i=0;i<13u;++i) {
             const uint32_t ry=ipy+19u+i*12u;
             post_text(px+10u,ry,input_labels[i],white);
@@ -577,7 +571,7 @@ static void frf_post_draw(void)
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R16 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R17 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;
@@ -677,6 +671,12 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
 {
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_native_usb_probe_trace(const uint32_t fields[7])
+{
+    if(!fields) return;
+    for(unsigned i=0;i<7u;i++) native_usb_probe[i]=fields[i];
     frf_post_draw();
 }
 void frf_post_native_usb_input_trace(const uint32_t *fields,unsigned count)

@@ -52,6 +52,8 @@ extern uint32_t frf_tinyusb_xpad_raw_reports(void);
 extern uint32_t frf_tinyusb_xpad_raw_data0(void);
 extern uint32_t frf_tinyusb_xpad_raw_data1(void);
 extern uint32_t frf_tinyusb_xpad_raw_meta(void);
+extern void frf_tinyusb_vendor_probe_snapshot(uint32_t out[7]);
+extern void frf_post_native_usb_probe_trace(const uint32_t fields[7]);
 
 
 extern void frf_post_native_usb_pad_stats(uint32_t,uint32_t);
@@ -395,6 +397,9 @@ void frf_tinyusb_host_main(void)
                 dy_ok,g[0],g[1],g[2],g[3]
             };
             frf_post_native_usb_input_trace(input_link,15u);
+            uint32_t probe[7]={0};
+            frf_tinyusb_vendor_probe_snapshot(probe);
+            frf_post_native_usb_probe_trace(probe);
             last_link_draw=dy_now;
         }
         if((dy_ok!=last_dy_ok || dy_ignore!=last_dy_ignore) &&

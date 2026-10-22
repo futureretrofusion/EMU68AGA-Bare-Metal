@@ -14,6 +14,7 @@ struct frf_xpad {
     uint8_t addr,itf,ep_in,ep_out,kind;
     uint8_t configured,in_flight,send_init,init_step;
     uint16_t vid,pid,ep_size;
+    uint8_t ep_xfer_type;
     uint32_t packets,errors,decode;
     uint8_t report[64] __attribute__((aligned(64)));
     uint8_t tx[64] __attribute__((aligned(64)));
@@ -25,6 +26,30 @@ static uint32_t xpad_packets,xpad_errors;
    Capture only its interrupt-IN bytes, with no guessed joystick mapping
    or arbitrary USB OUT messages. */
 static volatile uint32_t vendor_raw_rx,vendor_raw_w0,vendor_raw_w1,vendor_raw_meta;
+/* Physical Pi3 probe stages, deliberately distinct from controller mount:
+ * 01=vendor iface seen, 02=no usable IN descriptor, 03=IN selected,
+ * 04=HCD EP open failed, 05=driver bound, 06=set_config complete,
+ * 07=USB IN submitted, 08=USB IN completed, 09=USB error.
+ * A device having F:09 in R16 only proved (01), not any later stage. */
+static volatile uint32_t probe_stage,probe_ep,probe_claims,probe_sub_ok;
+static volatile uint32_t probe_sub_fail,probe_xfer_ok,probe_xfer_err;
+static volatile uint32_t probe_last_error;
+static void probe_note(unsigned stage,uint8_t addr,uint8_t itf,uint8_t kind)
+{
+    probe_stage=(stage<<24)|((uint32_t)addr<<16)|((uint32_t)itf<<8)|kind;
+}
+void frf_tinyusb_vendor_probe_snapshot(uint32_t out[7])
+{
+    if(!out) return;
+    out[0]=probe_stage;
+    out[1]=probe_ep;
+    out[2]=probe_claims;
+    out[3]=probe_sub_ok;
+    out[4]=probe_sub_fail;
+    out[5]=probe_xfer_ok;
+    out[6]=probe_xfer_err;
+}
+
 uint32_t frf_tinyusb_xpad_raw_reports(void) { return vendor_raw_rx; }
 uint32_t frf_tinyusb_xpad_raw_data0(void) { return vendor_raw_w0; }
 uint32_t frf_tinyusb_xpad_raw_data1(void) { return vendor_raw_w1; }
@@ -128,12 +153,16 @@ static uint16_t driver_open(uint8_t rhport,uint8_t addr,
        frf_post_native_usb_vendor_probe(((uint32_t)vid<<16)|pid,classif,(uint32_t)kind);
        frf_post_native_usb_device_event(addr,((uint32_t)vid<<16)|pid,classif,4u);
     }
+    if(kind==3u) {
+        ++probe_claims;
+        probe_note(1u,addr,itf->bInterfaceNumber,(uint8_t)kind);
+    }
     if(!kind || find(addr)) return 0;
     struct frf_xpad *p=free_slot();
     if(!p) return 0;
     uint16_t consumed=itf->bLength;
     if(consumed<sizeof(*itf) || consumed>remaining) return 0;
-    uint8_t ep_in=0,ep_out=0;uint16_t ep_size=0;
+    uint8_t ep_in=0,ep_out=0;uint16_t ep_size=0,ep_xfer_type=0;
     const tusb_desc_endpoint_t *epin_desc=0,*epout_desc=0;
     const uint8_t *cursor=(const uint8_t*)itf+consumed;
     while((uint32_t)consumed+2u<=remaining) {
@@ -142,25 +171,47 @@ static uint16_t driver_open(uint8_t rhport,uint8_t addr,
             break;
         if(dtype==TUSB_DESC_ENDPOINT && blen>=sizeof(tusb_desc_endpoint_t)) {
             const tusb_desc_endpoint_t *ep=(const tusb_desc_endpoint_t*)cursor;
-            if(ep->bmAttributes.xfer==TUSB_XFER_INTERRUPT) {
-                const uint16_t mps=tu_edpt_packet_size(ep);
-                if((ep->bEndpointAddress&0x80u) && !ep_in &&
-                   mps>0 && mps<=64) {
-                    ep_in=ep->bEndpointAddress;ep_size=mps;
-                    epin_desc=ep;
-                } else if(!(ep->bEndpointAddress&0x80u) && !ep_out &&
-                         mps>0 && mps<=64) {
-                    ep_out=ep->bEndpointAddress;
-                    epout_desc=ep;
+            /* USB bmAttributes bits 1:0 define transfer type.
+             * Read the actual on-wire byte, not a compiler bitfield. */
+            const uint8_t xtype=((const uint8_t*)ep)[3]&3u;
+            const uint16_t mps=tu_edpt_packet_size(ep);
+            if(kind==3u)
+                probe_ep=((uint32_t)ep->bEndpointAddress<<24)|
+                         ((uint32_t)xtype<<16)|mps;
+            const int input_supported =
+                xtype==TUSB_XFER_INTERRUPT ||
+                (kind==3u && xtype==TUSB_XFER_BULK);
+            if((ep->bEndpointAddress&0x80u) && !ep_in &&
+               input_supported && mps>0u && mps<=64u) {
+                ep_in=ep->bEndpointAddress;ep_size=mps;
+                ep_xfer_type=xtype;
+                epin_desc=ep;
+                if(kind==3u) {
+                    probe_note(3u,addr,itf->bInterfaceNumber,(uint8_t)kind);
+                    probe_ep=((uint32_t)ep->bEndpointAddress<<24)|
+                             ((uint32_t)xtype<<16)|mps;
                 }
+            } else if(!(ep->bEndpointAddress&0x80u) && !ep_out &&
+                      xtype==TUSB_XFER_INTERRUPT &&
+                      mps>0u && mps<=64u) {
+                ep_out=ep->bEndpointAddress;
+                epout_desc=ep;
             }
         }
         cursor+=blen;consumed+=blen;
     }
-    if(!epin_desc || (kind==2 && !epout_desc)) return 0;
+    if(!epin_desc || (kind==2 && !epout_desc)) {
+        if(kind==3u)
+            probe_note(2u,addr,itf->bInterfaceNumber,(uint8_t)kind);
+        return 0;
+    }
     /* Check the COMPLETE interface before opening any endpoint. If
      * GIP lacks OUT, don't leak an already-allocated IN HCD channel. */
-    if(!tuh_edpt_open(addr,epin_desc)) return 0;
+    if(!tuh_edpt_open(addr,epin_desc)) {
+        if(kind==3u)
+            probe_note(4u,addr,itf->bInterfaceNumber,(uint8_t)kind);
+        return 0;
+    }
     if(epout_desc && !tuh_edpt_open(addr,epout_desc)) {
         (void)tuh_edpt_close(addr,ep_in);
         return 0;
@@ -169,6 +220,9 @@ static uint16_t driver_open(uint8_t rhport,uint8_t addr,
     p->addr=addr;p->itf=itf->bInterfaceNumber;p->ep_in=ep_in;
     p->ep_out=ep_out;p->ep_size=ep_size;
     p->kind=(uint8_t)kind;p->vid=vid;p->pid=pid;
+    p->ep_xfer_type=(uint8_t)ep_xfer_type;
+    if(kind==3u)
+        probe_note(5u,addr,p->itf,(uint8_t)kind);
     kprintf("[FRF-XPAD] vendor pad USB %04x:%04x kind=%u dev=%u itf=%u IN=%02x OUT=%02x\n",
             vid,pid,(unsigned)kind,addr,p->itf,ep_in,ep_out);
     return consumed;
@@ -179,6 +233,7 @@ static bool driver_set_config(uint8_t addr,uint8_t itf)
     if(!p || p->itf!=itf) return false;
     p->configured=1;
     p->send_init=(p->kind==2);
+    if(p->kind==3u) probe_note(6u,addr,itf,3u);
     usbh_driver_set_config_complete(addr,itf);
     return true;
 }
@@ -191,6 +246,8 @@ static bool driver_xfer_cb(uint8_t addr,uint8_t ep,xfer_result_t result,uint32_t
         if(ep==p->ep_in) {
             ++p->packets;++xpad_packets;
             if(p->kind==3u && count<=sizeof(p->report)) {
+                ++probe_xfer_ok;
+                probe_note(8u,addr,p->itf,3u);
                 ++vendor_raw_rx;
                 vendor_raw_meta=((uint32_t)p->addr<<24) |
                     ((uint32_t)count<<16) | (count?p->report[0]:0u);
@@ -208,6 +265,11 @@ static bool driver_xfer_cb(uint8_t addr,uint8_t ep,xfer_result_t result,uint32_t
         }
     } else {
         ++p->errors;++xpad_errors;
+        if(p->kind==3u) {
+            ++probe_xfer_err;
+            probe_last_error=(uint32_t)result;
+            probe_note(9u,addr,p->itf,3u);
+        }
         if(ep==p->ep_out) p->send_init=0; /* recover by polling input */
     }
     /* Retry from CPU1 poll, not synchronously from a failed IRQ callback. */
@@ -250,7 +312,14 @@ void frf_tinyusb_xpad_task(void)
             p->in_flight=usbh_edpt_xfer(p->addr,p->ep_out,p->tx,len);
             if(!p->in_flight) {p->send_init=1; ++p->errors;}
         } else if(!usbh_edpt_busy(p->addr,p->ep_in)) {
-            p->in_flight=usbh_edpt_xfer(p->addr,p->ep_in,p->report,p->ep_size);
+            const bool queued=usbh_edpt_xfer(p->addr,p->ep_in,p->report,p->ep_size);
+            p->in_flight=queued;
+            if(p->kind==3u) {
+                if(queued) {
+                    ++probe_sub_ok;
+                    probe_note(7u,p->addr,p->itf,3u);
+                } else ++probe_sub_fail;
+            }
         }
     }
 }
