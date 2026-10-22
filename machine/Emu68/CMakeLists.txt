@@ -419,6 +419,7 @@ if(FRF_USB_HOST)
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_host.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_msc_bridge.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_pad.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_xpad_vendor.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_usb_mass_board.c
                 ${FRF_TUSB}/tusb.c
                 ${FRF_TUSB}/common/tusb_fifo.c

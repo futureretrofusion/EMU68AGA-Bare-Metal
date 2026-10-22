@@ -16,6 +16,7 @@ gcc -std=gnu17 -O2 -pthread \
   "$T/tusb.c" "$T/common/tusb_fifo.c" \
   "$T/host/usbh.c" "$T/host/hub.c" \
   "$root/src/frf_usb/tinyusb/frf_tinyusb_pad.c" \
+  "$root/src/frf_usb/tinyusb/frf_tinyusb_xpad_vendor.c" \
   "$T/class/hid/hid_host.c" "$T/class/msc/msc_host.c" \
   "$T/portable/synopsys/dwc2/hcd_dwc2.c" \
   "$T/portable/synopsys/dwc2/dwc2_common.c" \

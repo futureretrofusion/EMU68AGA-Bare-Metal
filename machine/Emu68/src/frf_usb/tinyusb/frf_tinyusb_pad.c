@@ -18,7 +18,10 @@ static uint32_t active_pads,gamepad_reports;
 extern void aga_virtual_joy_set(int port,uint16_t joydat,int fire);
 extern void kprintf(const char*,...);
 
-uint32_t frf_tinyusb_gamepad_count(void) { return active_pads; }
+extern uint32_t frf_tinyusb_xpad_count(void);
+uint32_t frf_tinyusb_gamepad_count(void) {
+    return active_pads+frf_tinyusb_xpad_count();
+}
 uint32_t frf_tinyusb_gamepad_reports(void) { return gamepad_reports; }
 
 static int first_free(void) {
@@ -40,9 +43,10 @@ uint32_t frf_pad_is_joystick_usage(uint16_t page,uint8_t usage)
 void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
                           const uint8_t *desc,uint16_t desc_len)
 {
-    if(!addr || !desc || !desc_len || find(addr,idx)) return;
+    if(!addr || find(addr,idx)) return;
     tuh_hid_report_info_t info[8];
-    uint8_t n=tuh_hid_parse_report_descriptor(info,8u,desc,desc_len);
+    uint8_t n=(desc && desc_len)?
+        tuh_hid_parse_report_descriptor(info,8u,desc,desc_len):0u;
     for(uint8_t j=0;j<n;++j) {
         if(!frf_pad_is_joystick_usage(info[j].usage_page,info[j].usage))
             continue;
@@ -56,6 +60,22 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
                 addr,idx,p->report_id,active_pads);
         return;
     }
+    /* These exact receiver IDs previously appeared as game controllers in
+     * the EMU68AGA USPi integration. HID descriptors can be unavailable
+     * (too large, firmware quirk, or vendor-defined page). Count such an
+     * interface as a known controller CANDIDATE, but NEVER assume that
+     * its unknown reports use the 11-byte standard layout. */
+    uint16_t vid=0,pid=0;
+    if(!tuh_vid_pid_get(addr,&vid,&pid)) return;
+    if(!((vid==0x2563u && pid==0x0576u) || vid==0x2dc8u)) return;
+    const int slot=first_free();
+    if(slot<0) return;
+    struct pad_itf *p=&pads[slot];
+    p->addr=addr;p->idx=idx;p->report_id=0u;
+    p->report_is_common=0u;
+    ++active_pads;
+    kprintf("[FRF-TINYUSB-PAD] candidate VID=%04x PID=%04x addr=%u itf=%u; awaiting report layout\n",
+           vid,pid,addr,idx);
 }
 void frf_tinyusb_pad_unmount(uint8_t addr,uint8_t idx)
 {
@@ -103,7 +123,8 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
        length; arbitrary vendor/XInput layouts require their own parser. */
     for(unsigned i=0;i<FRF_PAD_SLOTS;++i)
         if(pads[i].addr) {
-            if(&pads[i]==p && len==11u) map_standard_report(data);
+            if(&pads[i]==p && p->report_is_common && len==11u)
+                map_standard_report(data);
             break;
         }
 }

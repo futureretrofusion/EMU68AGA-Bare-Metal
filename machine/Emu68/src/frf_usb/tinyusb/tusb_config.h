@@ -10,6 +10,10 @@
 #define CFG_TUH_MAX_SPEED OPT_MODE_HIGH_SPEED
 #define CFG_TUH_HUB 4
 #define CFG_TUH_DEVICE_MAX 16
+/* R12 only provided 256 bytes by default. Several modern controller
+ * HID configurations/reports are larger; otherwise the class won't mount
+ * and the device appears invisible even after successful USB enumeration. */
+#define CFG_TUH_ENUMERATION_BUFSIZE 1024
 #define CFG_TUH_HID 8
 #define CFG_TUH_MSC 4
 #define CFG_TUH_MSC_MAXLUN 1

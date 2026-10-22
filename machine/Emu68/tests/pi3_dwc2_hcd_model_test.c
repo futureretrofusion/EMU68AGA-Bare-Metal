@@ -29,6 +29,7 @@ void aga_virtual_joy_set(int port,uint16_t joy,int fire) {
     if(port==1){ simulated_joy1=joy; simulated_fire=fire; }
 }
 void kprintf(const char *fmt,...) {(void)fmt;}
+void frf_post_native_usb_vendor_probe(uint32_t vidpid,uint32_t iface,uint32_t kind) { (void)vidpid;(void)iface;(void)kind; }
 extern void frf_tinyusb_pad_mount(uint8_t,uint8_t,const uint8_t*,uint16_t);
 extern void frf_tinyusb_pad_unmount(uint8_t,uint8_t);
 extern void frf_tinyusb_pad_report(uint8_t,uint8_t,const uint8_t*,uint16_t);
@@ -223,6 +224,27 @@ int main(int argc,char **argv) {
     frf_tinyusb_pad_unmount(2u,0u);
     if(frf_tinyusb_gamepad_count()!=0u) return 20;
     if(test_mode==0) puts("HID GAMEPAD desc/mount, port2 movement/fire, neutral and unmount PASS");
+    extern int frf_xpad_interface_kind(uint16_t,uint16_t,uint8_t,uint8_t,uint8_t,uint8_t);
+    extern int frf_xpad_decode_report(int kind,const uint8_t*,uint16_t);
+    if(frf_xpad_interface_kind(0x045eu,0x028eu,0u,0xffu,0x5du,0x01u)!=1 ||
+       frf_xpad_interface_kind(0x146bu,0x0603u,0u,0xffu,0x5du,0x01u)!=1 ||
+       frf_xpad_interface_kind(0x045eu,0x02eau,0u,0xffu,0x47u,0xd0u)!=2 ||
+       frf_xpad_interface_kind(0x045eu,0x02eau,1u,0xffu,0x47u,0xd0u)!=0 ||
+       frf_xpad_interface_kind(0x1111u,0x2222u,0u,0xffu,0x47u,0xd0u)!=0 ||
+       frf_xpad_interface_kind(0x045eu,0x02eau,0u,0x03u,0x5du,0x01u)!=0)
+        return 21;
+    uint8_t xbox360[20]={0x00,0x14,0x04,0x10}; /* dpad left + face A */
+    if(!frf_xpad_decode_report(1,xbox360,sizeof(xbox360)) ||
+       simulated_joy1!=0x0300u || !simulated_fire) return 22;
+    uint8_t xboxone[20]={0x20,0,0,0,0x10,0x04};
+    if(!frf_xpad_decode_report(2,xboxone,sizeof(xboxone)) ||
+       simulated_joy1!=0x0300u || !simulated_fire) return 23;
+    uint8_t xbox_neutral[20]={0};
+    xbox_neutral[1]=0x14;
+    if(!frf_xpad_decode_report(1,xbox_neutral,20) ||
+       simulated_joy1!=0 || simulated_fire) return 24;
+    if(frf_xpad_decode_report(1,xbox360,3)) return 25;
+    if(test_mode==0) puts("VENDOR XINPUT 360 / Nacon / Xbox One GIP detect and JOY1/fire PASS");
     extern void frf_msc_probe_cbw_wire(uint8_t out[12],uint32_t bytes);
     uint8_t cbw_wire[12]={0};
     const uint8_t cbw_expected[12]={

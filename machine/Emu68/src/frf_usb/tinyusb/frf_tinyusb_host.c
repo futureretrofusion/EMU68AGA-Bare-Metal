@@ -28,6 +28,7 @@ extern void frf_post_native_usb_stage(unsigned stage,int rc,
                                      uint32_t detail,uint32_t aux);
 extern void frf_post_native_usb_ahb(unsigned raw);
 extern void frf_post_native_usb_peripherals(uint32_t,uint32_t,uint32_t);
+extern void frf_post_native_usb_vendor_probe(uint32_t,uint32_t,uint32_t);
 extern void kprintf(const char *format,...);
 extern void frf_tinyusb_msc_mount(uint8_t addr);
 extern void frf_tinyusb_msc_unmount(uint8_t addr);
@@ -39,6 +40,9 @@ extern void frf_tinyusb_pad_unmount(uint8_t,uint8_t);
 extern void frf_tinyusb_pad_report(uint8_t,uint8_t,const uint8_t*,uint16_t);
 extern uint32_t frf_tinyusb_gamepad_count(void);
 extern uint32_t frf_tinyusb_gamepad_reports(void);
+extern void frf_tinyusb_xpad_task(void);
+extern uint32_t frf_tinyusb_xpad_count(void);
+extern uint32_t frf_tinyusb_xpad_packets(void);
 
 /* Pi3 GPU/DWC2 DMA sees CPU RAM through the 0xC0000000 bus alias.
    Translate every virtual pointer through Emu68's live stage-1 MMU tables.
@@ -157,7 +161,18 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
 {
     (void)descriptor;(void)descriptor_len;
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+    const uint32_t pad_before=frf_tinyusb_gamepad_count();
     frf_tinyusb_pad_mount(addr,idx,descriptor,descriptor_len);
+    if(protocol==HID_ITF_PROTOCOL_NONE &&
+       pad_before==frf_tinyusb_gamepad_count()) {
+        uint16_t vid=0,pid=0;
+        (void)tuh_vid_pid_get(addr,&vid,&pid);
+        /* Helpful when class 03 device has an unrecognised descriptor:
+           class=03, subtype=00, protocol=00, interface index in low byte.
+           A R13 photo can identify it even if PAD remains zero. */
+        frf_post_native_usb_vendor_probe(((uint32_t)vid<<16)|pid,
+                                           0x03000000u|idx,3u);
+    }
     /* All HID mounts count, even generic interfaces without boot report
        protocol (composite mice, modern keyboards, gamepads). */
     frf_usb_hid_interfaces++;
@@ -287,6 +302,7 @@ void frf_tinyusb_host_main(void)
 #endif
         hcd_int_handler(0,false);
         tuh_task_ext(0,false);
+        frf_tinyusb_xpad_task(); /* vendor class Xbox controllers, CPU1 only */
         frf_tinyusb_msc_service(); /* CPU1 only; services 68k FRUM sector requests */
         const uint32_t msc_total=frf_tinyusb_msc_devices();
         const uint32_t pad_total=frf_tinyusb_gamepad_count();
