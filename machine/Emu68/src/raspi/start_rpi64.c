@@ -344,6 +344,7 @@ static struct frf_device_snapshot native_usb_addr[FRF_USB_ADDR_MAX];
 static volatile uint32_t native_usb_addr_events;
 static volatile uint32_t native_usb_link[15];
 static volatile uint32_t native_usb_probe[7];
+static volatile uint32_t native_usb_packet_words[55];
 
 
 #ifdef FRF_USB_DIAG_HOLD
@@ -373,9 +374,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / USB EP R17",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PKT R18",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / USB EP R17",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PKT R18",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -474,7 +475,7 @@ static void frf_post_draw(void)
         post_rect(px,vpy,2u,164u,cyan);
         post_rect(px+308u,vpy,2u,164u,cyan);
         post_rect(px,vpy+162u,310u,2u,cyan);
-        post_text(px+9u,vpy+8u,"R17 2404:0078 USB IN PROBE",white);
+        post_text(px+9u,vpy+8u,"R18 2404:0078 USB IN PROBE",white);
         static const char *const lbl[7]={
             "STAGE/ADDR","LAST EP/TYP",
             "OPEN EVENTS","IN SUBMIT OK","IN SUBMIT NO",
@@ -500,7 +501,7 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,panelh,cyan);
         post_rect(px+308u,py,2u,panelh,cyan);
         post_rect(px,py+panelh-2u,310u,2u,cyan);
-        post_text(px+9u,py+8u,"R17 EACH USB DEVICE / ADDRESS",white);
+        post_text(px+9u,py+8u,"R18 EACH USB DEVICE / ADDRESS",white);
         post_text(px+9u,py+27u,"FLAGS 01=DEV 02=HID 04=MSC",amber);
         post_text(px+9u,py+45u,"      08=VENDOR INTERFACE",amber);
         unsigned shown=0;
@@ -544,13 +545,53 @@ static void frf_post_draw(void)
         post_rect(px,ipy,2u,ph,cyan);
         post_rect(px+308u,ipy,2u,ph,cyan);
         post_rect(px,ipy+ph-2u,310u,2u,cyan);
-        post_text(px+10u,ipy+6u,"R17 USB -> AMIGA INPUT LINK",white);
+        post_text(px+10u,ipy+6u,"R18 USB -> AMIGA INPUT LINK",white);
         for(unsigned i=0;i<13u;++i) {
             const uint32_t ry=ipy+19u+i*12u;
             post_text(px+10u,ry,input_labels[i],white);
             post_hex(px+181u,ry,native_usb_link[input_idxs[i]],8,
                      i==9u?green:cyan);
         }
+    }
+#endif
+#if defined(FRF_USB_TINYUSB)
+    /* Wide 64-byte protocol capture. On 1280x720 this occupies only
+       bottom-left of the splash, never hides working USB counters.
+       Base is first report with same length+report ID; LIVE updates
+       from real USB packets; XOR exposes changed byte positions.
+       Source 02 vendor takes priority over ordinary keyboard/mouse HID.
+       This is observation only: does not inject guest joystick input. */
+    if(fb_width>=980u && fb_height>=704u) {
+        const uint32_t px=14u,py=277u,pw=604u,ph=416u;
+        post_rect(px,py,pw,ph,0x0822u);
+        post_rect(px,py,pw,2u,cyan);
+        post_rect(px,py,2u,ph,cyan);
+        post_rect(px+pw-2u,py,2u,ph,cyan);
+        post_rect(px,py+ph-2u,pw,2u,cyan);
+        post_text(px+10u,py+8u,"R18 LIVE USB REPORT BYTE DIFFERENCES",white);
+        post_text(px+10u,py+29u,"SOURCE (1=HID,2=VENDOR):",white);
+        post_hex(px+276u,py+29u,native_usb_packet_words[0],8,green);
+        post_text(px+10u,py+47u,"RX:",white);
+        post_hex(px+49u,py+47u,native_usb_packet_words[1],8,cyan);
+        post_text(px+201u,py+47u,"CHANGED PKTS:",white);
+        post_hex(px+327u,py+47u,native_usb_packet_words[2],8,cyan);
+        post_text(px+10u,py+65u,"ADDR/EP/LEN/ID:",white);
+        post_hex(px+187u,py+65u,native_usb_packet_words[3],8,green);
+        post_text(px+345u,py+65u,"LAST CHG:",white);
+        post_hex(px+424u,py+65u,native_usb_packet_words[4],8,cyan);
+        post_text(px+10u,py+84u,"OFF",white);
+        post_text(px+84u,py+84u,"BASE",white);
+        post_text(px+259u,py+84u,"LIVE",green);
+        post_text(px+435u,py+84u,"XOR",amber);
+        for(unsigned i=0;i<16u;i++) {
+            const uint32_t yy=py+105u+i*18u;
+            post_hex(px+13u,yy,i*4u,2,white);
+            post_hex(px+84u,yy,native_usb_packet_words[7u+i*3u],8,cyan);
+            post_hex(px+259u,yy,native_usb_packet_words[8u+i*3u],8,green);
+            const uint32_t difference=native_usb_packet_words[9u+i*3u];
+            post_hex(px+435u,yy,difference,8,difference?amber:cyan);
+        }
+        post_text(px+10u,py+396u,"PHOTO: NEUTRAL, THEN LEFT, THEN FIRE",white);
     }
 #endif
 #ifdef FRF_USB_DIAG_HOLD
@@ -571,7 +612,7 @@ static void frf_post_draw(void)
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R17 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R18 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;
@@ -671,6 +712,12 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
 {
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_native_usb_packet_bytes(const uint32_t words[55])
+{
+    if(!words) return;
+    for(unsigned i=0;i<55u;++i) native_usb_packet_words[i]=words[i];
     frf_post_draw();
 }
 void frf_post_native_usb_probe_trace(const uint32_t fields[7])

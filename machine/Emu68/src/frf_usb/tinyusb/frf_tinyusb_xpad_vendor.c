@@ -64,6 +64,7 @@ extern void aga_virtual_joy_set(int port,uint16_t joydat,int fire);
 extern void kprintf(const char*,...);
 extern void frf_post_native_usb_vendor_probe(uint32_t vidpid,uint32_t iface,uint32_t kind);
 extern void frf_post_native_usb_device_event(uint32_t,uint32_t,uint32_t,uint32_t);
+extern void frf_usb_packet_capture(uint8_t,uint8_t,uint8_t,const uint8_t*,uint16_t);
 
 uint32_t frf_tinyusb_xpad_count(void) {
     uint32_t count=0;
@@ -246,6 +247,7 @@ static bool driver_xfer_cb(uint8_t addr,uint8_t ep,xfer_result_t result,uint32_t
         if(ep==p->ep_in) {
             ++p->packets;++xpad_packets;
             if(p->kind==3u && count<=sizeof(p->report)) {
+                frf_usb_packet_capture(2u,addr,p->ep_in,p->report,(uint16_t)count);
                 ++probe_xfer_ok;
                 probe_note(8u,addr,p->itf,3u);
                 ++vendor_raw_rx;

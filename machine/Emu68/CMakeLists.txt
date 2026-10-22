@@ -417,6 +417,7 @@ if(FRF_USB_HOST)
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_native_keyboard.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_host.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_usb_packet_capture.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_msc_bridge.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_pad.c
                 ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_xpad_vendor.c

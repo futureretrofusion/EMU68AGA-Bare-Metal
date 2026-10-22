@@ -54,6 +54,9 @@ extern uint32_t frf_tinyusb_xpad_raw_data1(void);
 extern uint32_t frf_tinyusb_xpad_raw_meta(void);
 extern void frf_tinyusb_vendor_probe_snapshot(uint32_t out[7]);
 extern void frf_post_native_usb_probe_trace(const uint32_t fields[7]);
+extern void frf_usb_packet_capture(uint8_t,uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern void frf_usb_packet_capture_snapshot(uint32_t out[55]);
+extern void frf_post_native_usb_packet_bytes(const uint32_t words[55]);
 
 
 extern void frf_post_native_usb_pad_stats(uint32_t,uint32_t);
@@ -235,6 +238,7 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
                                 const uint8_t *data,uint16_t len)
 {
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+    frf_usb_packet_capture(1u,addr,idx,data,len);
     ++frf_hid_rx_count;
     frf_hid_meta=((uint32_t)len<<16)|((uint32_t)(len?data[0]:0u)<<8)|protocol;
     frf_hid_source=((uint32_t)addr<<16)|idx;
@@ -400,6 +404,9 @@ void frf_tinyusb_host_main(void)
             uint32_t probe[7]={0};
             frf_tinyusb_vendor_probe_snapshot(probe);
             frf_post_native_usb_probe_trace(probe);
+            uint32_t bytes[55]={0};
+            frf_usb_packet_capture_snapshot(bytes);
+            frf_post_native_usb_packet_bytes(bytes);
             last_link_draw=dy_now;
         }
         if((dy_ok!=last_dy_ok || dy_ignore!=last_dy_ignore) &&
