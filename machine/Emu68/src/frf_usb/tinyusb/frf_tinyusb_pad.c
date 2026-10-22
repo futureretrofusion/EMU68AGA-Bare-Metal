@@ -11,10 +11,26 @@
 #define FRF_PAD_SLOTS 8u
 struct pad_itf {
     uint8_t addr,idx,report_id,report_is_common;
+    /* report_is_common: 0=unknown candidate,1=11B standard HID,
+       2=DYONDER 2563:0576 10B ID1,3=2563:0575 alt-mode candidate */
+
     uint32_t reports;
+    uint32_t next_submit_ms,retries,recoveries;
 };
 static struct pad_itf pads[FRF_PAD_SLOTS];
 static uint32_t active_pads,gamepad_reports;
+static uint32_t dyonder_report_ok,dyonder_report_ignore;
+static uint32_t pad_submit_deferred,pad_submit_recovered;
+extern uint32_t tusb_time_millis_api(void);
+uint32_t frf_tinyusb_pad_deferred(void) {return pad_submit_deferred;}
+uint32_t frf_tinyusb_pad_recovered(void) {return pad_submit_recovered;}
+
+uint32_t frf_tinyusb_dyonder_reports(void) {return dyonder_report_ok;}
+uint32_t frf_tinyusb_dyonder_ignored(void) {return dyonder_report_ignore;}
+int frf_pad_is_dyonder(uint16_t vid,uint16_t pid)
+{
+    return vid==0x2563u && (pid==0x0576u || pid==0x0575u);
+}
 extern void aga_virtual_joy_set(int port,uint16_t joydat,int fire);
 extern void kprintf(const char*,...);
 
@@ -44,6 +60,26 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
                           const uint8_t *desc,uint16_t desc_len)
 {
     if(!addr || find(addr,idx)) return;
+    uint16_t vid=0,pid=0;
+    const bool have_vidpid=tuh_vid_pid_get(addr,&vid,&pid);
+    /* This receiver can expose both mouse (ID5) and gamepad (ID1).
+       Never claim a boot mouse or keyboard HID interface as gamepad. */
+    const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+    if(protocol==HID_ITF_PROTOCOL_KEYBOARD ||
+       protocol==HID_ITF_PROTOCOL_MOUSE) return;
+    if(have_vidpid && frf_pad_is_dyonder(vid,pid) &&
+       protocol!=HID_ITF_PROTOCOL_KEYBOARD && protocol!=HID_ITF_PROTOCOL_MOUSE) {
+        int slot=first_free();
+        if(slot<0) return;
+        struct pad_itf *p=&pads[slot];
+        p->addr=addr; p->idx=idx; p->report_id=1u;
+        p->report_is_common=(pid==0x0576u)?2u:3u;
+        p->next_submit_ms=tusb_time_millis_api()+500u;
+        ++active_pads;
+        kprintf("[FRF-DYONDER] ShanWan %04x:%04x HID candidate addr=%u itf=%u mode=%u (ID1=10B, ID5 mouse)\n",
+                vid,pid,addr,idx,p->report_is_common);
+        return;
+    }
     tuh_hid_report_info_t info[8];
     uint8_t n=(desc && desc_len)?
         tuh_hid_parse_report_descriptor(info,8u,desc,desc_len):0u;
@@ -55,6 +91,7 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         struct pad_itf *p=&pads[slot];
         p->addr=addr; p->idx=idx; p->report_id=info[j].report_id;
         p->report_is_common=1; /* exact payload length checked on receipt */
+        p->next_submit_ms=tusb_time_millis_api()+500u;
         ++active_pads;
         kprintf("[FRF-TINYUSB-PAD] HID joypad detected dev=%u itf=%u report_id=%u total=%u\\n",
                 addr,idx,p->report_id,active_pads);
@@ -65,14 +102,13 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
      * (too large, firmware quirk, or vendor-defined page). Count such an
      * interface as a known controller CANDIDATE, but NEVER assume that
      * its unknown reports use the 11-byte standard layout. */
-    uint16_t vid=0,pid=0;
-    if(!tuh_vid_pid_get(addr,&vid,&pid)) return;
-    if(!((vid==0x2563u && pid==0x0576u) || vid==0x2dc8u)) return;
+    if(!have_vidpid || vid!=0x2dc8u) return;
     const int slot=first_free();
     if(slot<0) return;
     struct pad_itf *p=&pads[slot];
     p->addr=addr;p->idx=idx;p->report_id=0u;
     p->report_is_common=0u;
+    p->next_submit_ms=tusb_time_millis_api()+500u;
     ++active_pads;
     kprintf("[FRF-TINYUSB-PAD] candidate VID=%04x PID=%04x addr=%u itf=%u; awaiting report layout\n",
            vid,pid,addr,idx);
@@ -108,11 +144,48 @@ static void map_standard_report(const uint8_t *data)
                 (((right!=0)^(down!=0))?0x0001u:0u));
     aga_virtual_joy_set(1,joy,(buttons&0x0fu)!=0u);
 }
+/* Exact legacy USPi ShanWan 2563:0576 191-byte descriptor decoding:
+ * report 01 [2 button bytes] [hat 0..8] [X,Y,Rx,Ry 0..255] [2 vendor].
+ * ID05 is a relative mouse report, ID02 is output; NEVER joystick input.
+ * Return 1 only for a verified 10-byte ID1 report. */
+int frf_dyonder_decode_report(const uint8_t *b,uint16_t len)
+{
+    if(!b || len!=10u || b[0]!=1u) return 0;
+    const uint32_t buttons=(uint32_t)b[1] |
+                            ((uint32_t)(b[2]&0x7fu)<<8);
+    const uint8_t h=b[3]&15u;
+    const int x=(int)b[4]-128, y=(int)b[5]-128;
+    const int left=(x < -36) || h==5 || h==6 || h==7;
+    const int right=(x > 36) || h==1 || h==2 || h==3;
+    const int up=(y < -36) || h==0 || h==1 || h==7;
+    const int down=(y > 36) || h==3 || h==4 || h==5;
+    const uint16_t joy=(uint16_t)((left?0x0200u:0u) |
+        (((left!=0)^(up!=0))?0x0100u:0u) |
+        (right?0x0002u:0u) |
+        (((right!=0)^(down!=0))?0x0001u:0u));
+    aga_virtual_joy_set(1,joy,(buttons&0x7fffu)!=0u);
+    return 1;
+}
 void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
                             const uint8_t *data,uint16_t len)
 {
     struct pad_itf *p=find(addr,idx);
     if(!p || !data) return;
+    if(p->report_is_common==2u || p->report_is_common==3u) {
+        /* Keep HID report ID in-place. The old driver validated length=10
+           including ID1; stripping it silently broke the R13 decoder.
+           0575 is mode-switch capable: promote only after a real ID1. */
+        if(frf_dyonder_decode_report(data,len)) {
+            if(p->report_is_common==3u) {
+                p->report_is_common=2u;
+                kprintf("[FRF-DYONDER] 0575 mode supplied valid 10B ID1 pad input\n");
+            }
+            ++p->reports;
+            ++gamepad_reports;
+            ++dyonder_report_ok;
+        } else ++dyonder_report_ignore;
+        return;
+    }
     if(p->report_id) {
         if(!len || data[0]!=p->report_id) return;
         ++data;--len;
@@ -127,4 +200,29 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
                 map_standard_report(data);
             break;
         }
+}
+
+/* R14: port known-working USPi RC9 deferred interrupt-IN recovery.
+ * TinyUSB's HID mount callback can fail its one initial channel submission;
+ * merely having a mounted HID descriptor does not mean we are receiving
+ * reports. CPU1 periodically retries detected gamepads without touching
+ * keyboard/mouse USB endpoints or reenumbering the USB root hub.
+ * Never submit to an already-busy endpoint. */
+void frf_tinyusb_pad_retry_task(void)
+{
+    const uint32_t now=tusb_time_millis_api();
+    for(unsigned i=0;i<FRF_PAD_SLOTS;i++) {
+        struct pad_itf *p=&pads[i];
+        if(!p->addr || (int32_t)(now-p->next_submit_ms)<0) continue;
+        p->next_submit_ms=now+500u;
+        if(!tuh_hid_receive_ready(p->addr,p->idx)) continue;
+        if(!tuh_hid_receive_report(p->addr,p->idx)) {
+            ++p->retries;
+            ++pad_submit_deferred;
+        } else if(p->retries) {
+            ++p->recoveries;
+            ++pad_submit_recovered;
+            p->retries=0;
+        }
+    }
 }

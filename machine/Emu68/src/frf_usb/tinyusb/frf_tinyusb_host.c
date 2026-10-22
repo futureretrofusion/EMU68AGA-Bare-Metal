@@ -40,6 +40,11 @@ extern void frf_tinyusb_pad_unmount(uint8_t,uint8_t);
 extern void frf_tinyusb_pad_report(uint8_t,uint8_t,const uint8_t*,uint16_t);
 extern uint32_t frf_tinyusb_gamepad_count(void);
 extern uint32_t frf_tinyusb_gamepad_reports(void);
+extern int frf_pad_is_dyonder(uint16_t,uint16_t);
+extern uint32_t frf_tinyusb_dyonder_reports(void);
+extern uint32_t frf_tinyusb_dyonder_ignored(void);
+extern void frf_tinyusb_pad_retry_task(void);
+extern void frf_post_native_usb_pad_stats(uint32_t,uint32_t);
 extern void frf_tinyusb_xpad_task(void);
 extern uint32_t frf_tinyusb_xpad_count(void);
 extern uint32_t frf_tinyusb_xpad_packets(void);
@@ -163,6 +168,13 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
     const uint32_t pad_before=frf_tinyusb_gamepad_count();
     frf_tinyusb_pad_mount(addr,idx,descriptor,descriptor_len);
+    uint16_t pad_vid=0,pad_pid=0;
+    if(tuh_vid_pid_get(addr,&pad_vid,&pad_pid) &&
+       frf_pad_is_dyonder(pad_vid,pad_pid)) {
+       const uint32_t subtype=(pad_pid==0x0576u)?4u:5u;
+       frf_post_native_usb_vendor_probe(((uint32_t)pad_vid<<16)|pad_pid,
+                0x03000000u|(uint32_t)idx,subtype);
+    }
     if(protocol==HID_ITF_PROTOCOL_NONE &&
        pad_before==frf_tinyusb_gamepad_count()) {
         uint16_t vid=0,pid=0;
@@ -281,6 +293,7 @@ void frf_tinyusb_host_main(void)
     uint32_t last_rescan=enumeration_started;
     uint32_t root_attach_attempts=connected_before?1u:0u;
     uint32_t last_msc_post=~0u,last_pad_post=~0u,last_capacity_post=~0u;
+    uint32_t last_dy_ok=~0u,last_dy_ignore=~0u,last_dy_post=0u;
     /* CPU1 processes the DWC2 interrupt status in one event/task context.
        Unlike earlier hand-written polling, TinyUSB owns hub TT scheduling.
        On an already-connected root hub, retry enumeration occasionally if
@@ -303,7 +316,19 @@ void frf_tinyusb_host_main(void)
         hcd_int_handler(0,false);
         tuh_task_ext(0,false);
         frf_tinyusb_xpad_task(); /* vendor class Xbox controllers, CPU1 only */
+        frf_tinyusb_pad_retry_task(); /* RC9-style initial HID pad retry */
         frf_tinyusb_msc_service(); /* CPU1 only; services 68k FRUM sector requests */
+        /* Only refresh HDMI telemetry at most 4Hz; never draw from
+           a USB interrupt callback or on every HID report. */
+        const uint32_t dy_ok=frf_tinyusb_dyonder_reports();
+        const uint32_t dy_ignore=frf_tinyusb_dyonder_ignored();
+        const uint32_t dy_now=tusb_time_millis_api();
+        if((dy_ok!=last_dy_ok || dy_ignore!=last_dy_ignore) &&
+           (uint32_t)(dy_now-last_dy_post)>=250u) {
+            frf_post_native_usb_pad_stats(dy_ok,dy_ignore);
+            last_dy_ok=dy_ok;last_dy_ignore=dy_ignore;
+            last_dy_post=dy_now;
+        }
         const uint32_t msc_total=frf_tinyusb_msc_devices();
         const uint32_t pad_total=frf_tinyusb_gamepad_count();
         const uint32_t blocks=frf_tinyusb_msc_capacity();

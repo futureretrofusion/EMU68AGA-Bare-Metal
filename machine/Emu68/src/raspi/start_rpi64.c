@@ -333,6 +333,7 @@ static volatile uint32_t native_usb_storage_detected,native_usb_pad_detected;
 static volatile uint32_t native_usb_storage_blocks;
 static volatile uint32_t native_vendor_id,native_vendor_iface,native_vendor_kind;
 static volatile uint32_t native_vendor_mounts;
+static volatile uint32_t native_dyonder_ok,native_dyonder_ignored;
 
 #ifdef FRF_USB_DIAG_HOLD
 static volatile uint32_t native_usb_live[16];
@@ -361,9 +362,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / XPAD R13",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / DYONDER R14",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / XPAD R13",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / DYONDER R14",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -462,15 +463,22 @@ static void frf_post_draw(void)
         post_rect(px,vpy,2u,164u,cyan);
         post_rect(px+308u,vpy,2u,164u,cyan);
         post_rect(px,vpy+162u,310u,2u,cyan);
-        post_text(px+9u,vpy+8u,"R13 PAD USB INTERFACE SCAN",white);
+        post_text(px+9u,vpy+8u,"R14 PAD / DYONDER SCAN",white);
         post_text(px+10u,vpy+36u,"VENDOR:",white);
         post_hex(px+167u,vpy+36u,native_vendor_id,8,cyan);
         post_text(px+10u,vpy+59u,"CLASS/IF:",white);
         post_hex(px+167u,vpy+59u,native_vendor_iface,8,cyan);
         post_text(px+10u,vpy+82u,"PROTOCOL:",white);
         post_hex(px+167u,vpy+82u,native_vendor_kind,8,cyan);
-        post_text(px+10u,vpy+105u,"VEN EVENTS:",white);
-        post_hex(px+167u,vpy+105u,native_vendor_mounts,8,cyan);
+        if(native_vendor_kind==4u || native_vendor_kind==5u) {
+            post_text(px+10u,vpy+105u,"DY RX/IGN:",white);
+            post_hex(px+167u,vpy+105u,
+                     ((native_dyonder_ok&0xffffu)<<16) |
+                     (native_dyonder_ignored&0xffffu),8,cyan);
+        } else {
+            post_text(px+10u,vpy+105u,"VEN EVENTS:",white);
+            post_hex(px+167u,vpy+105u,native_vendor_mounts,8,cyan);
+        }
         post_text(px+10u,vpy+128u,"PAD/MSC:",white);
         post_hex(px+167u,vpy+128u,(native_usb_pad_detected<<16) |
                  (native_usb_storage_detected&0xffffu),8,cyan);
@@ -494,7 +502,7 @@ static void frf_post_draw(void)
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R13 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R14 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;
@@ -594,6 +602,12 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
 {
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_native_usb_pad_stats(uint32_t accepted,uint32_t ignored)
+{
+    native_dyonder_ok=accepted;
+    native_dyonder_ignored=ignored;
     frf_post_draw();
 }
 void frf_post_native_usb_vendor_probe(uint32_t vidpid,uint32_t iface,uint32_t kind)

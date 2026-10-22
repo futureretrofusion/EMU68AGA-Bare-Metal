@@ -245,6 +245,28 @@ int main(int argc,char **argv) {
        simulated_joy1!=0 || simulated_fire) return 24;
     if(frf_xpad_decode_report(1,xbox360,3)) return 25;
     if(test_mode==0) puts("VENDOR XINPUT 360 / Nacon / Xbox One GIP detect and JOY1/fire PASS");
+    extern int frf_pad_is_dyonder(uint16_t vid,uint16_t pid);
+    extern int frf_dyonder_decode_report(const uint8_t *b,uint16_t len);
+    if(!frf_pad_is_dyonder(0x2563u,0x0576u) ||
+       !frf_pad_is_dyonder(0x2563u,0x0575u) ||
+       frf_pad_is_dyonder(0x2563u,0x0577u) ||
+       frf_pad_is_dyonder(0x1111u,0x0576u)) return 30;
+    uint8_t dyonder_neutral[10]={1,0,0,8,128,128,128,128,0,0};
+    if(!frf_dyonder_decode_report(dyonder_neutral,10u) ||
+       simulated_joy1!=0 || simulated_fire) return 31;
+    uint8_t dyonder_left_fire[10]={1,1,0,6,128,128,128,128,0,0};
+    if(!frf_dyonder_decode_report(dyonder_left_fire,10u) ||
+       simulated_joy1!=0x0300u || !simulated_fire) return 32;
+    uint8_t dyonder_up[10]={1,0,0,0,128,128,128,128,0,0};
+    if(!frf_dyonder_decode_report(dyonder_up,10u) ||
+       simulated_joy1!=0x0100u || simulated_fire) return 33;
+    uint8_t dyonder_mouse[10]={5,1,0,6,128,128,128,128,0,0};
+    if(frf_dyonder_decode_report(dyonder_mouse,10u) ||
+       simulated_joy1!=0x0100u || simulated_fire) return 34;
+    if(frf_dyonder_decode_report(dyonder_left_fire,9u) ||
+       frf_dyonder_decode_report(dyonder_left_fire,11u)) return 35;
+    if(test_mode==0)
+        puts("DYONDER 2563:0575/0576 HID ID1 10-byte hat/axes/buttons, reject ID5 mouse PASS");
     extern void frf_msc_probe_cbw_wire(uint8_t out[12],uint32_t bytes);
     uint8_t cbw_wire[12]={0};
     const uint8_t cbw_expected[12]={
