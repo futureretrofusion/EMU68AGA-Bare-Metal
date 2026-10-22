@@ -231,6 +231,9 @@ int main(int argc,char **argv) {
        frf_xpad_interface_kind(0x146bu,0x0603u,0u,0xffu,0x5du,0x01u)!=1 ||
        frf_xpad_interface_kind(0x045eu,0x02eau,0u,0xffu,0x47u,0xd0u)!=2 ||
        frf_xpad_interface_kind(0x045eu,0x02eau,1u,0xffu,0x47u,0xd0u)!=0 ||
+       frf_xpad_interface_kind(0x2404u,0x0078u,0u,0xffu,0u,0xffu)!=3 ||
+       frf_xpad_interface_kind(0x2404u,0x0079u,0u,0xffu,0u,0xffu)!=0 ||
+       frf_xpad_interface_kind(0x2404u,0x0078u,0u,0x03u,0u,0xffu)!=0 ||
        frf_xpad_interface_kind(0x1111u,0x2222u,0u,0xffu,0x47u,0xd0u)!=0 ||
        frf_xpad_interface_kind(0x045eu,0x02eau,0u,0x03u,0x5du,0x01u)!=0)
         return 21;
@@ -245,6 +248,14 @@ int main(int argc,char **argv) {
     if(!frf_xpad_decode_report(1,xbox_neutral,20) ||
        simulated_joy1!=0 || simulated_fire) return 24;
     if(frf_xpad_decode_report(1,xbox360,3)) return 25;
+    /* A passive unknown vendor probe must never drive the Amiga port. */
+    const uint16_t before_probe_joy=simulated_joy1;
+    const int before_probe_fire=simulated_fire;
+    if(frf_xpad_decode_report(3,xbox360,sizeof(xbox360)) ||
+       simulated_joy1!=before_probe_joy ||
+       simulated_fire!=before_probe_fire) return 26;
+    if(test_mode==0)
+        puts("R16 vendor 2404:0078 FF/00/FF passive-only, no guessed Amiga input PASS");
     if(test_mode==0) puts("VENDOR XINPUT 360 / Nacon / Xbox One GIP detect and JOY1/fire PASS");
     extern int frf_pad_is_dyonder(uint16_t vid,uint16_t pid);
     extern int frf_dyonder_decode_report(const uint8_t *b,uint16_t len);

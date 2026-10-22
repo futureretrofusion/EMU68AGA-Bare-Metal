@@ -342,6 +342,7 @@ struct frf_device_snapshot {
 };
 static struct frf_device_snapshot native_usb_addr[FRF_USB_ADDR_MAX];
 static volatile uint32_t native_usb_addr_events;
+static volatile uint32_t native_usb_link[15];
 
 
 #ifdef FRF_USB_DIAG_HOLD
@@ -371,9 +372,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / USB TRACE R15",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / INPUT R16",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / USB TRACE R15",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / INPUT R16",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -505,7 +506,7 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,panelh,cyan);
         post_rect(px+308u,py,2u,panelh,cyan);
         post_rect(px,py+panelh-2u,310u,2u,cyan);
-        post_text(px+9u,py+8u,"R15 EACH USB DEVICE / ADDRESS",white);
+        post_text(px+9u,py+8u,"R16 EACH USB DEVICE / ADDRESS",white);
         post_text(px+9u,py+27u,"FLAGS 01=DEV 02=HID 04=MSC",amber);
         post_text(px+9u,py+45u,"      08=VENDOR INTERFACE",amber);
         unsigned shown=0;
@@ -527,6 +528,37 @@ static void frf_post_draw(void)
         if(!shown) post_text(px+10u,py+70u,"NO USB DEVICE CALLBACKS",amber);
     }
 #endif
+#if defined(FRF_USB_TINYUSB)
+    /* Compact R16 host-to-guest link trace: safe for both normal preboot
+       and USB-only live diagnostic. Only CPU1's 3Hz worker updates it. */
+#ifdef FRF_USB_DIAG_HOLD
+    const uint32_t ipy=y+530u;
+#else
+    const uint32_t ipy=y+174u;
+#endif
+    if(x>=330u && fb_height>=ipy+177u) {
+        const uint32_t px=x-324u, ph=176u;
+        static const char *const input_labels[13]={
+            "HID RX","HID DEV/IF","HID LEN/ID","HID RAW 0",
+            "VEND RX","VEND LEN/ID","VEND RAW 0",
+            "PAD DECODE","DY VALID","JOY/FIRE",
+            "JOY WRITES","GUEST JOY RD","GUEST CIA RD"
+        };
+        static const uint8_t input_idxs[13]={0,1,2,3,5,8,6,9,10,11,12,13,14};
+        post_rect(px,ipy,310u,ph,0x0822u);
+        post_rect(px,ipy,310u,2u,cyan);
+        post_rect(px,ipy,2u,ph,cyan);
+        post_rect(px+308u,ipy,2u,ph,cyan);
+        post_rect(px,ipy+ph-2u,310u,2u,cyan);
+        post_text(px+10u,ipy+6u,"R16 USB -> AMIGA INPUT LINK",white);
+        for(unsigned i=0;i<13u;++i) {
+            const uint32_t ry=ipy+19u+i*12u;
+            post_text(px+10u,ry,input_labels[i],white);
+            post_hex(px+181u,ry,native_usb_link[input_idxs[i]],8,
+                     i==9u?green:cyan);
+        }
+    }
+#endif
 #ifdef FRF_USB_DIAG_HOLD
     /* Dedicated side panel: readings from the ACTUAL Pi3 controller,
        not synthetic event counters or presumed USB attachment.
@@ -545,7 +577,7 @@ static void frf_post_draw(void)
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R15 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R16 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;
@@ -645,6 +677,13 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
 {
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_native_usb_input_trace(const uint32_t *fields,unsigned count)
+{
+    if(!fields) return;
+    if(count>15u) count=15u;
+    for(unsigned i=0;i<count;++i) native_usb_link[i]=fields[i];
     frf_post_draw();
 }
 void frf_post_native_usb_device_event(uint32_t addr,uint32_t vidpid,

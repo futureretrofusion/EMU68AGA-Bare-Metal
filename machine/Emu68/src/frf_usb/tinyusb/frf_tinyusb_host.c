@@ -46,6 +46,13 @@ extern uint32_t frf_tinyusb_dyonder_ignored(void);
 extern void frf_tinyusb_pad_retry_task(void);
 extern int frf_tinyusb_pad_is_dyonder_interface(uint8_t,uint8_t);
 extern void frf_post_native_usb_device_event(uint32_t,uint32_t,uint32_t,uint32_t);
+extern void frf_post_native_usb_input_trace(const uint32_t *fields,unsigned count);
+extern void aga_virtual_joy_link_stats(uint32_t out[4]);
+extern uint32_t frf_tinyusb_xpad_raw_reports(void);
+extern uint32_t frf_tinyusb_xpad_raw_data0(void);
+extern uint32_t frf_tinyusb_xpad_raw_data1(void);
+extern uint32_t frf_tinyusb_xpad_raw_meta(void);
+
 
 extern void frf_post_native_usb_pad_stats(uint32_t,uint32_t);
 extern void frf_tinyusb_xpad_task(void);
@@ -74,6 +81,18 @@ static uint32_t frf_usb_diag_last_irq,frf_usb_diag_chan_irq,frf_usb_diag_port_ir
 extern void frf_post_native_usb_trace(const uint32_t*,unsigned);
 #endif
 static volatile uint32_t frf_usb_reports,frf_usb_enumerations;
+/* Record RAW successful USB HID packets before any gamepad decoder.
+   This identifies controller-synced-but-not-delivered failures. */
+static volatile uint32_t frf_hid_rx_count,frf_hid_raw_word0,frf_hid_raw_word1;
+static volatile uint32_t frf_hid_meta,frf_hid_source;
+static uint32_t pack4(const uint8_t *p,uint16_t n,uint16_t start)
+{
+    uint32_t v=0;
+    for(unsigned i=0;i<4 && start+i<n;++i)
+        v|=((uint32_t)p[start+i]) << (24u-8u*i);
+    return v;
+}
+
 static volatile uint32_t frf_usb_ctrl_len_wire,frf_usb_ctrl_len_cpu;
 void frf_pi3_trace_control_length(uint16_t wire,uint16_t cpu) {
     frf_usb_ctrl_len_wire=(uint32_t)wire;
@@ -214,6 +233,11 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
                                 const uint8_t *data,uint16_t len)
 {
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+    ++frf_hid_rx_count;
+    frf_hid_meta=((uint32_t)len<<16)|((uint32_t)(len?data[0]:0u)<<8)|protocol;
+    frf_hid_source=((uint32_t)addr<<16)|idx;
+    frf_hid_raw_word0=pack4(data,len,0u);
+    frf_hid_raw_word1=pack4(data,len,4u);
     /* Dyonder ID1 joystick and ID5 relative mouse can share the very
        same Boot-Mouse HID interface. Route by report ID before applying
        the ordinary three-byte boot-mouse decoding. */
@@ -322,6 +346,7 @@ void frf_tinyusb_host_main(void)
     uint32_t last_rescan=enumeration_started;
     uint32_t root_attach_attempts=connected_before?1u:0u;
     uint32_t last_msc_post=~0u,last_pad_post=~0u,last_capacity_post=~0u;
+    uint32_t last_link_draw=0u;
     uint32_t last_dy_ok=~0u,last_dy_ignore=~0u,last_dy_post=0u;
     /* CPU1 processes the DWC2 interrupt status in one event/task context.
        Unlike earlier hand-written polling, TinyUSB owns hub TT scheduling.
@@ -352,6 +377,26 @@ void frf_tinyusb_host_main(void)
         const uint32_t dy_ok=frf_tinyusb_dyonder_reports();
         const uint32_t dy_ignore=frf_tinyusb_dyonder_ignored();
         const uint32_t dy_now=tusb_time_millis_api();
+        /* Pi3 HDMI diagnostics only; actual USB ISR callbacks never draw.
+           Read-only link telemetry shows four independent stages:
+             USB packets -> decoded pad reports -> guest JOY1 state
+             -> guest register reads. */
+        if((uint32_t)(dy_now-last_link_draw)>=300u) {
+            uint32_t g[4]={0};
+            aga_virtual_joy_link_stats(g);
+            const uint32_t input_link[15]={
+                frf_hid_rx_count,frf_hid_source,frf_hid_meta,
+                frf_hid_raw_word0,frf_hid_raw_word1,
+                frf_tinyusb_xpad_raw_reports(),
+                frf_tinyusb_xpad_raw_data0(),
+                frf_tinyusb_xpad_raw_data1(),
+                frf_tinyusb_xpad_raw_meta(),
+                frf_tinyusb_gamepad_reports(),
+                dy_ok,g[0],g[1],g[2],g[3]
+            };
+            frf_post_native_usb_input_trace(input_link,15u);
+            last_link_draw=dy_now;
+        }
         if((dy_ok!=last_dy_ok || dy_ignore!=last_dy_ignore) &&
            (uint32_t)(dy_now-last_dy_post)>=250u) {
             frf_post_native_usb_pad_stats(dy_ok,dy_ignore);

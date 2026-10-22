@@ -20,6 +20,21 @@ struct frf_xpad {
 };
 static struct frf_xpad xpads[FRF_XPAD_MAX];
 static uint32_t xpad_packets,xpad_errors;
+/* R16 passive vendor-FF/00/FF probe. The R14 photo showed a 2404:0078
+   vendor interface; this is NOT proof it belongs to the gamepad.
+   Capture only its interrupt-IN bytes, with no guessed joystick mapping
+   or arbitrary USB OUT messages. */
+static volatile uint32_t vendor_raw_rx,vendor_raw_w0,vendor_raw_w1,vendor_raw_meta;
+uint32_t frf_tinyusb_xpad_raw_reports(void) { return vendor_raw_rx; }
+uint32_t frf_tinyusb_xpad_raw_data0(void) { return vendor_raw_w0; }
+uint32_t frf_tinyusb_xpad_raw_data1(void) { return vendor_raw_w1; }
+uint32_t frf_tinyusb_xpad_raw_meta(void) { return vendor_raw_meta; }
+static uint32_t raw4(const uint8_t *data,unsigned start,uint32_t len) {
+    uint32_t v=0;
+    for(unsigned i=0;i<4u && start+i<len;i++)
+        v|=(uint32_t)data[start+i] << (24u-i*8u);
+    return v;
+}
 extern void aga_virtual_joy_set(int port,uint16_t joydat,int fire);
 extern void kprintf(const char*,...);
 extern void frf_post_native_usb_vendor_probe(uint32_t vidpid,uint32_t iface,uint32_t kind);
@@ -27,7 +42,8 @@ extern void frf_post_native_usb_device_event(uint32_t,uint32_t,uint32_t,uint32_t
 
 uint32_t frf_tinyusb_xpad_count(void) {
     uint32_t count=0;
-    for(unsigned i=0;i<FRF_XPAD_MAX;i++) if(xpads[i].addr) ++count;
+    for(unsigned i=0;i<FRF_XPAD_MAX;i++)
+        if(xpads[i].addr && xpads[i].kind!=3u) ++count;
     return count;
 }
 uint32_t frf_tinyusb_xpad_packets(void) { return xpad_packets; }
@@ -52,6 +68,11 @@ int frf_xpad_interface_kind(uint16_t vid,uint16_t pid,
     if(sub==0x5du && proto==0x01u) return 1; /* Xbox 360 wired XInput */
     if(sub==0x47u && proto==0xd0u && itf==0u &&
        is_gamepad_vendor(vid)) return 2; /* Xbox One GIP */
+    /* 2404:0078 FF/00/FF was observed on Pi3 in R14, but the
+       device owner is uncertain. Do not classify as a gamepad:
+       claim the interrupt-IN endpoint for read-only telemetry only. */
+    if(vid==0x2404u && pid==0x0078u && sub==0u && proto==0xffu)
+        return 3;
     return 0;
 }
 static int16_t le_s16(const uint8_t *b) {
@@ -169,8 +190,14 @@ static bool driver_xfer_cb(uint8_t addr,uint8_t ep,xfer_result_t result,uint32_t
     if(result==XFER_RESULT_SUCCESS) {
         if(ep==p->ep_in) {
             ++p->packets;++xpad_packets;
-            if(count<=sizeof(p->report) &&
-               frf_xpad_decode_report(p->kind,p->report,(uint16_t)count))
+            if(p->kind==3u && count<=sizeof(p->report)) {
+                ++vendor_raw_rx;
+                vendor_raw_meta=((uint32_t)p->addr<<24) |
+                    ((uint32_t)count<<16) | (count?p->report[0]:0u);
+                vendor_raw_w0=raw4(p->report,0u,count);
+                vendor_raw_w1=raw4(p->report,4u,count);
+            } else if(count<=sizeof(p->report) &&
+                      frf_xpad_decode_report(p->kind,p->report,(uint16_t)count))
                 ++p->decode;
         } else if(ep==p->ep_out && p->kind==2) {
             ++p->init_step;
@@ -190,8 +217,10 @@ static void driver_close(uint8_t addr)
 {
     struct frf_xpad *p=find(addr);
     if(!p) return;
+    const uint8_t passive=p->kind==3u;
     memset(p,0,sizeof(*p));
-    if(!frf_tinyusb_xpad_count()) aga_virtual_joy_set(1,0,0);
+    if(!passive && !frf_tinyusb_xpad_count())
+        aga_virtual_joy_set(1,0,0);
 }
 static const usbh_class_driver_t driver={
     "FRF-XINPUT",driver_init,driver_deinit,driver_open,

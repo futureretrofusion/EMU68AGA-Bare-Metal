@@ -165,12 +165,26 @@ static volatile uint16_t frf_joydat[2];
 static volatile uint8_t frf_fire_bits;
 static volatile uint8_t frf_mouse_buttons;
 static volatile uint8_t frf_mouse_x, frf_mouse_y;
+/* Host input -> emulated Amiga readback telemetry. Atomic because Pi3
+   TinyUSB lives on CPU1 and 68k custom register emulation on CPU0. */
+static volatile uint32_t frf_guest_joy1_reads, frf_guest_ciaa_reads;
+static volatile uint32_t frf_host_joy1_writes;
+void aga_virtual_joy_link_stats(uint32_t out[4])
+{
+    out[0] = __atomic_load_n(&frf_joydat[1],__ATOMIC_ACQUIRE) |
+      ((__atomic_load_n(&frf_fire_bits,__ATOMIC_ACQUIRE)&2u)?0x10000u:0u);
+    out[1] = __atomic_load_n(&frf_host_joy1_writes,__ATOMIC_ACQUIRE);
+    out[2] = __atomic_load_n(&frf_guest_joy1_reads,__ATOMIC_ACQUIRE);
+    out[3] = __atomic_load_n(&frf_guest_ciaa_reads,__ATOMIC_ACQUIRE);
+}
+
 /* Paula POTGO high-byte state. OUT/DAT pairs are:
    15/14 RY, 13/12 RX, 11/10 LY (port-1 right mouse), 9/8 LX. */
 static volatile uint16_t frf_potgo;
 
 uint8_t aga_virtual_ciaa_buttons(void)
 {
+    __atomic_fetch_add(&frf_guest_ciaa_reads,1u,__ATOMIC_RELAXED);
     uint8_t v = 0xC0u;
     if (frf_fire_bits & 1u) v &= (uint8_t)~0x40u;
     if (frf_fire_bits & 2u) v &= (uint8_t)~0x80u;
@@ -180,6 +194,8 @@ void aga_virtual_joy_set(int port, uint16_t joydat, int fire)
 {
     if ((unsigned)port > 1u) return;
     __atomic_store_n(&frf_joydat[port], joydat, __ATOMIC_RELEASE);
+    if(port==1)
+        __atomic_fetch_add(&frf_host_joy1_writes,1u,__ATOMIC_RELAXED);
     uint8_t bit = (uint8_t)(1u << port);
     if (fire) __atomic_fetch_or(&frf_fire_bits, bit, __ATOMIC_ACQ_REL);
     else      __atomic_fetch_and(&frf_fire_bits, (uint8_t)~bit, __ATOMIC_ACQ_REL);
@@ -205,7 +221,10 @@ static uint16_t hook_ext_read(void *u, uint32_t reg)
        ext_read is now a host-input/default provider only.  No register read
        may escape to ps_read_* or to a donor Amiga chipset. */
     if (reg == JOY0DAT) return __atomic_load_n(&frf_joydat[0], __ATOMIC_ACQUIRE);
-    if (reg == JOY1DAT) return __atomic_load_n(&frf_joydat[1], __ATOMIC_ACQUIRE);
+    if (reg == JOY1DAT) {
+        __atomic_fetch_add(&frf_guest_joy1_reads,1u,__ATOMIC_RELAXED);
+        return __atomic_load_n(&frf_joydat[1], __ATOMIC_ACQUIRE);
+    }
     if (reg == POTGOR) {
         uint16_t pg = __atomic_load_n(&frf_potgo, __ATOMIC_ACQUIRE);
         uint16_t v = (uint16_t)((pg & 0xAA00u) | 0x5500u);
