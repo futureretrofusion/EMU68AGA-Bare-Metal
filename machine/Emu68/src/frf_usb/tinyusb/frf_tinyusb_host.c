@@ -57,6 +57,8 @@ extern void frf_tinyusb_pad_retry_task(void);
 extern int frf_tinyusb_pad_is_dyonder_interface(uint8_t,uint8_t);
 extern int frf_r19_hid_mapped_interface(uint8_t,uint8_t);
 extern int frf_r20_compat_receive(uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern int frf_r27_receive(uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern uint32_t frf_r27_seen(void),frf_r27_ok(void),frf_r27_bad(void),frf_r27_joy(void),frf_r27_fire(void);
 extern uint32_t frf_r20_seen(void),frf_r20_valid(void);
 extern uint32_t frf_r20_rejected(void),frf_r20_joy(void);
 extern uint32_t frf_r20_fire(void),frf_r20_dev(void);
@@ -149,9 +151,9 @@ static void frf_r22_publish(uint32_t now)
     d->receiver_word0=frf_r22_word0;
     d->receiver_word1=frf_r22_word1;
     d->hid_rx_total=frf_hid_rx_count;
-    d->compat_rx=frf_r20_seen();
-    d->compat_valid=frf_r20_valid();
-    d->compat_rejected=frf_r20_rejected();
+    d->compat_rx=frf_r20_seen()+frf_r27_seen();
+    d->compat_valid=frf_r20_valid()+frf_r27_ok();
+    d->compat_rejected=frf_r20_rejected()+frf_r27_bad();
     d->last_joy_fire=g[0];
     d->host_joy_writes=g[1];
     d->guest_joy_reads=g[2];d->guest_cia_reads=g[3];
@@ -354,14 +356,15 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
     if(idx==0u) {
         uint16_t vid=0,pid=0;
         if(tuh_vid_pid_get(addr,&vid,&pid) &&
-           vid==0x7e05u && pid==0x0920u) {
+           ((vid==0x7e05u && pid==0x0920u) ||
+            (vid==0x220du && pid==0x330cu && len==27u && data[0]==3u))) {
             ++frf_r22_rx;
             frf_r26_lastrx_ms=tusb_time_millis_api();
             frf_r22_addr=((uint32_t)addr<<16)|idx;
             frf_r22_len=len;
             frf_r22_word0=pack4(data,len,0u);
             frf_r22_word1=pack4(data,len,4u);
-            if(len==24u) for(unsigned i=0;i<6u;i++)
+            if(len>=24u) for(unsigned i=0;i<6u;i++)
                 frf_r24_raw24[i]=pack4(data,len,(uint16_t)(4u*i));
         }
     }
@@ -369,6 +372,10 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
     frf_hid_source=((uint32_t)addr<<16)|idx;
     frf_hid_raw_word0=pack4(data,len,0u);
     frf_hid_raw_word1=pack4(data,len,4u);
+    if(frf_r27_receive(addr,idx,data,len)) {
+        /* R27 receiver is paced by CPU1 retry task, not callback. */
+        return;
+    }
     if(frf_r20_compat_receive(addr,idx,data,len)) {
         /* The CPU1 task schedules the next controller read in 10ms;
            do not recursively saturate USB host channels here. */
@@ -582,8 +589,10 @@ void frf_tinyusb_host_main(void)
             };
             frf_post_r19_hid_map(r19);
             const uint32_t r20[6]={
-                frf_r20_seen(),frf_r20_valid(),frf_r20_rejected(),
-                frf_r20_joy(),frf_r20_fire(),frf_r20_dev()
+                frf_r20_seen()+frf_r27_seen(),frf_r20_valid()+frf_r27_ok(),
+                frf_r20_rejected()+frf_r27_bad(),
+                frf_r27_seen()?frf_r27_joy():frf_r20_joy(),
+                frf_r27_seen()?frf_r27_fire():frf_r20_fire(),frf_r20_dev()
             };
             frf_post_r20_compat(r20);
             frf_post_r26_get_stats(frf_r26_ctlattempt,frf_r26_ctlok,frf_r26_ctlfail,frf_r26_ctlpending);

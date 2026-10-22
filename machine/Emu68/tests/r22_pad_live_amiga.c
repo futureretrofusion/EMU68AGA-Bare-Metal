@@ -15,7 +15,7 @@ struct ExpansionBase *ExpansionBase;
 static uint32_t read32(volatile const uint32_t *p) {return *p;}
 int main(void)
 {
-    printf("EMU68AGA R26 USPi-parity pad monitor - Zorro-II board\n");
+    printf("EMU68AGA R27 220D:330C ID3/27B pad monitor - Zorro-II board\n");
     ExpansionBase=(struct ExpansionBase *)OpenLibrary("expansion.library",37);
     if(!ExpansionBase){puts("expansion.library unavailable");return 10;}
     struct ConfigDev *cd=FindConfigDev(NULL,0x6d73,0x69);
@@ -96,6 +96,6 @@ int main(void)
     }
     (void)old_joy;
     CloseLibrary((struct Library *)ExpansionBase);
-    puts("R26 test complete.");
+    puts("R27 test complete.");
     return 0;
 }

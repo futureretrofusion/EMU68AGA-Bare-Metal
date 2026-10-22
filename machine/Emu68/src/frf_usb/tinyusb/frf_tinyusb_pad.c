@@ -8,6 +8,7 @@
 #include "tusb.h"
 #include "class/hid/hid_host.h"
 #include "frf_r19_hid_descriptor.h"
+#include "frf_r27_220d.h"
 
 #define FRF_PAD_SLOTS 8u
 struct pad_itf {
@@ -22,6 +23,12 @@ struct pad_itf {
 static struct pad_itf pads[FRF_PAD_SLOTS];
 volatile uint8_t frf_r26_receiver_addr;
 static uint32_t active_pads,gamepad_reports;
+static volatile uint32_t r27_seen,r27_ok,r27_bad,r27_joy,r27_fire;
+uint32_t frf_r27_seen(void){return r27_seen;}
+uint32_t frf_r27_ok(void){return r27_ok;}
+uint32_t frf_r27_bad(void){return r27_bad;}
+uint32_t frf_r27_joy(void){return r27_joy;}
+uint32_t frf_r27_fire(void){return r27_fire;}
 static uint32_t dyonder_report_ok,dyonder_report_ignore;
 static uint32_t pad_submit_deferred,pad_submit_recovered;
 static volatile uint32_t nr,so,sf,pt;
@@ -132,6 +139,15 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         frf_r26_receiver_addr=addr;
         kprintf("[FRF-R21] 7E05:0920 HID controller claimed at USB %u interface %u, PAD=%u\n",
                 addr,idx,active_pads);
+        return;
+    }
+    /* R27: observed receiver USB D04 ID3/27B. */
+    if(have_vidpid && vid==0x220du && pid==0x330cu && idx==0u && protocol==HID_ITF_PROTOCOL_NONE) {
+        int slot=first_free();if(slot<0)return;
+        struct pad_itf *p=&pads[slot];memset(p,0,sizeof(*p));
+        p->addr=addr;p->idx=idx;p->report_is_common=6u;
+        p->next_submit_ms=tusb_time_millis_api()+10u;
+        ++active_pads;
         return;
     }
     if(protocol==HID_ITF_PROTOCOL_KEYBOARD) return;
@@ -265,6 +281,18 @@ int frf_dyonder_decode_report(const uint8_t *b,uint16_t len)
    candidate. Attach lazily after observing a specific real neutral
    24-byte fingerprint, not merely from an untrusted HID mount label.
    The original HID class driver stays mounted and feeds reports. */
+int frf_r27_receive(uint8_t addr,uint8_t idx,const uint8_t *data,uint16_t len)
+{
+    struct pad_itf *p=find(addr,idx);
+    if(!p || p->report_is_common!=6u)return 0;
+    ++r27_seen;uint16_t joy=0;int fire=0;
+    if(frf_r27_decode(data,len,&joy,&fire)) {
+        ++r27_ok;r27_joy=joy;r27_fire=(uint32_t)fire;
+        aga_virtual_joy_set(1,joy,fire);
+        ++gamepad_reports;++p->reports;
+    } else ++r27_bad;
+    return 1;
+}
 int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
                             const uint8_t *data,uint16_t len)
 {
@@ -382,7 +410,7 @@ void frf_tinyusb_pad_retry_task(void)
         if(!p->addr || (int32_t)(now-p->next_submit_ms)<0) continue;
         /* Only exact R21 HID receiver is paced at 100Hz to prevent
            its interrupt-IN reports starving genuine keyboard releases. */
-        p->next_submit_ms=now+(p->report_is_common==5u?10u:500u);
+        p->next_submit_ms=now+((p->report_is_common==5u || p->report_is_common==6u)?10u:500u);
         ++pt; if(!tuh_hid_receive_ready(p->addr,p->idx)){++nr;continue;}
         if(!tuh_hid_receive_report(p->addr,p->idx)) {
             ++sf; ++p->retries;
