@@ -1,0 +1,80 @@
+/* R22 native AmigaOS 3.x USB -> joystick link monitor.
+ * Shell executable: FindConfigDev 6D73:69; read only existing Zorro-II
+ * 64KB board at +0x3400. No writes to hardware or mass-storage mailbox.
+ */
+#include <stdio.h>
+#include <stdint.h>
+#include <proto/exec.h>
+#include <proto/dos.h>
+#include <proto/expansion.h>
+#include <libraries/expansion.h>
+#include "../src/frf_usb/frf_r22_input_diag.h"
+
+struct ExpansionBase *ExpansionBase;
+
+static uint32_t read32(volatile const uint32_t *p) {return *p;}
+int main(void)
+{
+    printf("EMU68AGA R22 live controller link monitor - Zorro-II board\n");
+    ExpansionBase=(struct ExpansionBase *)OpenLibrary("expansion.library",37);
+    if(!ExpansionBase){puts("expansion.library unavailable");return 10;}
+    struct ConfigDev *cd=FindConfigDev(NULL,0x6d73,0x69);
+    if(!cd) {
+        puts("FRUM USB board 6D73:69 not found in expansion list.");
+        puts("Use FRFJoyDiag to test guest JOY1DAT directly.");
+        CloseLibrary((struct Library *)ExpansionBase);return 20;
+    }
+    volatile const struct frf_r22_diag *d=
+        (volatile const struct frf_r22_diag *)
+        ((volatile const uint8_t*)cd->cd_BoardAddr+FRF_R22_DIAG_OFFSET);
+    printf("FRUM Zorro board at %08lX; diag at +%04X\n",
+           (unsigned long)(uintptr_t)cd->cd_BoardAddr,FRF_R22_DIAG_OFFSET);
+    uint32_t old_rx=0,old_map=0,old_joy=0xffffffffu,last_tick=0;
+    for(unsigned i=0;i<90u;++i) {
+        const uint32_t magic=read32(&d->magic);
+        if(magic!=FRF_R22_DIAG_MAGIC) {
+            if(i%5u==0u) printf("No live R22 PAD2 record yet (magic=%08lX)\n",(unsigned long)magic);
+            Delay(10);
+            continue;
+        }
+        const uint32_t seq1=read32(&d->sequence);
+        if(seq1&1u){Delay(2);continue;}
+        const uint32_t tick=read32(&d->tick_ms);
+        const uint32_t host=read32(&d->host_ticks);
+        const uint32_t pad=read32(&d->pad_count);
+        const uint32_t device=read32(&d->receiver_addr);
+        const uint32_t rx=read32(&d->receiver_hid_rx);
+        const uint32_t len=read32(&d->receiver_len);
+        const uint32_t raw0=read32(&d->receiver_word0);
+        const uint32_t raw1=read32(&d->receiver_word1);
+        const uint32_t total=read32(&d->hid_rx_total);
+        const uint32_t map=read32(&d->compat_valid);
+        const uint32_t matched=read32(&d->compat_rx);
+        const uint32_t bad=read32(&d->compat_rejected);
+        const uint32_t state=read32(&d->last_joy_fire);
+        const uint32_t writes=read32(&d->host_joy_writes);
+        const uint32_t guest=read32(&d->guest_joy_reads);
+        const uint32_t cia=read32(&d->guest_cia_reads);
+        const uint32_t seq2=read32(&d->sequence);
+        if(seq1!=seq2 || (seq2&1u)){Delay(2);continue;}
+        if(i==0) puts("Press Dyonder D-pad / stick / A: values update every ~0.5 sec");
+        printf("t=%5lu host=%8lu PAD=%lu dev=%04lX dRX=%6lu(+%lu) len=%lu HID=%lu ",
+            (unsigned long)tick,(unsigned long)host,(unsigned long)pad,
+            (unsigned long)device,(unsigned long)rx,(unsigned long)(rx-old_rx),
+            (unsigned long)len,(unsigned long)total);
+        printf("OK=%6lu(+%lu) claimRX=%lu reject=%lu\n",
+            (unsigned long)map,(unsigned long)(map-old_map),
+            (unsigned long)matched,(unsigned long)bad);
+        printf("    raw=%08lX %08lX JOY1=%04lX FIRE=%lu W=%lu GJOYRD=%lu CIARD=%lu\n",
+            (unsigned long)raw0,(unsigned long)raw1,
+            (unsigned long)(state&65535u),(unsigned long)((state>>16)&1u),
+            (unsigned long)writes,(unsigned long)guest,(unsigned long)cia);
+        if(tick==last_tick && i>1u) puts("    WARNING: CPU1 telemetry clock has not advanced!");
+        last_tick=tick;old_rx=rx;old_map=map;old_joy=state;
+        Delay(25u);
+    }
+    (void)old_joy;
+    CloseLibrary((struct Library *)ExpansionBase);
+    puts("R22 test complete.");
+    return 0;
+}

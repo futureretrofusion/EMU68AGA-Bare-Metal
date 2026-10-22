@@ -10,6 +10,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "tusb.h"
+#include "../frf_usb_mass.h"
+#include "../frf_r22_input_diag.h"
+
 #include "host/hcd.h"
 #include "class/hid/hid_host.h"
 #include "class/msc/msc_host.h"
@@ -34,6 +37,7 @@ extern void frf_tinyusb_msc_mount(uint8_t addr);
 extern void frf_tinyusb_msc_unmount(uint8_t addr);
 extern void frf_tinyusb_msc_service(void);
 extern uint32_t frf_tinyusb_msc_devices(void);
+extern uint32_t frf_tinyusb_msc_capacity(void);
 extern uint32_t frf_tinyusb_msc_capacity(void);
 extern void frf_tinyusb_pad_mount(uint8_t,uint8_t,const uint8_t*,uint16_t);
 extern void frf_tinyusb_pad_unmount(uint8_t,uint8_t);
@@ -102,6 +106,46 @@ static volatile uint32_t frf_usb_reports,frf_usb_enumerations;
 /* Record RAW successful USB HID packets before any gamepad decoder.
    This identifies controller-synced-but-not-delivered failures. */
 static volatile uint32_t frf_hid_rx_count,frf_hid_raw_word0,frf_hid_raw_word1;
+static volatile uint32_t frf_r22_rx,frf_r22_len,frf_r22_word0,frf_r22_word1;
+static volatile uint32_t frf_r22_addr;
+static uint32_t frf_r22_host_ticks;
+extern volatile struct frf_um_shared *frf_um_host;
+static void frf_r22_publish(uint32_t now)
+{
+    volatile struct frf_um_shared *s=
+        __atomic_load_n(&frf_um_host,__ATOMIC_ACQUIRE);
+    if(!s || s->magic!=FRF_UM_MAGIC) return;
+    volatile struct frf_r22_diag *d=
+        (volatile struct frf_r22_diag *)((volatile uint8_t*)s+FRF_R22_DIAG_OFFSET);
+    uint32_t g[4]={0};
+    aga_virtual_joy_link_stats(g);
+    uint32_t seq=d->magic==FRF_R22_DIAG_MAGIC?d->sequence:0u;
+    if(seq&1u)++seq;
+    d->sequence=seq+1u; /* write in progress: odd */
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    d->version=FRF_R22_DIAG_VERSION;
+    d->tick_ms=now;d->host_ticks=frf_r22_host_ticks;
+    d->pad_count=frf_tinyusb_gamepad_count();
+    d->receiver_addr=frf_r22_addr;
+    d->receiver_hid_rx=frf_r22_rx;
+    d->receiver_len=frf_r22_len;
+    d->receiver_word0=frf_r22_word0;
+    d->receiver_word1=frf_r22_word1;
+    d->hid_rx_total=frf_hid_rx_count;
+    d->compat_rx=frf_r20_seen();
+    d->compat_valid=frf_r20_valid();
+    d->compat_rejected=frf_r20_rejected();
+    d->last_joy_fire=g[0];
+    d->host_joy_writes=g[1];
+    d->guest_joy_reads=g[2];d->guest_cia_reads=g[3];
+    d->msc_present=frf_tinyusb_msc_devices();
+    d->msc_blocks=frf_tinyusb_msc_capacity();
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    d->sequence=seq+2u;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    d->magic=FRF_R22_DIAG_MAGIC;
+}
+
 static volatile uint32_t frf_hid_meta,frf_hid_source;
 static uint32_t pack4(const uint8_t *p,uint16_t n,uint16_t start)
 {
@@ -253,6 +297,17 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
     frf_usb_packet_capture(1u,addr,idx,data,len);
     ++frf_hid_rx_count;
+    if(idx==0u) {
+        uint16_t vid=0,pid=0;
+        if(tuh_vid_pid_get(addr,&vid,&pid) &&
+           vid==0x7e05u && pid==0x0920u) {
+            ++frf_r22_rx;
+            frf_r22_addr=((uint32_t)addr<<16)|idx;
+            frf_r22_len=len;
+            frf_r22_word0=pack4(data,len,0u);
+            frf_r22_word1=pack4(data,len,4u);
+        }
+    }
     frf_hid_meta=((uint32_t)len<<16)|((uint32_t)(len?data[0]:0u)<<8)|protocol;
     frf_hid_source=((uint32_t)addr<<16)|idx;
     frf_hid_raw_word0=pack4(data,len,0u);
@@ -378,6 +433,7 @@ void frf_tinyusb_host_main(void)
     uint32_t root_attach_attempts=connected_before?1u:0u;
     uint32_t last_msc_post=~0u,last_pad_post=~0u,last_capacity_post=~0u;
     uint32_t last_link_draw=0u;
+    uint32_t last_r22_publish=0u;
     uint32_t last_dy_ok=~0u,last_dy_ignore=~0u,last_dy_post=0u;
     /* CPU1 processes the DWC2 interrupt status in one event/task context.
        Unlike earlier hand-written polling, TinyUSB owns hub TT scheduling.
@@ -398,6 +454,7 @@ void frf_tinyusb_host_main(void)
         if(channel_int) frf_usb_diag_last_irq=channel_int;
         ++usb_task_ticks;
 #endif
+        ++frf_r22_host_ticks;
         hcd_int_handler(0,false);
         tuh_task_ext(0,false);
         frf_tinyusb_xpad_task(); /* vendor class Xbox controllers, CPU1 only */
@@ -408,6 +465,10 @@ void frf_tinyusb_host_main(void)
         const uint32_t dy_ok=frf_tinyusb_dyonder_reports();
         const uint32_t dy_ignore=frf_tinyusb_dyonder_ignored();
         const uint32_t dy_now=tusb_time_millis_api();
+        if((uint32_t)(dy_now-last_r22_publish)>=200u) {
+            frf_r22_publish(dy_now);
+            last_r22_publish=dy_now;
+        }
         /* Pi3 HDMI diagnostics only; actual USB ISR callbacks never draw.
            Read-only link telemetry shows four independent stages:
              USB packets -> decoded pad reports -> guest JOY1 state
