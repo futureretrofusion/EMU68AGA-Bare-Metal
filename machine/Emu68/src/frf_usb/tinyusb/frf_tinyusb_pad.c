@@ -54,6 +54,7 @@ uint32_t frf_r19_hid_last_joy(void){return descriptor_joy;}
 uint32_t frf_r19_hid_last_fire(void){return descriptor_fire;}
 uint32_t frf_r19_hid_last_address(void){return descriptor_last_address;}
 uint32_t frf_r19_hid_field_count(void){return descriptor_fields;}
+uint32_t frf_r31_target_mode(void){for(unsigned i=0;i<FRF_PAD_SLOTS;i++)if(pads[i].addr && pads[i].report_is_common==4u)return 4u;else if(pads[i].addr && pads[i].report_is_common==6u)return 6u;return 0u;}
 
 extern uint32_t tusb_time_millis_api(void);
 uint32_t frf_tinyusb_pad_deferred(void) {return pad_submit_deferred;}

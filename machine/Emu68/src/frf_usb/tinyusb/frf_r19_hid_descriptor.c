@@ -8,7 +8,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include "frf_r19_hid_descriptor.h"
-enum { AXIS_X=1,AXIS_Y=2,HAT=3,BUTTON=4,DP_UP=5,DP_DOWN=6,DP_RIGHT=7,DP_LEFT=8 };
+enum { AXIS_X=1,AXIS_Y=2,HAT=3,BUTTON=4,DP_UP=5,DP_DOWN=6,DP_RIGHT=7,DP_LEFT=8,AXIS_DX=9,AXIS_DY=10 };
 struct hid_state {
   uint32_t usage_page,report_size,report_count,report_id;
   int32_t logical_min,logical_max;
@@ -41,6 +41,8 @@ static int kind_for(uint32_t page,uint32_t usage) {
   if(page==1u) {
     if(usage==0x30u) return AXIS_X;
     if(usage==0x31u) return AXIS_Y;
+    if(usage==0x32u) return AXIS_DX;
+    if(usage==0x33u) return AXIS_DY;
     if(usage==0x39u) return HAT;
     if(usage==0x90u) return DP_UP;
     if(usage==0x91u) return DP_DOWN;
@@ -175,7 +177,7 @@ unsigned frf_hid_gamepad_report_capabilities(const struct frf_hid_map *m,uint8_t
     if(m->has_ids && f->report_id!=report_id)continue;
     if(f->kind==BUTTON)flags|=2u;
     else if(f->kind==AXIS_X || f->kind==AXIS_Y || f->kind==HAT ||
-            (f->kind>=DP_UP && f->kind<=DP_LEFT))flags|=1u;
+            (f->kind>=DP_UP && f->kind<=AXIS_DY))flags|=1u;
   }
   return flags;
 }
@@ -202,7 +204,7 @@ int frf_hid_gamepad_decode(const struct frf_hid_map *m,
   if(m->has_ids && !report_id) return 0;
   unsigned payload_len=(len && m->has_ids)?(unsigned)len-1u:(unsigned)len;
   if(payload_len*8u<m->report_bits[report_id]) return 0;
-  int x=0,y=0,x_valid=0,y_valid=0,hat=-1,hat_min=0;
+  int x=0,y=0,dx=0,dy=0,x_valid=0,y_valid=0,hat=-1,hat_min=0;
   int up=0,down=0,left=0,right=0;
   int have_button=0,pressed=0,found=0;
   for(unsigned i=0;i<m->count;++i) {
@@ -220,6 +222,8 @@ int frf_hid_gamepad_decode(const struct frf_hid_map *m,
     if(f->kind==AXIS_X && !x_valid) {x=scale_direction(v,f->min,f->max);x_valid=1;}
     if(f->kind==AXIS_Y && !y_valid) {y=scale_direction(v,f->min,f->max);y_valid=1;}
     if(f->kind==HAT){hat=v;hat_min=f->min;}
+    if(f->kind==AXIS_DX)dx=scale_direction(v,f->min,f->max);
+    if(f->kind==AXIS_DY)dy=scale_direction(v,f->min,f->max);
     if(f->kind==BUTTON){have_button=1;if(v)pressed=1;}
     if(f->kind==DP_UP) up|=(v!=0);
     if(f->kind==DP_DOWN) down|=(v!=0);
@@ -236,6 +240,7 @@ int frf_hid_gamepad_decode(const struct frf_hid_map *m,
       left|=(h==5 || h==6 || h==7);
     }
   }
+  left|=dx<0;right|=dx>0;up|=dy<0;down|=dy>0;
   if(x_valid){left|=x<0;right|=x>0;}
   if(y_valid){up|=y<0;down|=y>0;}
   if(left && right)left=right=0;
