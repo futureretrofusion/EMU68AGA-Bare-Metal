@@ -391,6 +391,11 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
     } else ++r20_rejected;
     return 1;
 }
+int frf_tinyusb_pad_port2_owner(uint8_t addr,uint8_t idx){
+    for(unsigned i=0;i<FRF_PAD_SLOTS;i++)
+        if(pads[i].addr)return pads[i].addr==addr && pads[i].idx==idx;
+    return 0;
+}
 int frf_tinyusb_pad_has(uint8_t addr,uint8_t idx){return find(addr,idx)!=0;}
 int frf_r30_descriptor_receiver(uint8_t addr,uint8_t idx){struct pad_itf *p=find(addr,idx);return p && p->report_is_common==4u;}
 void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,

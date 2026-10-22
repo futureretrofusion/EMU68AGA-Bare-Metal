@@ -12,6 +12,44 @@ struct capture {
 };
 static struct capture cap[2];
 
+/* R35: real 220D:330C HID reports must never share a baseline with
+   another ID or a vendor endpoint. Keep an independent capture per ID. */
+static struct capture target_id[4];
+static uint8_t target_focus;
+static uint32_t target_packets;
+void frf_usb_target_capture(uint8_t addr,uint8_t idx,
+                            const uint8_t *data,uint16_t length)
+{
+    if (!data || length==0u || length>64u) return;
+    const unsigned id=data[0];
+    if(id==0u || id>3u) return;
+    struct capture *c=&target_id[id];
+    const unsigned len=(unsigned)length;
+    if(!c->received || c->addr!=addr || c->if_num!=idx || c->len!=len) {
+        memset(c,0,sizeof(*c));
+        memcpy(c->base,data,len);
+        memcpy(c->previous,data,len);
+        target_focus=(uint8_t)id;
+    } else {
+        unsigned changes=0;
+        for(unsigned i=0;i<len;++i)
+            if(c->previous[i]!=data[i])++changes;
+        c->last_changed=changes;
+        if(changes) {
+            ++c->changed;
+            target_focus=(uint8_t)id;
+        }
+    }
+    memcpy(c->now,data,len);
+    memcpy(c->previous,data,len);
+    c->addr=addr;c->if_num=idx;c->len=(uint8_t)len;
+    c->signature=((uint32_t)len<<8)|(uint32_t)id;
+    ++c->received;
+    ++target_packets;
+}
+uint32_t frf_usb_target_rx_count(void){return target_packets;}
+
+
 void frf_usb_packet_capture(uint8_t kind,uint8_t addr,uint8_t interface_or_ep,
                              const uint8_t *data,uint16_t length)
 {
@@ -54,8 +92,14 @@ static uint32_t word4(const uint8_t*data,unsigned w)
 void frf_usb_packet_capture_snapshot(uint32_t out[55])
 {
     if(!out) return;
-    const struct capture *c=cap[1].received?&cap[1]:&cap[0];
-    out[0]=cap[1].received?2u:(cap[0].received?1u:0u);
+    const struct capture *c;
+    if(target_focus && target_id[target_focus].received){
+        c=&target_id[target_focus];
+        out[0]=3u; /* observed exact-VID gamepad, independent report ID */
+    } else {
+        c=cap[1].received?&cap[1]:&cap[0];
+        out[0]=cap[1].received?2u:(cap[0].received?1u:0u);
+    }
     out[1]=c->received;
     out[2]=c->changed;
     out[3]=((uint32_t)c->addr<<24)|((uint32_t)c->if_num<<16)|

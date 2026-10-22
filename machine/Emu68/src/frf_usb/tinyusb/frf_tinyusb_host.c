@@ -369,6 +369,10 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
             }
         }
     }
+    extern void frf_usb_target_capture(uint8_t,uint8_t,const uint8_t*,uint16_t);
+    extern int frf_tinyusb_pad_port2_owner(uint8_t,uint8_t);
+    if(frf_tinyusb_pad_port2_owner(addr,idx))
+        frf_usb_target_capture(addr,idx,data,len);
     frf_usb_packet_capture(1u,addr,idx,data,len);
     ++frf_hid_rx_count;
     if(len==27u && (data[0]==1u || data[0]==2u || data[0]==3u)){

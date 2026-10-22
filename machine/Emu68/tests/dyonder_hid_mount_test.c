@@ -58,6 +58,7 @@ extern void frf_tinyusb_pad_mount(uint8_t,uint8_t,const uint8_t*,uint16_t);
 extern int frf_tinyusb_pad_is_dyonder_interface(uint8_t,uint8_t);
 extern void frf_tinyusb_pad_unmount(uint8_t,uint8_t);
 extern void frf_tinyusb_pad_report(uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern int frf_tinyusb_pad_port2_owner(uint8_t,uint8_t);
 extern uint32_t frf_tinyusb_gamepad_count(void);
 extern uint32_t frf_tinyusb_dyonder_reports(void);
 extern uint32_t frf_tinyusb_dyonder_ignored(void);
@@ -171,6 +172,11 @@ int main(void)
        another non-boot interface. A hard-coded idx==0 gave PAD:00. */
     frf_tinyusb_pad_mount(4,2,mouse_only,3);
     assert(frf_tinyusb_gamepad_count()==1);
+    assert(frf_tinyusb_pad_port2_owner(4,2));
+    frf_tinyusb_pad_mount(4,0,mouse_only,3);
+    assert(!frf_tinyusb_pad_port2_owner(4,0));
+    assert(frf_tinyusb_pad_port2_owner(4,2));
+    frf_tinyusb_pad_unmount(4,0);
     frf_tinyusb_pad_unmount(4,2);
     assert(frf_tinyusb_gamepad_count()==0);
     /* R21 real Pi3 photograph: USB daddr1 VID=7E05 PID=0920,
