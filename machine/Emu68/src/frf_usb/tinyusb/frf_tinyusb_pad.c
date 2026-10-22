@@ -31,7 +31,10 @@ static struct pad_itf pads[FRF_PAD_SLOTS];
 volatile uint8_t frf_r26_receiver_addr;
 volatile uint8_t frf_r32_receiver_addr;
 static uint32_t active_pads,gamepad_reports;
+static volatile uint32_t r34_mount_calls,r34_claimed,r34_late_claimed;
 static volatile uint32_t r27_seen,r27_ok,r27_bad,r27_joy,r27_fire;
+void frf_r34_note_late(void){++r34_late_claimed;}
+void frf_r34_claim_stats(uint32_t o[3]){o[0]=r34_mount_calls;o[1]=r34_claimed;o[2]=r34_late_claimed;}
 uint32_t frf_r27_seen(void){return r27_seen;}
 uint32_t frf_r27_ok(void){return r27_ok;}
 uint32_t frf_r27_bad(void){return r27_bad;}
@@ -124,6 +127,7 @@ uint32_t frf_pad_is_joystick_usage(uint16_t page,uint8_t usage)
 void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
                           const uint8_t *desc,uint16_t desc_len)
 {
+    ++r34_mount_calls;
     if(!addr || find(addr,idx)) return;
     uint16_t vid=0,pid=0;
     const bool have_vidpid=tuh_vid_pid_get(addr,&vid,&pid);
@@ -155,7 +159,7 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
     }
     /* R30: the working USPi implementation uses the actual HID report
        descriptor for buttons, hat, and axes. Do that before raw fallback. */
-    if(have_vidpid && vid==0x220du && pid==0x330cu && idx==0u &&
+    if(have_vidpid && vid==0x220du && pid==0x330cu &&
        protocol==HID_ITF_PROTOCOL_NONE) {
         const int slot=first_free();
         if(slot<0) return;
@@ -163,6 +167,7 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         memset(p,0,sizeof(*p));
         p->addr=addr;p->idx=idx;
         frf_r32_receiver_addr=addr;
+        ++r34_claimed;
         p->next_submit_ms=tusb_time_millis_api()+10u;
         if(desc && desc_len &&
            frf_hid_gamepad_parse(&p->desc_map,desc,desc_len)) {
@@ -386,6 +391,7 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
     } else ++r20_rejected;
     return 1;
 }
+int frf_tinyusb_pad_has(uint8_t addr,uint8_t idx){return find(addr,idx)!=0;}
 int frf_r30_descriptor_receiver(uint8_t addr,uint8_t idx){struct pad_itf *p=find(addr,idx);return p && p->report_is_common==4u;}
 void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
                             const uint8_t *data,uint16_t len)

@@ -167,6 +167,12 @@ int main(void)
     assert(frf_r27_receive(4,0,raw01,27));
     assert(joy==0 && !fire);
     frf_tinyusb_pad_unmount(4,0);
+    /* R34: The same 220D:330C receiver may expose its HID report on
+       another non-boot interface. A hard-coded idx==0 gave PAD:00. */
+    frf_tinyusb_pad_mount(4,2,mouse_only,3);
+    assert(frf_tinyusb_gamepad_count()==1);
+    frf_tinyusb_pad_unmount(4,2);
+    assert(frf_tinyusb_gamepad_count()==0);
     /* R21 real Pi3 photograph: USB daddr1 VID=7E05 PID=0920,
        HID interface 0; R20 wrongly used 220D:330C.
        Detect at HID class mount BEFORE any neutral report arrives. */

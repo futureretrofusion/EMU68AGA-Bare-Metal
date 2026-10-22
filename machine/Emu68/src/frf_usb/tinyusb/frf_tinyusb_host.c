@@ -357,9 +357,21 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
                                 const uint8_t *data,uint16_t len)
 {
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+    extern int frf_tinyusb_pad_has(uint8_t,uint8_t);
+    if(protocol!=HID_ITF_PROTOCOL_KEYBOARD && !frf_tinyusb_pad_has(addr,idx)) {
+        uint16_t v=0,p=0;
+        if(tuh_vid_pid_get(addr,&v,&p) && v==0x220du && p==0x330cu && len==27u && data && data[0]>=1u && data[0]<=3u)
+        {
+            frf_tinyusb_pad_mount(addr,idx,0,0);
+            if(frf_tinyusb_pad_has(addr,idx)){
+                extern void frf_r34_note_late(void);
+                frf_r34_note_late();
+            }
+        }
+    }
     frf_usb_packet_capture(1u,addr,idx,data,len);
     ++frf_hid_rx_count;
-    if(idx==0u && len==27u && (data[0]==1u || data[0]==2u || data[0]==3u)){
+    if(len==27u && (data[0]==1u || data[0]==2u || data[0]==3u)){
         uint16_t v=0,pid=0;
         if(tuh_vid_pid_get(addr,&v,&pid) && v==0x220du && pid==0x330cu){
             volatile uint32_t *dst=data[0]==1u?r29_raw01:(data[0]==2u?r33_raw02:r29_raw03);
@@ -369,7 +381,7 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
             else ++r29_count03;
         }
     }
-    if(idx==0u) {
+    {
         uint16_t vid=0,pid=0;
         if(tuh_vid_pid_get(addr,&vid,&pid) &&
            ((vid==0x7e05u && pid==0x0920u) ||

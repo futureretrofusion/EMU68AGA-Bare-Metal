@@ -377,9 +377,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R33",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R34",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / PAD R33",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / PAD R34",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -571,7 +571,7 @@ static void frf_post_draw(void)
         post_rect(px,py,2u,ph,cyan);
         post_rect(px+pw-2u,py,2u,ph,cyan);
         post_rect(px,py+ph-2u,pw,2u,cyan);
-        post_text(px+10u,py+8u,"R33 LIVE PAD / USB INPUT",white);
+        post_text(px+10u,py+8u,"R34 LIVE PAD / USB INPUT",white);
         extern uint32_t frf_r31_target_mode(void);
         extern void frf_r33_report_counts(uint32_t[3]);
         uint32_t ids33[3]={0};frf_r33_report_counts(ids33);
@@ -581,8 +581,14 @@ static void frf_post_draw(void)
         post_hex(px+434u,py+8u,ids33[1],4,green);
         post_text(px+500u,py+8u,"ID3",white);
         post_hex(px+540u,py+8u,ids33[2],4,amber);
-        post_text(px+10u,py+29u,"SOURCE (1=HID,2=VENDOR):",white);
-        post_hex(px+276u,py+29u,native_usb_packet_words[0],8,green);
+        post_text(px+10u,py+29u,"MNT",white);
+        extern void frf_r34_claim_stats(uint32_t[3]);
+        uint32_t counts34[3]={0};frf_r34_claim_stats(counts34);
+        post_hex(px+60u,py+29u,counts34[0],4,cyan);
+        post_text(px+157u,py+29u,"CLM",white);
+        post_hex(px+203u,py+29u,counts34[1],4,green);
+        post_text(px+297u,py+29u,"LATE",white);
+        post_hex(px+348u,py+29u,counts34[2],4,amber);
         extern uint32_t frf_r32_button_mask(void);
         post_text(px+400u,py+29u,"BTN",white);
         post_hex(px+453u,py+29u,frf_r32_button_mask(),8,green);
@@ -606,7 +612,7 @@ static void frf_post_draw(void)
             const uint32_t difference=native_usb_packet_words[9u+i*3u];
             post_hex(px+435u,yy,difference,8,difference?amber:cyan);
         }
-        post_text(px+10u,py+396u,"R33 PAD RX:",white);
+        post_text(px+10u,py+396u,"R34 PAD RX:",white);
         post_hex(px+143u,py+396u,native_r20_compat[0],4,cyan);
         post_text(px+221u,py+396u,"OK:",white);
         post_hex(px+252u,py+396u,native_r20_compat[1],4,green);
