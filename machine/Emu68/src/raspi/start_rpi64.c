@@ -334,6 +334,15 @@ static volatile uint32_t native_usb_storage_blocks;
 static volatile uint32_t native_vendor_id,native_vendor_iface,native_vendor_kind;
 static volatile uint32_t native_vendor_mounts;
 static volatile uint32_t native_dyonder_ok,native_dyonder_ignored;
+/* Per USB address snapshot, not last-vendor wins. Bit flags:
+   1=whole device mount, 2=HID, 4=MSC, 8=vendor interface. */
+#define FRF_USB_ADDR_MAX 16u
+struct frf_device_snapshot {
+    volatile uint32_t id,iface,flags;
+};
+static struct frf_device_snapshot native_usb_addr[FRF_USB_ADDR_MAX];
+static volatile uint32_t native_usb_addr_events;
+
 
 #ifdef FRF_USB_DIAG_HOLD
 static volatile uint32_t native_usb_live[16];
@@ -362,9 +371,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / DYONDER R14",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / USB TRACE R15",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / DYONDER R14",cyan);
+    post_text(x+10,y+25,"TINYUSB PI3 / USB TRACE R15",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -463,10 +472,10 @@ static void frf_post_draw(void)
         post_rect(px,vpy,2u,164u,cyan);
         post_rect(px+308u,vpy,2u,164u,cyan);
         post_rect(px,vpy+162u,310u,2u,cyan);
-        post_text(px+9u,vpy+8u,"R14 PAD / DYONDER SCAN",white);
-        post_text(px+10u,vpy+36u,"VENDOR:",white);
+        post_text(px+9u,vpy+8u,"R15 LAST IF (HISTORY)",white);
+        post_text(px+10u,vpy+36u,"LAST VID:",white);
         post_hex(px+167u,vpy+36u,native_vendor_id,8,cyan);
-        post_text(px+10u,vpy+59u,"CLASS/IF:",white);
+        post_text(px+10u,vpy+59u,"LAST CLS:",white);
         post_hex(px+167u,vpy+59u,native_vendor_iface,8,cyan);
         post_text(px+10u,vpy+82u,"PROTOCOL:",white);
         post_hex(px+167u,vpy+82u,native_vendor_kind,8,cyan);
@@ -482,6 +491,40 @@ static void frf_post_draw(void)
         post_text(px+10u,vpy+128u,"PAD/MSC:",white);
         post_hex(px+167u,vpy+128u,(native_usb_pad_detected<<16) |
                  (native_usb_storage_detected&0xffffu),8,cyan);
+    }
+#endif
+#if defined(FRF_USB_TINYUSB)
+    /* R15: show EACH successfully discovered USB address separately.
+       R14's VENDOR field only recorded the last vendor-class interface;
+       it could refer to a completely unrelated device. Show flags and
+       interface on separate lines. No guessed devices or cached names. */
+    if(fb_height>=548u) {
+        const uint32_t px=x, py=y+238u, panelh=282u;
+        post_rect(px,py,310u,panelh,0x0822u);
+        post_rect(px,py,310u,2u,cyan);
+        post_rect(px,py,2u,panelh,cyan);
+        post_rect(px+308u,py,2u,panelh,cyan);
+        post_rect(px,py+panelh-2u,310u,2u,cyan);
+        post_text(px+9u,py+8u,"R15 EACH USB DEVICE / ADDRESS",white);
+        post_text(px+9u,py+27u,"FLAGS 01=DEV 02=HID 04=MSC",amber);
+        post_text(px+9u,py+45u,"      08=VENDOR INTERFACE",amber);
+        unsigned shown=0;
+        for(unsigned addr=1;addr<FRF_USB_ADDR_MAX && shown<7u;++addr) {
+            const uint32_t id=native_usb_addr[addr].id;
+            const uint32_t flags=native_usb_addr[addr].flags;
+            const uint32_t iface=native_usb_addr[addr].iface;
+            if(!flags) continue;
+            const uint32_t ry=py+67u+(shown*29u);
+            post_text(px+10u,ry,"D",white);
+            post_dec(px+18u,ry,addr,2,white);
+            post_hex(px+52u,ry,id,8,cyan);
+            post_text(px+144u,ry,"F:",white);
+            post_hex(px+169u,ry,flags,2,green);
+            post_text(px+10u,ry+13u,"IF:",white);
+            post_hex(px+52u,ry+13u,iface,8,cyan);
+            ++shown;
+        }
+        if(!shown) post_text(px+10u,py+70u,"NO USB DEVICE CALLBACKS",amber);
     }
 #endif
 #ifdef FRF_USB_DIAG_HOLD
@@ -502,7 +545,7 @@ static void frf_post_draw(void)
         post_rect(px,y,2u,ph,cyan);
         post_rect(px+308u,y,2u,ph,cyan);
         post_rect(px,y+ph-2u,310u,2u,cyan);
-        post_text(px+9u,y+8u,"R14 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+8u,"R15 USB-ONLY LIVE TEST",white);
         post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
         for (unsigned i=0;i<16;i++) {
             const uint32_t ry=y+47u+i*18u;
@@ -602,6 +645,23 @@ void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
 {
     __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
     native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_native_usb_device_event(uint32_t addr,uint32_t vidpid,
+                                       uint32_t iface,uint32_t event)
+{
+    if(addr==0u || addr>=FRF_USB_ADDR_MAX) return;
+    struct frf_device_snapshot *d=&native_usb_addr[addr];
+    if(event==0u) {
+        d->flags=0;d->iface=0;d->id=0;
+    } else {
+        if(vidpid) d->id=vidpid;
+        if(iface) d->iface=iface;
+        const uint32_t flag= event==1u?1u:event==2u?2u:
+                             event==3u?4u:event==4u?8u:0u;
+        d->flags|=flag;
+    }
+    ++native_usb_addr_events;
     frf_post_draw();
 }
 void frf_post_native_usb_pad_stats(uint32_t accepted,uint32_t ignored)

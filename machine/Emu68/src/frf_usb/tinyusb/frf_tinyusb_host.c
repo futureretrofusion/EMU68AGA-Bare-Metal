@@ -44,6 +44,9 @@ extern int frf_pad_is_dyonder(uint16_t,uint16_t);
 extern uint32_t frf_tinyusb_dyonder_reports(void);
 extern uint32_t frf_tinyusb_dyonder_ignored(void);
 extern void frf_tinyusb_pad_retry_task(void);
+extern int frf_tinyusb_pad_is_dyonder_interface(uint8_t,uint8_t);
+extern void frf_post_native_usb_device_event(uint32_t,uint32_t,uint32_t,uint32_t);
+
 extern void frf_post_native_usb_pad_stats(uint32_t,uint32_t);
 extern void frf_tinyusb_xpad_task(void);
 extern uint32_t frf_tinyusb_xpad_count(void);
@@ -155,10 +158,12 @@ void tuh_mount_cb(uint8_t daddr)
     uint16_t vid=0,pid=0;
     (void)tuh_vid_pid_get(daddr,&vid,&pid);
     frf_usb_enumerations++;
+    frf_post_native_usb_device_event(daddr,((uint32_t)vid<<16)|pid,0u,1u);
     kprintf("[FRF-TINYUSB] USB device mount addr=%u VID=%04x PID=%04x\\n",daddr,vid,pid);
 }
 void tuh_umount_cb(uint8_t daddr)
 {
+    frf_post_native_usb_device_event(daddr,0u,0u,0u);
     kprintf("[FRF-TINYUSB] device removed address=%u\\n",daddr);
 }
 void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
@@ -185,8 +190,11 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
         frf_post_native_usb_vendor_probe(((uint32_t)vid<<16)|pid,
                                            0x03000000u|idx,3u);
     }
-    /* All HID mounts count, even generic interfaces without boot report
-       protocol (composite mice, modern keyboards, gamepads). */
+    /* Log every HID device separately: the previous R14 panel only
+       displayed the LAST vendor interface, possibly an unrelated drive. */
+    frf_post_native_usb_device_event(addr,
+        ((uint32_t)pad_vid<<16)|pad_pid,
+        0x03000000u|((uint32_t)protocol<<8)|idx,2u);
     frf_usb_hid_interfaces++;
     if(protocol==HID_ITF_PROTOCOL_KEYBOARD) frf_usb_hid_keyboard++;
     else if(protocol==HID_ITF_PROTOCOL_MOUSE) {
@@ -206,6 +214,23 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
                                 const uint8_t *data,uint16_t len)
 {
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+    /* Dyonder ID1 joystick and ID5 relative mouse can share the very
+       same Boot-Mouse HID interface. Route by report ID before applying
+       the ordinary three-byte boot-mouse decoding. */
+    const int dyonder=frf_tinyusb_pad_is_dyonder_interface(addr,idx);
+    if(dyonder) {
+        frf_tinyusb_pad_report(addr,idx,data,len);
+        if(len>=4u && data[0]==5u && protocol==HID_ITF_PROTOCOL_MOUSE) {
+            const uint8_t buttons=data[1];
+            aga_virtual_mouse_update((int)(int8_t)data[2],
+                                     (int)(int8_t)data[3],buttons&7u);
+            frf_usb_mouse_seen=1;
+            frf_usb_mouse_buttons=buttons;
+            ++frf_usb_reports;
+        }
+        (void)tuh_hid_receive_report(addr,idx);
+        return;
+    }
     if(protocol==HID_ITF_PROTOCOL_KEYBOARD && len>=8u) {
         frf_native_usb_keyboard_boot_report(data);
         frf_usb_reports++;
@@ -225,6 +250,10 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
 void tuh_msc_mount_cb(uint8_t addr)
 {
     frf_tinyusb_msc_mount(addr);
+    uint16_t vid=0,pid=0;
+    (void)tuh_vid_pid_get(addr,&vid,&pid);
+    frf_post_native_usb_device_event(addr,((uint32_t)vid<<16)|pid,
+                                      0x08065000u,3u);
     ++frf_usb_storage;
     kprintf("[FRF-TINYUSB] MSC device enumerated address=%u; guest disk not mapped\\n",addr);
 }

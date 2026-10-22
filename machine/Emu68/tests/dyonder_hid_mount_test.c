@@ -45,13 +45,15 @@ uint8_t tuh_hid_parse_report_descriptor(tuh_hid_report_info_t* info,
                                         const uint8_t *desc,uint16_t len) {
     if(max_info && desc && len) {
         info[0].usage_page=HID_USAGE_PAGE_DESKTOP;
-        info[0].usage=HID_USAGE_DESKTOP_GAMEPAD;
+        info[0].usage=(desc[0]==2u)?
+            HID_USAGE_DESKTOP_MOUSE:HID_USAGE_DESKTOP_GAMEPAD;
         info[0].report_id=1;
         return 1u;
     }
     return 0;
 }
 extern void frf_tinyusb_pad_mount(uint8_t,uint8_t,const uint8_t*,uint16_t);
+extern int frf_tinyusb_pad_is_dyonder_interface(uint8_t,uint8_t);
 extern void frf_tinyusb_pad_unmount(uint8_t,uint8_t);
 extern void frf_tinyusb_pad_report(uint8_t,uint8_t,const uint8_t*,uint16_t);
 extern uint32_t frf_tinyusb_gamepad_count(void);
@@ -63,8 +65,23 @@ extern uint32_t frf_tinyusb_pad_recovered(void);
 int main(void)
 {
     uint8_t desc[3]={5,1,9};
-    frf_tinyusb_pad_mount(1,1,desc,3); /* boot mouse must never be counted */
+    uint8_t mouse_only[3]={2,1,9};
+    frf_tinyusb_pad_mount(1,1,mouse_only,3); /* ordinary boot mouse */
     assert(frf_tinyusb_gamepad_count()==0);
+    /* Same HID_BOOT_MOUSE interface with actual gamepad collection:
+       ID 01=10-byte pad, ID 05=mouse. Must accept real pad safely. */
+    frf_tinyusb_pad_mount(1,1,desc,3);
+    assert(frf_tinyusb_gamepad_count()==1);
+    assert(frf_tinyusb_pad_is_dyonder_interface(1,1)==1);
+    uint8_t composite_pad[10]={1,1,0,6,128,128,128,128,0,0};
+    frf_tinyusb_pad_report(1,1,composite_pad,10);
+    assert(joy==0x0300u && fire==1);
+    uint8_t composite_mouse[6]={5,0,7,8,0,0};
+    frf_tinyusb_pad_report(1,1,composite_mouse,6);
+    assert(joy==0x0300u && fire==1);
+    frf_tinyusb_pad_unmount(1,1);
+    assert(frf_tinyusb_gamepad_count()==0);
+    calls=0;
     frf_tinyusb_pad_mount(1,0,desc,3);
     assert(frf_tinyusb_gamepad_count()==1);
     frf_tinyusb_pad_retry_task();
@@ -89,15 +106,15 @@ int main(void)
     frf_tinyusb_pad_mount(2,0,desc,3); /* mode-changing 0575 candidate */
     assert(frf_tinyusb_gamepad_count()==1);
     frf_tinyusb_pad_report(2,0,mouse,6);
-    assert(frf_tinyusb_dyonder_ignored()==2);
+    assert(frf_tinyusb_dyonder_ignored()==3);
     frf_tinyusb_pad_report(2,0,left_fire,10); /* promote only on ID1/10B */
-    assert(frf_tinyusb_dyonder_reports()==3);
+    assert(frf_tinyusb_dyonder_reports()==4);
     assert(joy==0x0300 && fire);
     frf_tinyusb_pad_unmount(2,0);
     frf_tinyusb_pad_mount(3,0,desc,3); /* existing generic HID still works */
     assert(frf_tinyusb_gamepad_count()==1);
     frf_tinyusb_pad_unmount(3,0);
     assert(frf_tinyusb_gamepad_count()==0);
-    puts("DYONDER R14 TRUE MOUNT + ID1 REPORT + ID5 MOUSE ISOLATION + 0575 + GENERIC HID PASS");
+    puts("R15 DYONDER composite HID boot-mouse/ID1 pad, ID5 mouse isolate, 0575, retry, generic HID PASS");
     return 0;
 }

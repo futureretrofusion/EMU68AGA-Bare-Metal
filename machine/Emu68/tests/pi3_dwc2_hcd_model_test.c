@@ -30,6 +30,7 @@ void aga_virtual_joy_set(int port,uint16_t joy,int fire) {
 }
 void kprintf(const char *fmt,...) {(void)fmt;}
 void frf_post_native_usb_vendor_probe(uint32_t vidpid,uint32_t iface,uint32_t kind) { (void)vidpid;(void)iface;(void)kind; }
+void frf_post_native_usb_device_event(uint32_t addr,uint32_t id,uint32_t iface,uint32_t event) { (void)addr;(void)id;(void)iface;(void)event; }
 extern void frf_tinyusb_pad_mount(uint8_t,uint8_t,const uint8_t*,uint16_t);
 extern void frf_tinyusb_pad_unmount(uint8_t,uint8_t);
 extern void frf_tinyusb_pad_report(uint8_t,uint8_t,const uint8_t*,uint16_t);

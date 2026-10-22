@@ -23,6 +23,7 @@ static uint32_t xpad_packets,xpad_errors;
 extern void aga_virtual_joy_set(int port,uint16_t joydat,int fire);
 extern void kprintf(const char*,...);
 extern void frf_post_native_usb_vendor_probe(uint32_t vidpid,uint32_t iface,uint32_t kind);
+extern void frf_post_native_usb_device_event(uint32_t,uint32_t,uint32_t,uint32_t);
 
 uint32_t frf_tinyusb_xpad_count(void) {
     uint32_t count=0;
@@ -99,12 +100,13 @@ static uint16_t driver_open(uint8_t rhport,uint8_t addr,
     if(!tuh_vid_pid_get(addr,&vid,&pid)) return 0;
     int kind=frf_xpad_interface_kind(vid,pid,itf->bInterfaceNumber,
          itf->bInterfaceClass,itf->bInterfaceSubClass,itf->bInterfaceProtocol);
-    if(itf->bInterfaceClass==0xffu)
-       frf_post_native_usb_vendor_probe(((uint32_t)vid<<16)|pid,
-         ((uint32_t)itf->bInterfaceClass<<24) |
+    if(itf->bInterfaceClass==0xffu) {
+       const uint32_t classif=((uint32_t)itf->bInterfaceClass<<24) |
          ((uint32_t)itf->bInterfaceSubClass<<16)|
-         ((uint32_t)itf->bInterfaceProtocol<<8)|itf->bInterfaceNumber,
-         (uint32_t)kind);
+         ((uint32_t)itf->bInterfaceProtocol<<8)|itf->bInterfaceNumber;
+       frf_post_native_usb_vendor_probe(((uint32_t)vid<<16)|pid,classif,(uint32_t)kind);
+       frf_post_native_usb_device_event(addr,((uint32_t)vid<<16)|pid,classif,4u);
+    }
     if(!kind || find(addr)) return 0;
     struct frf_xpad *p=free_slot();
     if(!p) return 0;

@@ -27,6 +27,18 @@ uint32_t frf_tinyusb_pad_recovered(void) {return pad_submit_recovered;}
 
 uint32_t frf_tinyusb_dyonder_reports(void) {return dyonder_report_ok;}
 uint32_t frf_tinyusb_dyonder_ignored(void) {return dyonder_report_ignore;}
+int frf_tinyusb_pad_is_dyonder_interface(uint8_t addr,uint8_t idx)
+{
+    const struct pad_itf *p;
+    for(unsigned i=0;i<FRF_PAD_SLOTS;++i) {
+        p=&pads[i];
+        if(p->addr==addr && p->idx==idx &&
+           (p->report_is_common==2u || p->report_is_common==3u))
+            return 1;
+    }
+    return 0;
+}
+
 int frf_pad_is_dyonder(uint16_t vid,uint16_t pid)
 {
     return vid==0x2563u && (pid==0x0576u || pid==0x0575u);
@@ -62,13 +74,23 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
     if(!addr || find(addr,idx)) return;
     uint16_t vid=0,pid=0;
     const bool have_vidpid=tuh_vid_pid_get(addr,&vid,&pid);
-    /* This receiver can expose both mouse (ID5) and gamepad (ID1).
-       Never claim a boot mouse or keyboard HID interface as gamepad. */
+    /* A Dyonder can expose gamepad ID1 and mouse ID5 in one HID
+       interface. Its boot-mouse protocol alone is NOT proof that the
+       report descriptor is mouse-only. Inspect the report's top-level
+       HID usage; only claim a boot-mouse interface if it also advertises
+       a joystick or gamepad collection. Never claim a boot keyboard. */
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
-    if(protocol==HID_ITF_PROTOCOL_KEYBOARD ||
-       protocol==HID_ITF_PROTOCOL_MOUSE) return;
-    if(have_vidpid && frf_pad_is_dyonder(vid,pid) &&
-       protocol!=HID_ITF_PROTOCOL_KEYBOARD && protocol!=HID_ITF_PROTOCOL_MOUSE) {
+    if(protocol==HID_ITF_PROTOCOL_KEYBOARD) return;
+    tuh_hid_report_info_t info[8];
+    uint8_t n=(desc && desc_len)?
+        tuh_hid_parse_report_descriptor(info,8u,desc,desc_len):0u;
+    bool gamepad_collection=false;
+    for(uint8_t j=0;j<n;++j) {
+        if(frf_pad_is_joystick_usage(info[j].usage_page,info[j].usage))
+            gamepad_collection=true;
+    }
+    if(protocol==HID_ITF_PROTOCOL_MOUSE && !gamepad_collection) return;
+    if(have_vidpid && frf_pad_is_dyonder(vid,pid)) {
         int slot=first_free();
         if(slot<0) return;
         struct pad_itf *p=&pads[slot];
@@ -80,9 +102,6 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
                 vid,pid,addr,idx,p->report_is_common);
         return;
     }
-    tuh_hid_report_info_t info[8];
-    uint8_t n=(desc && desc_len)?
-        tuh_hid_parse_report_descriptor(info,8u,desc,desc_len):0u;
     for(uint8_t j=0;j<n;++j) {
         if(!frf_pad_is_joystick_usage(info[j].usage_page,info[j].usage))
             continue;
