@@ -383,6 +383,11 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
     frf_hid_source=((uint32_t)addr<<16)|idx;
     frf_hid_raw_word0=pack4(data,len,0u);
     frf_hid_raw_word1=pack4(data,len,4u);
+    extern int frf_r30_descriptor_receiver(uint8_t,uint8_t);
+    if(frf_r30_descriptor_receiver(addr,idx)) {
+        frf_tinyusb_pad_report(addr,idx,data,len);
+        return;
+    }
     if(frf_r27_receive(addr,idx,data,len)) {
         /* R27 receiver is paced by CPU1 retry task, not callback. */
         return;

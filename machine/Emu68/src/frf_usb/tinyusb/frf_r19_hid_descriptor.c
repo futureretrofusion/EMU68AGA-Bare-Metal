@@ -165,6 +165,20 @@ int frf_hid_gamepad_parse(struct frf_hid_map *out,const uint8_t *data,
   out->first_id=(uint8_t)active_id;
   return out->valid;
 }
+/* HID uses independent report IDs. Preserve fields delivered in other IDs. */
+unsigned frf_hid_gamepad_report_capabilities(const struct frf_hid_map *m,uint8_t report_id)
+{
+  if(!m || !m->valid)return 0;
+  unsigned flags=0;
+  for(unsigned i=0;i<m->count;++i) {
+    const struct frf_hid_field *f=&m->field[i];
+    if(m->has_ids && f->report_id!=report_id)continue;
+    if(f->kind==BUTTON)flags|=2u;
+    else if(f->kind==AXIS_X || f->kind==AXIS_Y || f->kind==HAT ||
+            (f->kind>=DP_UP && f->kind<=DP_LEFT))flags|=1u;
+  }
+  return flags;
+}
 static uint32_t extract_bits(const uint8_t *p,uint16_t len,unsigned bit,
                              unsigned width) {
   if(width==0 || width>32 || bit+width>(unsigned)len*8u)return 0u;

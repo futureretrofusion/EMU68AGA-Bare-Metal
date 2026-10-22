@@ -19,6 +19,8 @@ struct pad_itf {
     uint32_t reports;
     uint32_t next_submit_ms,retries,recoveries;
     struct frf_hid_map desc_map;
+    uint16_t joy_report_state;
+    uint8_t fire_report_state;
 };
 static struct pad_itf pads[FRF_PAD_SLOTS];
 volatile uint8_t frf_r26_receiver_addr;
@@ -141,12 +143,30 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
                 addr,idx,active_pads);
         return;
     }
-    /* R28: observed receiver USB D04 ID1/27B gameplay plus ID3 status. */
-    if(have_vidpid && vid==0x220du && pid==0x330cu && idx==0u && protocol==HID_ITF_PROTOCOL_NONE) {
-        int slot=first_free();if(slot<0)return;
-        struct pad_itf *p=&pads[slot];memset(p,0,sizeof(*p));
-        p->addr=addr;p->idx=idx;p->report_is_common=6u;
+    /* R30: the working USPi implementation uses the actual HID report
+       descriptor for buttons, hat, and axes. Do that before raw fallback. */
+    if(have_vidpid && vid==0x220du && pid==0x330cu && idx==0u &&
+       protocol==HID_ITF_PROTOCOL_NONE) {
+        const int slot=first_free();
+        if(slot<0) return;
+        struct pad_itf *p=&pads[slot];
+        memset(p,0,sizeof(*p));
+        p->addr=addr;p->idx=idx;
         p->next_submit_ms=tusb_time_millis_api()+10u;
+        if(desc && desc_len &&
+           frf_hid_gamepad_parse(&p->desc_map,desc,desc_len)) {
+            p->report_is_common=4u;
+            p->report_id=p->desc_map.first_id;
+            descriptor_fields=p->desc_map.count;
+            descriptor_last_address=((uint32_t)addr<<16)|idx;
+            kprintf("[FRF-R30] 220D:330C descriptor fields=%u firstID=%u\\n",
+                p->desc_map.count,p->report_id);
+        } else {
+            /* Retain fallback only if descriptor is truly unavailable.
+               R29's candidate button nibble is not validated. */
+            p->report_is_common=6u;
+            kprintf("[FRF-R30] 220D:330C descriptor unavailable, raw fallback\\n");
+        }
         ++active_pads;
         return;
     }
@@ -339,6 +359,7 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
     } else ++r20_rejected;
     return 1;
 }
+int frf_r30_descriptor_receiver(uint8_t addr,uint8_t idx){struct pad_itf *p=find(addr,idx);return p && p->report_is_common==4u;}
 void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
                             const uint8_t *data,uint16_t len)
 {
@@ -348,6 +369,11 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
         ++descriptor_packets;
         uint16_t joy=0;int fire=0;
         if(frf_hid_gamepad_decode(&p->desc_map,data,len,&joy,&fire)) {
+            const unsigned caps=frf_hid_gamepad_report_capabilities(
+                &p->desc_map,p->desc_map.has_ids?data[0]:0u);
+            if(caps&1u)p->joy_report_state=joy;
+            if(caps&2u)p->fire_report_state=(uint8_t)(fire!=0);
+            joy=p->joy_report_state;fire=p->fire_report_state;
             /* Preserve first registered gamepad ownership of port 2;
                mouse and non-controller reports never reach this path. */
             for(unsigned i=0;i<FRF_PAD_SLOTS;i++)
@@ -410,7 +436,8 @@ void frf_tinyusb_pad_retry_task(void)
         if(!p->addr || (int32_t)(now-p->next_submit_ms)<0) continue;
         /* Only exact R21 HID receiver is paced at 100Hz to prevent
            its interrupt-IN reports starving genuine keyboard releases. */
-        p->next_submit_ms=now+((p->report_is_common==5u || p->report_is_common==6u)?10u:500u);
+        p->next_submit_ms=now+((p->report_is_common==5u || p->report_is_common==6u ||
+            (p->report_is_common==4u && p->desc_map.valid))?10u:500u);
         ++pt; if(!tuh_hid_receive_ready(p->addr,p->idx)){++nr;continue;}
         if(!tuh_hid_receive_report(p->addr,p->idx)) {
             ++sf; ++p->retries;
