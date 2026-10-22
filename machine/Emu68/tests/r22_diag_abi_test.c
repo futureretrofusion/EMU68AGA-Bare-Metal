@@ -5,7 +5,7 @@
 #include "../src/frf_usb/frf_usb_mass.h"
 int main(void)
 {
-  _Static_assert(sizeof(struct frf_r22_diag)==21u*4u,"ABI mismatch");
+  _Static_assert(sizeof(struct frf_r22_diag)==33u*4u,"ABI mismatch");
   _Static_assert(FRF_R22_DIAG_OFFSET>=0x3000u+256u,"legacy pad block overlap");
   _Static_assert(FRF_R22_DIAG_OFFSET+sizeof(struct frf_r22_diag)<=FRF_UM_BOARD_BYTES,"board overflow");
   struct frf_r22_diag d={0};

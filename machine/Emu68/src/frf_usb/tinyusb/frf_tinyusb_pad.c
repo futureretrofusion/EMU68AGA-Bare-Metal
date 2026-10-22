@@ -123,7 +123,7 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         struct pad_itf *p=&pads[slot];
         memset(p,0,sizeof(*p));
         p->addr=addr;p->idx=idx;p->report_is_common=5u;
-        p->next_submit_ms=tusb_time_millis_api()+500u;
+        p->next_submit_ms=tusb_time_millis_api()+10u;
         ++active_pads;
         r20_dev=((uint32_t)addr<<16)|idx;
         kprintf("[FRF-R21] 7E05:0920 HID controller claimed at USB %u interface %u, PAD=%u\n",
@@ -280,7 +280,7 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
         p=&pads[slot];
         memset(p,0,sizeof(*p));
         p->addr=addr;p->idx=idx;p->report_is_common=5u;
-        p->next_submit_ms=tusb_time_millis_api()+500u;
+        p->next_submit_ms=tusb_time_millis_api()+10u;
         ++active_pads;
         r20_dev=((uint32_t)addr<<16)|idx;
         kprintf("[FRF-R21] 7E05:0920 observed 24B controller candidate at USB %u HID %u\n",addr,idx);
@@ -374,7 +374,9 @@ void frf_tinyusb_pad_retry_task(void)
     for(unsigned i=0;i<FRF_PAD_SLOTS;i++) {
         struct pad_itf *p=&pads[i];
         if(!p->addr || (int32_t)(now-p->next_submit_ms)<0) continue;
-        p->next_submit_ms=now+500u;
+        /* Only exact R21 HID receiver is paced at 100Hz to prevent
+           its interrupt-IN reports starving genuine keyboard releases. */
+        p->next_submit_ms=now+(p->report_is_common==5u?10u:500u);
         if(!tuh_hid_receive_ready(p->addr,p->idx)) continue;
         if(!tuh_hid_receive_report(p->addr,p->idx)) {
             ++p->retries;

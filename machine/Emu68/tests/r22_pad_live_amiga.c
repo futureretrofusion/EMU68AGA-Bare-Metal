@@ -15,7 +15,7 @@ struct ExpansionBase *ExpansionBase;
 static uint32_t read32(volatile const uint32_t *p) {return *p;}
 int main(void)
 {
-    printf("EMU68AGA R22 live controller link monitor - Zorro-II board\n");
+    printf("EMU68AGA R23 live USB + keyboard isolation monitor - Zorro-II board\n");
     ExpansionBase=(struct ExpansionBase *)OpenLibrary("expansion.library",37);
     if(!ExpansionBase){puts("expansion.library unavailable");return 10;}
     struct ConfigDev *cd=FindConfigDev(NULL,0x6d73,0x69);
@@ -55,6 +55,14 @@ int main(void)
         const uint32_t writes=read32(&d->host_joy_writes);
         const uint32_t guest=read32(&d->guest_joy_reads);
         const uint32_t cia=read32(&d->guest_cia_reads);
+        const uint32_t kbd_ok=read32(&d->kbd_boot_ok);
+        const uint32_t kbd_blocked=read32(&d->kbd_receiver_blocked);
+        const uint32_t kbd_bad=read32(&d->kbd_bad_length);
+        const uint32_t kbd_held=read32(&d->kbd_held);
+        const uint32_t kbd_keys=read32(&d->kbd_transitions);
+        const uint32_t kbd_q=read32(&d->kbd_cia_queue);
+        const uint32_t kbd_drop=read32(&d->kbd_cia_drops);
+        const uint32_t kbd_ack=read32(&d->kbd_cia_timeouts);
         const uint32_t seq2=read32(&d->sequence);
         if(seq1!=seq2 || (seq2&1u)){Delay(2);continue;}
         if(i==0) puts("Press Dyonder D-pad / stick / A: values update every ~0.5 sec");
@@ -69,6 +77,11 @@ int main(void)
             (unsigned long)raw0,(unsigned long)raw1,
             (unsigned long)(state&65535u),(unsigned long)((state>>16)&1u),
             (unsigned long)writes,(unsigned long)guest,(unsigned long)cia);
+        printf("    R23 KBD boot=%lu blockedPad=%lu badLen=%lu keys=%lu held=%lu queue=%lu drops=%lu ackTO=%lu\n",
+             (unsigned long)kbd_ok,(unsigned long)kbd_blocked,
+             (unsigned long)kbd_bad,(unsigned long)kbd_keys,
+             (unsigned long)kbd_held,(unsigned long)kbd_q,
+             (unsigned long)kbd_drop,(unsigned long)kbd_ack);
         if(tick==last_tick && i>1u) puts("    WARNING: CPU1 telemetry clock has not advanced!");
         last_tick=tick;old_rx=rx;old_map=map;old_joy=state;
         Delay(25u);

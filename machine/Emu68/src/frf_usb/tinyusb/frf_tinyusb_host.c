@@ -12,6 +12,7 @@
 #include "tusb.h"
 #include "../frf_usb_mass.h"
 #include "../frf_r22_input_diag.h"
+#include "frf_r23_keyboard_guard.h"
 
 #include "host/hcd.h"
 #include "class/hid/hid_host.h"
@@ -23,6 +24,11 @@ extern volatile uint8_t frf_usb_mouse_present;
 extern volatile uint8_t frf_usb_mouse_seen;
 extern volatile uint8_t frf_usb_mouse_buttons;
 extern void frf_native_usb_keyboard_boot_report(const uint8_t report[8]);
+extern void frf_native_usb_keyboard_force_release(void);
+extern void frf_native_usb_keyboard_stats(uint32_t out[5]);
+extern void frf_vcia_keyboard_stats(uint32_t*,uint32_t*,uint32_t*,
+                                    uint32_t*,uint32_t*);
+
 extern int frf_native_usb_reboot_requested(void);
 extern void aga_reboot(int tryboot);
 extern void aga_virtual_mouse_update(int dx,int dy,unsigned buttons);
@@ -103,6 +109,10 @@ static uint32_t frf_usb_diag_last_irq,frf_usb_diag_chan_irq,frf_usb_diag_port_ir
 extern void frf_post_native_usb_trace(const uint32_t*,unsigned);
 #endif
 static volatile uint32_t frf_usb_reports,frf_usb_enumerations;
+static volatile uint32_t frf_r23_keyboard_report_ok,frf_r23_gamepad_kbd_blocked;
+static volatile uint32_t frf_r23_malformed_kbd,frf_r23_keyboard_last;
+static volatile uint32_t frf_r23_keyboard_last_mount;
+
 /* Record RAW successful USB HID packets before any gamepad decoder.
    This identifies controller-synced-but-not-delivered failures. */
 static volatile uint32_t frf_hid_rx_count,frf_hid_raw_word0,frf_hid_raw_word1;
@@ -140,6 +150,18 @@ static void frf_r22_publish(uint32_t now)
     d->guest_joy_reads=g[2];d->guest_cia_reads=g[3];
     d->msc_present=frf_tinyusb_msc_devices();
     d->msc_blocks=frf_tinyusb_msc_capacity();
+    uint32_t kb[5]={0};
+    frf_native_usb_keyboard_stats(kb);
+    d->kbd_boot_ok=frf_r23_keyboard_report_ok;
+    d->kbd_receiver_blocked=frf_r23_gamepad_kbd_blocked;
+    d->kbd_bad_length=frf_r23_malformed_kbd;
+    d->kbd_last=frf_r23_keyboard_last;
+    d->kbd_reports=kb[0];d->kbd_transitions=kb[1];
+    d->kbd_held=kb[3];d->kbd_modifiers=kb[2];
+    uint32_t depth=0,peak=0,drops=0,ackbad=0,ackok=0;
+    frf_vcia_keyboard_stats(&depth,&peak,&drops,&ackbad,&ackok);
+    d->kbd_cia_queue=depth;d->kbd_cia_drops=drops;
+    d->kbd_cia_timeouts=ackbad;d->kbd_cia_acks=ackok;
     __atomic_thread_fence(__ATOMIC_RELEASE);
     d->sequence=seq+2u;
     __atomic_thread_fence(__ATOMIC_RELEASE);
@@ -277,7 +299,14 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
         ((uint32_t)pad_vid<<16)|pad_pid,
         0x03000000u|((uint32_t)protocol<<8)|idx,2u);
     frf_usb_hid_interfaces++;
-    if(protocol==HID_ITF_PROTOCOL_KEYBOARD) frf_usb_hid_keyboard++;
+    if(protocol==HID_ITF_PROTOCOL_KEYBOARD) {
+        uint16_t v=0,p=0;
+        (void)tuh_vid_pid_get(addr,&v,&p);
+        if(v!=0x7e05u || p!=0x0920u) {
+            frf_usb_hid_keyboard++;
+            frf_r23_keyboard_last_mount=((uint32_t)addr<<16)|idx;
+        } else ++frf_r23_gamepad_kbd_blocked;
+    }
     else if(protocol==HID_ITF_PROTOCOL_MOUSE) {
         frf_usb_hid_mouse++;
         frf_usb_mouse_present=1;
@@ -289,6 +318,10 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
 }
 void tuh_hid_umount_cb(uint8_t addr,uint8_t idx)
 {
+    if(frf_r23_keyboard_last_mount==(((uint32_t)addr<<16)|idx)) {
+        frf_native_usb_keyboard_force_release();
+        frf_r23_keyboard_last_mount=0u;
+    }
     frf_tinyusb_pad_unmount(addr,idx);
 }
 void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
@@ -313,7 +346,8 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
     frf_hid_raw_word0=pack4(data,len,0u);
     frf_hid_raw_word1=pack4(data,len,4u);
     if(frf_r20_compat_receive(addr,idx,data,len)) {
-        (void)tuh_hid_receive_report(addr,idx);
+        /* The CPU1 task schedules the next controller read in 10ms;
+           do not recursively saturate USB host channels here. */
         return;
     }
     /* A real descriptor-backed gamepad can expose an HID boot-mouse
@@ -341,9 +375,19 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
         (void)tuh_hid_receive_report(addr,idx);
         return;
     }
-    if(protocol==HID_ITF_PROTOCOL_KEYBOARD && len>=8u) {
-        frf_native_usb_keyboard_boot_report(data);
-        frf_usb_reports++;
+    if(protocol==HID_ITF_PROTOCOL_KEYBOARD) {
+        uint16_t vid=0,pid=0;
+        (void)tuh_vid_pid_get(addr,&vid,&pid);
+        if(frf_r23_keyboard_allowed(vid,pid,protocol,len)) {
+            frf_native_usb_keyboard_boot_report(data);
+            ++frf_usb_reports;
+            ++frf_r23_keyboard_report_ok;
+            frf_r23_keyboard_last=((uint32_t)addr<<16)|idx;
+        } else if(vid==0x7e05u && pid==0x0920u) {
+            ++frf_r23_gamepad_kbd_blocked;
+        } else {
+            ++frf_r23_malformed_kbd;
+        }
     } else if(protocol==HID_ITF_PROTOCOL_MOUSE && len>=3u) {
         uint8_t buttons=data[0];
         aga_virtual_mouse_update((int)(int8_t)data[1],

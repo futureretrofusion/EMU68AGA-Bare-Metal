@@ -70,6 +70,24 @@ void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
 {
     frf_native_keyboard_report(&native_keyboard, report, native_key_emit, 0);
 }
+/* Releases every guest key on a real keyboard HID disconnect, rather
+   than leaving the last pressed key held indefinitely by AmigaOS. */
+void frf_native_usb_keyboard_force_release(void)
+{
+    static const uint8_t all_up[8]={0};
+    frf_native_keyboard_report(&native_keyboard,all_up,native_key_emit,0);
+}
+void frf_native_usb_keyboard_stats(uint32_t out[5])
+{
+    if(!out) return;
+    out[0]=native_keyboard.reports;
+    out[1]=native_keyboard.transitions;
+    out[2]=native_keyboard.modifiers;
+    uint32_t held=0;
+    for(unsigned i=0;i<6u;i++) if(native_keyboard.keys[i]>=4u) ++held;
+    out[3]=held;
+    out[4]=native_keyboard.host_reboot_pending;
+}
 int frf_native_usb_reboot_requested(void)
 {
     return frf_native_keyboard_take_reboot(&native_keyboard);

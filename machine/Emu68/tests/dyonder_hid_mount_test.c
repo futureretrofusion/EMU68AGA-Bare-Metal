@@ -159,6 +159,24 @@ int main(void)
     assert(frf_tinyusb_gamepad_count()==0);
     frf_tinyusb_pad_mount(5,0,mouse_only,3); /* descriptor does NOT say pad */
     assert(frf_tinyusb_gamepad_count()==1);
+    /* R23: gamepad IN polling paced at 10ms while keyboard stays
+       independent. Never repeatedly submit in the same clock tick. */
+    endpoint_busy=0;
+    const uint32_t attempts_before=submit_attempts;
+    fake_ms+=9u;
+    frf_tinyusb_pad_retry_task();
+    assert(submit_attempts==attempts_before);
+    fake_ms+=1u;
+    frf_tinyusb_pad_retry_task();
+    assert(submit_attempts==attempts_before+1u);
+    endpoint_busy=0;
+    fake_ms+=9u;
+    frf_tinyusb_pad_retry_task();
+    assert(submit_attempts==attempts_before+1u);
+    fake_ms+=1u;
+    frf_tinyusb_pad_retry_task();
+    assert(submit_attempts==attempts_before+2u);
+    endpoint_busy=0;
     uint8_t hw[24]={0};
     hw[3]=0;hw[4]=128;hw[5]=hw[6]=128;hw[9]=0xffu;
     hw[1]=1; /* FIRST arriving report has active left/fire, not neutral */
