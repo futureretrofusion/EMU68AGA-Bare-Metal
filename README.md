@@ -47,6 +47,10 @@ The native USB implementation remains under active development. Source-file noti
 - USB keyboard/mouse in the local build, with experimental joypad-to-Amiga-port-2 mapping.
 - Amiga soft-reset/autoconfig fixes in v0.10.21; WHDLoad game compatibility still varies by title/demo.
 
+## Special thanks
+
+**Gennaro gtv3000** — thank you for assistance with **kernel testing and USB joypad testing** during EMU68AGA development.
+
 ## Project credits and licensing
 
 This is a hobby project, **but non-commercial use does not remove redistribution licence obligations**. FRF credits its own standalone integration to **Future Retro Fusion**, and preserves upstream credits and source-file licences.
