@@ -515,7 +515,14 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
                 else p->joy_report_state=joy;
             }
             uint32_t state=0,present=0;
-            if(frf_hid_gamepad_decode_buttons(&p->desc_map,data,len,&state,&present)) {
+            uint16_t bvid=0,bpid=0;
+            const int uspi_button_order=
+                tuh_vid_pid_get(addr,&bvid,&bpid) &&
+                frf_r20_is_receiver(bvid,bpid,idx);
+            const int have_buttons=uspi_button_order ?
+                frf_hid_gamepad_decode_buttons_ordered(&p->desc_map,data,len,&state,&present) :
+                frf_hid_gamepad_decode_buttons(&p->desc_map,data,len,&state,&present);
+            if(have_buttons) {
               p->buttons_state=(p->buttons_state&~present)|(state&present);
               p->fire_report_state=(uint8_t)((p->buttons_state&1u)!=0u);
               frf_r32_last_buttons=p->buttons_state;

@@ -203,6 +203,25 @@ if(extract_bits(p,(uint16_t)n,f->bit,f->width))value|=b;
 }
 *out=value;*present=mask;return mask!=0;
 }
+/* USPi-compatible button numbering: map physical button fields in report
+   order to bits 0..31, ignoring HID Usage labels. Some clone controllers
+   advertise sparse/non-sequential Usage IDs even though their button bits are
+   contiguous. The working USPi firmware used this exact field-order model. */
+int frf_hid_gamepad_decode_buttons_ordered(const struct frf_hid_map*m,
+    const uint8_t*d,uint16_t len,uint32_t*out,uint32_t*present){
+if(!m||!m->valid||!d||!len||!out||!present)return 0;
+unsigned id=m->has_ids?d[0]:0u;unsigned n=m->has_ids?len-1u:len;const uint8_t*p=m->has_ids?d+1:d;
+uint32_t value=0,mask=0;unsigned ordinal=0;
+for(unsigned i=0;i<m->count;i++){const struct frf_hid_field*f=&m->field[i];
+if(f->kind!=BUTTON||(m->has_ids&&f->report_id!=id))continue;
+if(ordinal>=32u){ordinal++;continue;}
+uint32_t b=1u<<ordinal++;
+if((unsigned)f->bit+f->width>n*8u)continue;
+mask|=b;
+if(extract_bits(p,(uint16_t)n,f->bit,f->width))value|=b;
+}
+*out=value;*present=mask;return mask!=0;
+}
 static int scale_direction(int value,int min,int max) {
   if(max<=min) return 0;
   int midpoint=min+(max-min)/2;

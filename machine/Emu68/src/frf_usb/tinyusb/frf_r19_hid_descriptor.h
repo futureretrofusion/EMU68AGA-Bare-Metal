@@ -19,6 +19,7 @@ int frf_hid_gamepad_parse(struct frf_hid_map*,const uint8_t*,uint16_t);
 /* Bit 0: directions/hat; bit 1: button state. Each ID may carry only one. */
 unsigned frf_hid_gamepad_report_capabilities(const struct frf_hid_map*,uint8_t);
 int frf_hid_gamepad_decode_buttons(const struct frf_hid_map*,const uint8_t*,uint16_t,uint32_t*,uint32_t*);
+int frf_hid_gamepad_decode_buttons_ordered(const struct frf_hid_map*,const uint8_t*,uint16_t,uint32_t*,uint32_t*);
 int frf_hid_gamepad_decode(const struct frf_hid_map*,const uint8_t*,
                            uint16_t,uint16_t*,int*);
 #endif
