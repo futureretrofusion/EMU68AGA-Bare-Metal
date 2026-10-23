@@ -24,13 +24,13 @@ int main(void) {
  struct results r={0};
  uint8_t gamepad[24]={0};
  gamepad[0]=2;gamepad[1]=4;gamepad[3]=128;
- assert(!frf_r23_keyboard_allowed(0x7e05u,0x0920u,1u,24u));
- assert(!frf_r23_keyboard_allowed(0x7e05u,0x0920u,1u,8u));
+ assert(!frf_r23_keyboard_allowed(0x057eu,0x2009u,1u,24u));
+ assert(!frf_r23_keyboard_allowed(0x057eu,0x2009u,1u,8u));
  assert(!frf_r23_keyboard_allowed(0x046du,0xc31cu,1u,24u));
  assert(!frf_r23_keyboard_allowed(0x046du,0xc31cu,2u,8u));
  assert(frf_r23_keyboard_allowed(0x046du,0xc31cu,1u,8u));
- send_keyboard(&k,gamepad,24,0x7e05u,0x0920u,&r);
- send_keyboard(&k,gamepad,8,0x7e05u,0x0920u,&r);
+ send_keyboard(&k,gamepad,24,0x057eu,0x2009u,&r);
+ send_keyboard(&k,gamepad,8,0x057eu,0x2009u,&r);
  assert(r.count==0u && k.reports==0u);
  uint8_t keydown[8]={0};
  keydown[2]=4u; /* A */
@@ -43,7 +43,7 @@ int main(void) {
  send_keyboard(&k,release,8,0x046du,0xc31cu,&r);
  assert(r.count==2u && r.raw[1]==0xa0u);
  for(unsigned i=0;i<1000u;++i)
-   send_keyboard(&k,gamepad,24,0x7e05u,0x0920u,&r);
+   send_keyboard(&k,gamepad,24,0x057eu,0x2009u,&r);
  assert(r.count==2u && k.keys[0]==0u);
  /* Disconnect with key held: force report 0 releases all keys. */
  send_keyboard(&k,keydown,8,0x046du,0xc31cu,&r);

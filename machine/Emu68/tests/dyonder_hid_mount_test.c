@@ -37,7 +37,7 @@ bool tuh_vid_pid_get(uint8_t addr,uint16_t *vid,uint16_t *pid) {
     if(addr==1) {*vid=0x2563;*pid=0x0576;return true;}
     if(addr==2) {*vid=0x2563;*pid=0x0575;return true;}
     if(addr==3) {*vid=0x046d;*pid=0xc216;return true;}
-    if(addr==5 || addr==6) {*vid=0x7e05u;*pid=0x0920u;return true;}
+    if(addr==5 || addr==6) {*vid=0x057eu;*pid=0x2009u;return true;}
     if(addr==4) {*vid=0x220du;*pid=0x330cu;return true;}
     return false;
 }
@@ -234,10 +234,10 @@ int main(void)
     /* R21 real Pi3 photograph: USB daddr1 VID=7E05 PID=0920,
        HID interface 0; R20 wrongly used 220D:330C.
        Detect at HID class mount BEFORE any neutral report arrives. */
-    assert(frf_r20_is_receiver(0x7e05u,0x0920u,0u));
+    assert(frf_r20_is_receiver(0x057eu,0x2009u,0u));
     assert(!frf_r20_is_receiver(0x220du,0x330cu,0u));
-    assert(frf_r20_is_receiver(0x7e05u,0x0920u,1u));
-    assert(frf_r20_is_receiver(0x7e05u,0x0920u,3u));
+    assert(frf_r20_is_receiver(0x057eu,0x2009u,1u));
+    assert(frf_r20_is_receiver(0x057eu,0x2009u,3u));
     frf_tinyusb_pad_mount(5,1,mouse_only,3); /* same VID, ordinary mouse */
     assert(frf_tinyusb_gamepad_count()==0);
     frf_tinyusb_pad_mount(5,3,mouse_only,3); /* real POST: HID instance 3 */
@@ -280,7 +280,7 @@ int main(void)
     assert(joy==0x0200u && fire==1); /* left + hat-up */
     frf_tinyusb_pad_unmount(6,3);
     assert(frf_tinyusb_gamepad_count()==0 && joy==0 && !fire);
-    puts("R39 7E05:0920 runtime HID instance 3 -> PAD=1 before reports; no idx0 dependency PASS");
+    puts("R39 057E:2009 runtime HID instance 3 -> PAD=1 before reports; no idx0 dependency PASS");
     puts("R19 actual HID mount -> 24B report -> Amiga JOY1DAT/fire, truncated reject PASS");
     puts("R15 DYONDER composite HID boot-mouse/ID1 pad, ID5 mouse isolate, 0575, retry, generic HID PASS");
     return 0;

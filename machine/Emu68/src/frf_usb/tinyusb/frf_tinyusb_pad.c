@@ -206,10 +206,10 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
        HID usage; only claim a boot-mouse interface if it also advertises
        a joystick or gamepad collection. Never claim a boot keyboard. */
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
-    /* R21: exact hardware 7E05:0920, interface 0, HID protocol 0.
+    /* R21: exact hardware 057E:2009, interface 0, HID protocol 0.
        R20 incorrectly searched for 220D:330C and required idle reports
        before allowing a candidate. Physical R18/R20 device table shows
-       7E050920 at address 1. Claim this controller at HID mount.
+       057E2009 at address 1. Claim this controller at HID mount.
        Never claim an ordinary boot keyboard/mouse interface. */
     if(have_vidpid && frf_r20_is_receiver(vid,pid,idx) &&
        protocol==HID_ITF_PROTOCOL_NONE) {
@@ -223,7 +223,7 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
         r20_dev=((uint32_t)addr<<16)|idx;
         frf_r26_receiver_addr=addr;
         frf_r26_receiver_idx=idx;
-        kprintf("[FRF-R39] 7E05:0920 HID controller claimed at USB %u interface %u, PAD=%u\n",
+        kprintf("[FRF-R39] 057E:2009 HID controller claimed at USB %u interface %u, PAD=%u\n",
                 addr,idx,active_pads);
         return;
     }
@@ -478,7 +478,7 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
         r20_dev=((uint32_t)addr<<16)|idx;
         frf_r26_receiver_addr=addr;
         frf_r26_receiver_idx=idx;
-        kprintf("[FRF-R39] 7E05:0920 observed 24B controller candidate at USB %u HID %u\n",addr,idx);
+        kprintf("[FRF-R39] 057E:2009 observed 24B controller candidate at USB %u HID %u\n",addr,idx);
     }
     ++r20_seen;
     uint16_t joy=0;

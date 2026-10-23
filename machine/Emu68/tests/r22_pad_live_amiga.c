@@ -15,7 +15,7 @@ struct ExpansionBase *ExpansionBase;
 static uint32_t read32(volatile const uint32_t *p) {return *p;}
 int main(void)
 {
-    printf("EMU68AGA R39 7E05 HID INSTANCE + INPUT REPORTS ID01/02/03 pad monitor - Zorro-II board\n");
+    printf("EMU68AGA R40A USB ENDIAN + INPUT REPORTS ID01/02/03 pad monitor - Zorro-II board\n");
     ExpansionBase=(struct ExpansionBase *)OpenLibrary("expansion.library",37);
     if(!ExpansionBase){puts("expansion.library unavailable");return 10;}
     struct ConfigDev *cd=FindConfigDev(NULL,0x6d73,0x69);
@@ -131,6 +131,6 @@ int main(void)
     }
     (void)old_joy;
     CloseLibrary((struct Library *)ExpansionBase);
-    puts("R39 test complete.");
+    puts("R40A test complete.");
     return 0;
 }

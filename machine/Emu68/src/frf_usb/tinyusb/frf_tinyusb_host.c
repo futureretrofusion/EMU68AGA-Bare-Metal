@@ -108,6 +108,8 @@ void* tusb_app_virt_to_phys(void *virtual_address)
 }
 static volatile uint32_t frf_usb_hid_keyboard,frf_usb_hid_mouse,frf_usb_storage;
 static volatile uint32_t frf_usb_hid_interfaces;
+static volatile uint32_t frf_r40a_hid_desc_length;
+uint32_t frf_r40a_hid_desc_len(void){return frf_r40a_hid_desc_length;}
 static volatile uint32_t frf_enum_failed_xfers; /* tracked from USB enumeration callbacks */
 uint32_t tusb_time_millis_api(void);
 /* R38: Every HID interrupt-IN endpoint must be polled even if we have not
@@ -355,7 +357,9 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
     frf_tinyusb_pad_mount(addr,idx,descriptor,descriptor_len);
     uint16_t pad_vid=0,pad_pid=0;
     if(tuh_vid_pid_get(addr,&pad_vid,&pad_pid) &&
-       frf_pad_is_dyonder(pad_vid,pad_pid)) {
+       pad_vid==0x057eu && pad_pid==0x2009u)
+        frf_r40a_hid_desc_length=descriptor_len;
+    if(pad_vid && frf_pad_is_dyonder(pad_vid,pad_pid)) {
        const uint32_t subtype=(pad_pid==0x0576u)?4u:5u;
        frf_post_native_usb_vendor_probe(((uint32_t)pad_vid<<16)|pad_pid,
                 0x03000000u|(uint32_t)idx,subtype);
@@ -379,7 +383,7 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
     if(protocol==HID_ITF_PROTOCOL_KEYBOARD) {
         uint16_t v=0,p=0;
         (void)tuh_vid_pid_get(addr,&v,&p);
-        if(v!=0x7e05u || p!=0x0920u) {
+        if(v!=0x057eu || p!=0x2009u) {
             frf_usb_hid_keyboard++;
             frf_r23_keyboard_last_mount=((uint32_t)addr<<16)|idx;
         } else ++frf_r23_gamepad_kbd_blocked;
@@ -448,7 +452,7 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
     {
         uint16_t vid=0,pid=0;
         if(tuh_vid_pid_get(addr,&vid,&pid) &&
-           ((vid==0x7e05u && pid==0x0920u) ||
+           ((vid==0x057eu && pid==0x2009u) ||
             (vid==0x220du && pid==0x330cu && len==27u && (data[0]==1u || data[0]==2u || data[0]==3u)))) {
             ++frf_r22_rx;
             frf_r26_lastrx_ms=tusb_time_millis_api();
@@ -512,7 +516,7 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
             ++frf_usb_reports;
             ++frf_r23_keyboard_report_ok;
             frf_r23_keyboard_last=((uint32_t)addr<<16)|idx;
-        } else if(vid==0x7e05u && pid==0x0920u) {
+        } else if(vid==0x057eu && pid==0x2009u) {
             ++frf_r23_gamepad_kbd_blocked;
         } else {
             ++frf_r23_malformed_kbd;

@@ -540,7 +540,7 @@ uint16_t hidh_open(uint8_t rhport, uint8_t daddr, const tusb_desc_interface_t *d
   // Assume bNumDescriptors = 1
   p_hid->report_desc_type = desc_hid->bReportType;
   // Use offsetof to avoid pointer to the odd/misaligned address
-  p_hid->report_desc_len = tu_unaligned_read16((uint8_t const*)desc_hid + offsetof(tusb_hid_descriptor_hid_t, wReportLength));
+  p_hid->report_desc_len = tu_le16toh(tu_unaligned_read16((uint8_t const*)desc_hid + offsetof(tusb_hid_descriptor_hid_t, wReportLength)));
 
   // Per HID Specs: default is Report protocol
   p_hid->protocol_mode = HID_PROTOCOL_REPORT;

@@ -469,8 +469,8 @@ bool tuh_vid_pid_get(uint8_t dev_addr, uint16_t *vid, uint16_t *pid) {
   usbh_device_t const *dev = get_device(dev_addr);
   TU_VERIFY(dev && dev->addressed && dev->desc_device.idVendor != 0);
 
-  *vid = dev->desc_device.idVendor;
-  *pid = dev->desc_device.idProduct;
+  *vid = tu_le16toh(dev->desc_device.idVendor);
+  *pid = tu_le16toh(dev->desc_device.idProduct);
 
   return true;
 }
