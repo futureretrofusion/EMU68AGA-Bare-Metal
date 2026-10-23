@@ -1,5 +1,9 @@
 # Using EMU68AGA with CaffeineOS
 
+> ## Reset shortcut
+>
+> **Press `Ctrl + Left Shift + F11` to reset the EMU68AGA system.** Use this instead of power-cycling the Raspberry Pi when you need to reboot the Amiga environment.
+
 This is the easiest route for users who want a complete Amiga environment rather than building an SD card manually.
 
 As of October 2026, **CaffeineOS 9317** is the current full CaffeineOS image referenced by MultibootOS 2.2. CaffeineOS remains a separate project; EMU68AGA does not redistribute it, Kickstart ROMs, AmigaOS files, games or other copyrighted software.
@@ -103,6 +107,8 @@ The repository's retained boot copy confirms `core_freq=250` and `temp_soft_limi
 If you have a known-good overclock in your existing CaffeineOS `config.txt`, leave those lines in place when replacing the kernel.
 
 ## 5. First boot
+
+**Remember: `Ctrl + Left Shift + F11` resets the system.**
 
 1. Safely eject the card.
 2. Install it in the Pi 3A+.
