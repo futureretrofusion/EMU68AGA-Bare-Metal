@@ -1,0 +1,88 @@
+name: Bug report
+description: Report a reproducible EMU68AGA problem
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an EMU68AGA problem. Please provide enough detail for the issue to be reproduced on real hardware.
+  - type: input
+    id: version
+    attributes:
+      label: EMU68AGA version
+      description: Release/tag/commit used, for example v0.10.40a.
+      placeholder: v0.10.40a
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: Pi model, SD card, display and any connected USB devices.
+      placeholder: Raspberry Pi 3A+, USB keyboard, USB joypad, HDMI display
+    validations:
+      required: true
+  - type: input
+    id: base_os
+    attributes:
+      label: Amiga environment
+      description: CaffeineOS version, AGS image, custom setup, etc.
+      placeholder: CaffeineOS 9317
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the failure clearly.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact sequence needed to trigger the problem.
+      placeholder: |
+        1. Boot...
+        2. Launch...
+        3. Press...
+        4. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Frequency
+      options:
+        - Every time
+        - Often
+        - Sometimes
+        - Once
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs / photos / video / diagnostics
+      description: Attach useful evidence, POST output, screenshots, serial logs, hashes, or test results.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I tested this on real hardware.
+        - label: I checked whether the issue already exists.
+        - label: I included the exact EMU68AGA version or commit.
