@@ -10,6 +10,40 @@
 #include <stdint.h>
 #ifdef AGA_PISTORM
 #include "aga_glue.h"
+#ifdef FRF_VIRTUAL_AGA
+void aga_hdmi_monitor_nibble(int d);
+void aga_hdmi_monitor(int on);
+void aga_hdmi_fx_value(int v);
+void aga_hdmi_fx_param(int k);
+void aga_hdmi_voice_param(int k);
+
+static int frf_virtual_aga_picture_write(uint64_t far, int size, uint64_t raw)
+{
+    if (far != 0xDFF1F2u || size != 2) return 0;
+    uint32_t v = (uint32_t)raw & 0xffffu;
+    if ((v & 0xFFC2u) == 0x58C0u) { aga_video_cut_data((int)((v & 1u) | ((v >> 1) & 0x1eu))); return 1; }
+    if ((v & 0xFFF2u) == 0x5870u) { aga_video_cut_store((int)((v & 1u) | ((v >> 1) & 6u))); return 1; }
+    if ((v & 0xFFF0u) == 0x5900u) { aga_video_set_zoom((int)(v & 7u)); aga_video_set_sharp((int)((v >> 3) & 1u)); return 1; }
+    if ((v & 0xFFFCu) == 0x5920u) { aga_video_set_look((int)(v & 3u)); return 1; }
+    if ((v & 0xFFFCu) == 0x5970u) { aga_video_set_scale((int)(v & 3u)); return 1; }
+    if ((v & 0xFFF8u) == 0x5980u) { aga_video_set_scanlines((int)(v & 7u)); return 1; }
+    if ((v & 0xFF00u) == 0x5700u) { aga_video_set_pos_x((int)(int8_t)(v & 0xffu)); return 1; }
+    if ((v & 0xFF00u) == 0x5600u) { aga_video_set_pos_y((int)(int8_t)(v & 0xffu)); return 1; }
+    if ((v & 0xFFF0u) == 0x59B0u) { aga_video_set_border(0, (int)(v & 15u)); return 1; }
+    if ((v & 0xFFF0u) == 0x59C0u) { aga_video_set_border(1, (int)(v & 15u)); return 1; }
+    if ((v & 0xFFFEu) == 0x59D0u) { aga_flickerfix((int)(v & 1u)); return 1; }
+    if ((v & 0xFFF8u) == 0x59E0u) { aga_video_set_laced_scanlines((int)(v & 7u)); return 1; }
+    if ((v & 0xFFF8u) == 0x59F0u) { aga_brightness((int)(v & 7u)); return 1; }
+    if ((v & 0xFFFEu) == 0x5910u) { aga_video_standard((int)(v & 1u)); return 1; }
+    if ((v & 0xFFF2u) == 0x5170u) { aga_video_set_ntsc_scanlines((int)((v & 1u) | ((v >> 1) & 6u))); return 1; }
+    if ((v & 0xFFF2u) == 0x5140u) { aga_hdmi_monitor_nibble((int)((v & 1u) | ((v >> 1) & 14u))); return 1; }
+    if ((v & 0xFFFEu) == 0x5160u) { aga_hdmi_monitor((int)(v & 1u)); return 1; }
+    if ((v & 0xFFC2u) == 0x5200u) { aga_hdmi_fx_value((int)((v & 1u) | ((v >> 1) & 30u))); return 1; }
+    if ((v & 0xFFE2u) == 0x5240u) { aga_hdmi_fx_param((int)((v & 1u) | ((v >> 1) & 14u))); return 1; }
+    if ((v & 0xFFE2u) == 0x5260u) { aga_hdmi_voice_param((int)((v & 1u) | ((v >> 1) & 14u))); return 1; }
+    return 0;
+}
+#endif
 /* v19-v26 carry the 68k's SR, stack pointers, CACR and FPU control registers
    (M68k.h, REG_*_VN), reserved with -ffixed-vN. GCC 14 ignores that in
    auto-vectorised loops: 1.110's brightness table put all eight to work
@@ -953,6 +987,7 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_write(far, size, value)) return 1;
+    if (frf_virtual_aga_picture_write(far, size, value)) return 1;
     /* FRF standalone runtime ADF commands must work with aga_mode == 1.
      * Their interception used to be inside if(!aga_mode), unreachable in
      * the bare-metal machine. Only the explicit $ADxx magic is claimed. */
@@ -1547,6 +1582,7 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_write(far, size, value)) return 1;
+    if (frf_virtual_aga_picture_write(far, size, value)) return 1;
     /* FRF standalone runtime ADF commands must work with aga_mode == 1.
      * Their interception used to be inside if(!aga_mode), unreachable in
      * the bare-metal machine. Only the explicit $ADxx magic is claimed. */

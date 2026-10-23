@@ -25,6 +25,16 @@
  * sample k is final once no step still to come can reach it: steps come at
  * now or later, and reach back HALF - 1 samples.
  *
+ * The voice mixer (1.118, blep_weights): each voice into both sides at its
+ * own gain instead of 0 and 3 left, 1 and 2 right. Each voice is
+ * band-limited on its own - four rings, one per channel, every step into its
+ * own - and the gains apply as the voices are mixed into the two sides at
+ * each sample out. Off, or at Paula's own wiring, a side is the plain sum of
+ * its two voices: the samples as they always were, to the bit. (1.118 first
+ * split every step into both sides by the gains; that froze the whole Pi in
+ * Desert Dream, 2 runs of 2 against 0 of 2 without it - 2026-10-20, the
+ * cause unknown - so no step takes another path now, whatever the gains.)
+ *
  * Pure C with no kernel headers: host/tests/test_blep.c includes it.
  *
  * SPDX-License-Identifier: GPL-2.0-only
@@ -40,14 +50,16 @@
 #define BLEP_MASK (BLEP_RING - 1)
 
 typedef struct {
-    int32_t res[2][BLEP_RING];           /* what the lowpass adds, Q8 */
-    int32_t car[2][BLEP_RING];           /* level changes that take effect at that sample */
-    int32_t lev[2];                      /* the running level at the next sample out */
+    int32_t res[4][BLEP_RING];           /* what the lowpass adds, Q8, per channel */
+    int32_t car[4][BLEP_RING];           /* level changes that take effect at that sample */
+    int32_t lev[4];                      /* the running level at the next sample out */
     int16_t ch[4];                       /* each channel's level as the steps left it */
     uint64_t k;                          /* the next sample out */
     uint64_t hi;                         /* one past the highest sample a step touched */
     uint64_t t0, pos0, r;                /* the anchor: colour clock, its 32.32 position, samples per clock */
     int ri;                              /* the rate's table */
+    int wset;                            /* the voice mixer's gains in force (blep_weights) */
+    int32_t w[4][2];                     /* ... each voice's into left and right, Q8 */
 } blep_t;
 
 static inline int blep_side(int ch) { return (ch == 0 || ch == 3) ? 0 : 1; }   /* 0, 3 left; 1, 2 right */
@@ -62,12 +74,9 @@ static inline uint64_t blep_pos(const blep_t *b, uint64_t t)
    from where they stand - and samples from k on. */
 static inline void blep_reset(blep_t *b, int ri, uint64_t t, uint64_t r)
 {
-    for (uint64_t i = b->k; i < b->hi && i < b->k + BLEP_RING; i++) {
-        b->res[0][i & BLEP_MASK] = b->res[1][i & BLEP_MASK] = 0;
-        b->car[0][i & BLEP_MASK] = b->car[1][i & BLEP_MASK] = 0;
-    }
-    b->lev[0] = b->ch[0] + b->ch[3];
-    b->lev[1] = b->ch[1] + b->ch[2];
+    for (uint64_t i = b->k; i < b->hi && i < b->k + BLEP_RING; i++)
+        for (int c = 0; c < 4; c++) b->res[c][i & BLEP_MASK] = b->car[c][i & BLEP_MASK] = 0;
+    for (int c = 0; c < 4; c++) b->lev[c] = b->ch[c];
     b->ri = ri;
     b->t0 = t;
     b->r = r;
@@ -90,13 +99,10 @@ static inline void blep_retime(blep_t *b, uint64_t t, uint64_t r)
     b->r = r;
 }
 
-/* channel ch at level (sample * volume) from colour clock t */
-static inline void blep_step(blep_t *b, uint64_t t, int ch, int level)
+/* channel s's ring changes by d from colour clock t */
+static inline void blep_ring_step(blep_t *b, uint64_t t, int s, int32_t d)
 {
-    int32_t d = level - b->ch[ch];
-    if (!d) return;
-    b->ch[ch] = (int16_t)level;
-    int s = blep_side(ch), half = blep_half[b->ri], taps = 2 * half;
+    int half = blep_half[b->ri], taps = 2 * half;
     uint64_t pos = blep_pos(b, t);
     uint64_t k0 = pos >> 32;
     /* a step older than what is out (none should be), or past the ring's
@@ -118,6 +124,39 @@ static inline void blep_step(blep_t *b, uint64_t t, int ch, int level)
     if (b->hi < k0 + (uint64_t)half + 1) b->hi = k0 + (uint64_t)half + 1;
 }
 
+/* channel ch at level (sample * volume) from colour clock t: a step into its
+   own ring, whatever the gains */
+static inline void blep_step(blep_t *b, uint64_t t, int ch, int level)
+{
+    int32_t d = level - b->ch[ch];
+    if (!d) return;
+    b->ch[ch] = (int16_t)level;
+    blep_ring_step(b, t, ch, d);
+}
+
+/* Gains that are Paula's own wiring (the voice mixer's Amiga preset): voices
+   0 and 3 fully left, 1 and 2 fully right - the plain sums, to the bit, so
+   aga_hdmi.c leaves the gains out for them */
+static inline int blep_is_paula(const int32_t w[4][2])
+{
+    for (int c = 0; c < 4; c++) {
+        int s = blep_side(c);
+        if (w[c][s] != 256 || w[c][s ^ 1] != 0) return 0;
+    }
+    return 1;
+}
+
+/* The voice mixer's gains (Q8, w[ch][side]) from the next sample out, or off
+   (on 0): the voices are mixed at them from there on - a plain step, as a
+   fader moved by hand would */
+static inline void blep_weights(blep_t *b, int on, const int32_t w[4][2])
+{
+    b->wset = on != 0;
+    if (on)
+        for (int c = 0; c < 4; c++)
+            for (int s = 0; s < 2; s++) b->w[c][s] = w[c][s];
+}
+
 /* how many samples are final with every step up to colour clock now in */
 static inline uint32_t blep_ready(const blep_t *b, uint64_t now)
 {
@@ -126,20 +165,36 @@ static inline uint32_t blep_ready(const blep_t *b, uint64_t now)
     return last > b->k ? (uint32_t)(last - b->k) : 0;
 }
 
-/* the next sample, each side the sum of its two channels' levels */
+/* the next sample: each channel's level, Q8, then the sides - the plain sums
+   of 0 and 3, 1 and 2, or with the voice mixer's gains (Q16 then), each side
+   rounded once; at Paula's own gains the two are the same to the bit */
+static inline int32_t blep_round(int64_t q, int bits)
+{
+    int64_t h = (int64_t)1 << (bits - 1);
+    return (int32_t)(q >= 0 ? (q + h) >> bits : -((-q + h) >> bits));
+}
 static inline void blep_out(blep_t *b, int32_t *l, int32_t *r)
 {
     uint32_t i = (uint32_t)(b->k & BLEP_MASK);
-    int32_t v[2];
-    for (int s = 0; s < 2; s++) {
-        b->lev[s] += b->car[s][i];
-        int32_t q = (b->lev[s] << 8) + b->res[s][i];
-        v[s] = q >= 0 ? (q + 128) >> 8 : -((-q + 128) >> 8);
-        b->car[s][i] = b->res[s][i] = 0;
+    int64_t q[4];
+    for (int c = 0; c < 4; c++) {
+        b->lev[c] += b->car[c][i];
+        q[c] = ((int64_t)b->lev[c] << 8) + b->res[c][i];
+        b->car[c][i] = b->res[c][i] = 0;
     }
     b->k++;
-    *l = v[0];
-    *r = v[1];
+    if (!b->wset) {
+        *l = blep_round(q[0] + q[3], 8);
+        *r = blep_round(q[1] + q[2], 8);
+        return;
+    }
+    int64_t sl = 0, sr = 0;
+    for (int c = 0; c < 4; c++) {
+        sl += q[c] * b->w[c][0];
+        sr += q[c] * b->w[c][1];
+    }
+    *l = blep_round(sl, 16);
+    *r = blep_round(sr, 16);
 }
 
 #endif

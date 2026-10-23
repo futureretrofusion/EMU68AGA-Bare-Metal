@@ -16,6 +16,11 @@
  * or basic audio was there at all. A block whose checksum is off counts as
  * not there.
  *
+ * edid_eld() gathers what Linux calls the ELD (1.118): the screen's name, its
+ * short audio descriptors as they are - every format, LPCM or not (AC-3,
+ * DTS, ...) - basic audio, and its speakers (the speaker allocation block),
+ * for the Sound monitor to show.
+ *
  * Pure C with no kernel headers: host/tests/test_edid.c includes it.
  *
  * SPDX-License-Identifier: GPL-2.0-only
@@ -64,6 +69,51 @@ static inline uint32_t edid_audio(const uint8_t *e, int n)
         }
     }
     return got;
+}
+
+#define ELD_SADS 10
+struct edid_eld {
+    char name[14];                 /* the display name, NUL-padded ("" when none) */
+    uint8_t nsad;                  /* short audio descriptors in sad[] */
+    uint8_t flags;                 /* ELD_READ, ELD_BASIC */
+    uint8_t sad[3 * ELD_SADS];     /* as the EDID has them */
+    uint8_t spk[3];                /* the speaker allocation block's three bytes */
+};
+#define ELD_READ  1u               /* there was an EDID with a CEA-861 extension */
+#define ELD_BASIC 2u               /* basic audio (byte 3 bit 6) */
+
+static inline void edid_eld(const uint8_t *e, int n, struct edid_eld *o)
+{
+    static const uint8_t magic[8] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+    for (unsigned i = 0; i < sizeof *o; i++) ((uint8_t *)o)[i] = 0;
+    if (n < 1) return;
+    for (int i = 0; i < 8; i++) if (e[i] != magic[i]) return;
+    if (!edid_block_ok(e)) return;
+    for (int d = 54; d <= 108; d += 18)                              /* the descriptors: the name's is 0xFC */
+        if (!e[d] && !e[d + 1] && !e[d + 2] && e[d + 3] == 0xFC) {
+            int i = 0;
+            for (; i < 13 && e[d + 5 + i] != 0x0A && e[d + 5 + i] >= 32 && e[d + 5 + i] < 127; i++) o->name[i] = (char)e[d + 5 + i];
+            while (i > 0 && o->name[i - 1] == ' ') o->name[--i] = 0;
+        }
+    int ext = e[126] < n - 1 ? e[126] : n - 1;
+    for (int x = 1; x <= ext; x++) {
+        const uint8_t *b = e + 128 * x;
+        if (b[0] != 0x02 || b[1] < 2 || !edid_block_ok(b)) continue;
+        o->flags |= ELD_READ;
+        if (b[3] & 0x40) o->flags |= ELD_BASIC;
+        int end = b[2];
+        if (end < 4 || end > 127) end = 4;
+        for (int i = 4; i < end; ) {
+            int tag = b[i] >> 5, len = b[i] & 31;
+            if (i + 1 + len > end) break;
+            if (tag == 1)
+                for (int k = i + 1; k + 3 <= i + 1 + len && o->nsad < ELD_SADS; k += 3, o->nsad++)
+                    for (int j = 0; j < 3; j++) o->sad[3 * o->nsad + j] = b[k + j];
+            if (tag == 4 && len >= 3)
+                for (int j = 0; j < 3; j++) o->spk[j] = b[i + 1 + j];
+            i += 1 + len;
+        }
+    }
 }
 
 #endif

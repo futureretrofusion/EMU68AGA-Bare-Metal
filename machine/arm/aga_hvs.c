@@ -456,6 +456,7 @@ static void fit(void);
 static void crop_state(void);       /* the custom crop, AGA_D_CROP (below) */
 static void snap_take(void);        /* the last game's picture kept (below) */
 static void hsync_restore(void);    /* HDMI sync: the mode's own porch again (below) */
+static void hsync_park(void);       /* 1.118: park adjusted porch for next game */
 static uint32_t  saved_list;        /* DISPLIST1 as found before the takeover */
 
 /* Map the dlist RAM into the diag log: every run of non-zero words as
@@ -675,6 +676,12 @@ static uint32_t src_rows = AGA_OUT_H, src_pitch = AGA_OUT_W * 4;
 static int scale_mode;
 static int border_x, border_y;
 static int scan_level, lscan_level;    /* the scanlines (below), for Whole lines */
+static int nscan_level = -1;  /* v1.118 NTSC scanlines: -1 inherits PAL setting */
+static int scan_level_now(void)
+{
+    return frame_woven ? lscan_level : (frame_ntsc && nscan_level >= 0) ? nscan_level : scan_level;
+}
+
 static int scan_shape;                 /* 0 Even (the default), 1 Crisp, 2 Whole lines */
 static void set_source(void);
 static void fit(void)
@@ -704,7 +711,7 @@ static void fit(void)
        Every line then gets the same rows, the last one dark: at 800 x 600,
        where 4:3 gives a line 2.1 rows, 2 each. Nothing when they are whole
        already (Scale integer) or fewer than 2 (no scanlines). */
-    if (scan_shape == 2 && (frame_woven ? lscan_level : scan_level)) {
+    if (scan_shape == 2 && scan_level_now()) {
         uint32_t lines = (frame_woven && dst_h >= 2 * crop_h) ? 2 * crop_h : crop_h;   /* as set_source shows it */
         uint32_t n = lines ? dst_h / lines : 0;
         if (n >= 2 && n * lines != dst_h) {
@@ -1049,6 +1056,13 @@ void aga_video_set_laced_scanlines(int level)
                     row taller than others (up to 1.115 the only one)
      2 Whole lines  picture fitted to a whole number of rows a line (fit), a
                     little smaller, its shape kept: clean at low resolutions */
+void aga_video_set_ntsc_scanlines(int v)
+{
+    nscan_level = (v >= 1 && v <= 5) ? v - 1 : -1;
+    apply_crop();
+    calib_refresh();
+}
+
 void aga_video_set_scan_shape(int shape)
 {
     scan_shape = (shape >= 0 && shape <= 2) ? shape : 0;
@@ -1061,7 +1075,7 @@ void aga_video_set_scan_shape(int shape)
    each on an interlaced screen. */
 static int scan_ready(void)
 {
-    int level = frame_woven ? lscan_level : scan_level;
+    int level = scan_level_now();
     uint32_t lines = src_rows;
     if (!level || dst_h < 2 * lines) return 0;
     if ((uint64_t)SCAN_OFF + (uint64_t)dst_h * SCAN_W * 4 > SNAP_OFF) return 0;   /* the crop screen's snapshot is above */
@@ -1281,9 +1295,8 @@ static void build_windowed_list(uint32_t block, uint32_t base, uintptr_t frame_p
 static int win_mode, win_x, win_y, win_w, win_h;
 static int cur_is_windowed, cur_x, cur_y, cur_w, cur_h;
 static int cur_black;       /* live list = empty one (RGB port only) */
-/* FRF RUN/P96 guard: if P96 installs an external list before the Amiga-side
-   monitor observes the screen change, give it a few presents of grace. */
-static unsigned program_external_grace;
+/* Native game output owns HDMI until an explicit P96/ASL yield.
+   Unexpected P96 page flips during native activity must not stall presents. */
 
 /* v0.8.4: the diagnostic HUD is part of FINAL FRAME COMPOSITION, not an
    asynchronous write to a page that may already be on HDMI.  show_frame()
@@ -1304,10 +1317,9 @@ static void show_frame(uintptr_t frame_phys, int compose_hud)
     uint32_t live = reg_rd(REG_DISPLIST1);
     if (aga_program_mode && cur_list &&
         live != LIST_A && live != LIST_B && !aga_program_rtg_yield) {
+        /* P96 may flip its desktop list in the background of a native
+           game. Remember that list for return, but do not display it. */
         saved_list = live;
-        if (program_external_grace++ < 3u) return;
-    } else {
-        program_external_grace = 0u;
     }
     int same_geometry = cur_is_windowed == win_mode && cur_x == win_x && cur_y == win_y && cur_w == win_w && cur_h == win_h
                         && cur_zoom_gen == zoom_gen;
@@ -1458,7 +1470,7 @@ void aga_video_hide(void)
     if (!video_ok) return;
     snap_take();            /* the game's last picture, before the next session draws over the pages */
     crop_auto_reset(&autow);    /* the next game's window is its own */
-    hsync_restore();            /* HDMI sync: the mode's own porch for the desktop */
+    hsync_park();               /* v1.118: leave stable adjusted porch for next game */
     if (zoom_mode == 4) apply_crop();
     hide();
 }
@@ -1792,12 +1804,13 @@ static void calib_refresh(void)
 #define PV_VERTA     0x14
 #define PV_VERTB     0x18
 static volatile int hsync_on;
+static uint32_t frame_len; /* last emulated frame's actual colour-clock length */
 static int pv_state;                    /* 0 not looked at, 1 good, -1 not to be written */
 static int pv_have;                     /* vfp0/vactive0 are the mode's own */
 static uint32_t pv_vfp0, pv_vactive0;
 static int pv_k;                        /* porch lines over the mode's own, in force */
 static uint64_t pv_look;                /* the next look at the PixelValve */
-static struct hsync hs = { -1, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0 };
+static struct hsync hs = { .prev = -1, .ph16 = -1 };
 
 static uint64_t cnt_freq(void) { uint64_t f; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(f)); return f ? f : 1; }
 
@@ -1849,6 +1862,24 @@ static void hsync_restore(void)
     hsync_report(-1);
 }
 
+/* A stable, in-range sync porch may stay in place during desktop
+   handoff: the next 50.2Hz game avoids six display timing writes.
+   Out-of-reach or remeasuring modes go back to the original porch. */
+static void hsync_park(void)
+{
+    if (hsync_on && pv_have && pv_state == 1 && hs.reach == 1 && hs.steady) {
+        hs.prev = -1;
+        hsync_report(-1);
+        return;
+    }
+    hsync_restore();
+}
+
+void aga_video_set_frame_len(uint32_t cck)
+{
+    frame_len = cck;
+}
+
 /* each frame shown (core 3, after show) */
 static void hsync_frame(void)
 {
@@ -1861,6 +1892,7 @@ static void hsync_frame(void)
     if (pv_state != 1) { hsync_report(-1); return; }
     uint32_t line = reg_rd(REG_DISPSTAT1) & 0xfff;
     int phase = line + 2 < pv_vactive0 ? (int)line : -1;
+    hsync_len(&hs, frame_len);
     int want = hsync_step(&hs, phase, (int)pv_vactive0, pv_k);
     if (want > pv_k + 1) want = pv_k + 1;
     if (want < pv_k - 1) want = pv_k - 1;

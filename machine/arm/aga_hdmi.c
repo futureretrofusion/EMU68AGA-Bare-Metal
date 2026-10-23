@@ -48,11 +48,11 @@
  * kind as RGB2RTG's port of this file (a moving HDMI picture, and on a Pi 3
  * the HSM), whose reviewers found what they close; the detail differs (its
  * Pi 4 guard is a blank its own HVS poll saw, and its aga.hdmiforce skips the
- * Pi 3 check, where mine only waives the source). Two gaps remain, damn it.
- * On a Pi 4 a moving picture stands in for a running HSM, which nothing here
- * can read after boot: an assumption, not yet tested on hardware (unplug while
- * sound plays, with and without hdmi_force_hotplug). And the clock can still
- * stop between the guard's reads and the register access, a window of at most
+ * Pi 3 check, where mine only waives the source). Two gaps remain. On a Pi 4
+ * a moving picture stands in for a running HSM, which nothing here can read
+ * after boot: an assumption, not yet tested on hardware (unplug while sound
+ * plays, with and without hdmi_force_hotplug). And the clock can still stop
+ * between the guard's reads and the register access, a window of at most
  * about 100 microseconds (200 ms in the first port of the fixes). The link
  * counts as lost only after 200 ms with no change; until then a look just
  * waits for the picture. A Pi
@@ -76,6 +76,7 @@
 #include "aga_hdmi_filter.h"
 #include "aga_mix.h"
 #include "aga_edid.h"
+#include "aga_fx.h"
 #include "aga_blep.h"
 #include "aga/chipset.h"                                 /* aga_step_t */
 #include "devicetree.h"
@@ -147,6 +148,7 @@ static const uint8_t  rate_mai[N_RATES] = { 8, 9, 11, 12, 14, 15 };
 static const uint8_t  rate_cs[N_RATES]  = { 0x0, 0x2, 0x8, 0xA, 0xC, 0xE };
 _Static_assert(N_RATES == HF_RATES, "a filter set for every rate");
 static volatile int rate_i = R_48K;              /* what the MAI, the ring and the tables are set for */
+static struct edid_eld eld;                      /* the screen's ELD from its EDID (aga_edid.h), for the Sound monitor */
 static uint32_t sink_rates = 3;                  /* bit i: the screen takes rate_hz[i] (EDID); 44.1 and 48 kHz without one */
 static int sink_24;                              /* ... and 24-bit samples */
 
@@ -541,7 +543,8 @@ static void program_mai(void)
    back by itself as Linux's phy_rng_disable does: the rest is the firmware's
    link (lane power, and on a Pi 3 the drive), which it sets up afresh on a
    hotplug or a new mode - the word read at start would undo that (found by
-   RGB2RTG). A MAI another driver took over is theirs: only my slot goes. */
+   RGB2RTG). A MAI another driver took over is theirs: only my slot goes -
+   the rest can go to hell. */
 static void restore(void)
 {
     if (mai_ours) wr(hw->mai_ctl, M_FLAGS);              /* stopped: ENABLE clear */
@@ -561,7 +564,7 @@ static void restore(void)
 /* ---- the DMA side: its registers are always clocked ------------------------ */
 
 /* A channel the firmware leaves to the ARM (brcm,dma-channel-mask) that
-   nobody runs now - not ACTIVE, no control block loaded - or my own from
+    nobody runs now - not ACTIVE, no control block loaded - or my own from
    before. The mask alone is not enough: a 68k driver (the SD card, Wi-Fi)
    may have taken one of those channels (found by RGB2RTG). CONBLK_AD 0 is an
    idle channel, as Linux's bcm2835_dma_abort reads it. */
@@ -574,7 +577,7 @@ static int dma_free(int c)
 /* 0 when the channel is no longer free: a 68k driver on core 0 can take it
    any time, so it is looked at again right before the reset. A take between
    that look and the reset - a few bus cycles - cannot be ruled out without a
-   lock both drivers keep: my reset would end that driver's transfer. */
+    lock both drivers keep: my reset would end that driver's transfer. */
 static int start_dma(void)
 {
     int c = dma_ch;
@@ -598,9 +601,10 @@ static int start_dma(void)
     return 1;
 }
 
-/* the one I have, while it still is free; else the first free one. A
-   channel another driver took from me has left dma_mask (check): between
-   that driver's transfers it would look free again. */
+/* the one I have, while it still is free; else the first free one, and
+   damn the consequences. A channel another driver took from me has left
+   dma_mask (check): between that driver's transfers it would look free
+   again. */
 static int dma_pick(void)
 {
     static const int pref[] = { 6, 5, 4, 2, 8, 9, 10 };
@@ -620,7 +624,7 @@ static int dma_pick(void)
    first, and reset once its last write to MAI_DATA is answered (TI's
    WAIT_RESP), as Linux 6.6's bcm2835_dma_abort waits for
    WAITING_FOR_OUTSTANDING_WRITES - 50 us at most, for a peripheral that
-   never damn well answers. */
+   never answers. */
 static void dma_stop(void)
 {
     int c = dma_ch;
@@ -635,10 +639,10 @@ static void dma_stop(void)
 
 /* The channel is not mine any more, found at a start or a look: my MAI and
    slot put back, state 5, and the retry a second on looks for another. A
-   channel that runs someone else's control block (a 68k driver took it after
-   I did) leaves dma_mask for the rest of the boot: between that driver's
-   transfers it looks free, and the retry would take it back from that driver
-   over and over, for fuck's sake. CONBLK_AD 0 there is only an idle channel
+   channel that runs someone else's control block (a 68k driver took the
+   bastard after I did) leaves dma_mask for the rest of the boot: between
+   that driver's transfers it looks free, and the retry would take it back
+   from that driver over and over. CONBLK_AD 0 there is only an idle channel
    and stays in the mask. With reg_lock held, behind the guards. */
 static void dma_lost(int c)
 {
@@ -668,7 +672,7 @@ static void start(int core0)
        (a 68k driver that drives the MAI itself) - not reset under it */
     if ((ctl & M_ENABLE) && !mai_ours) { set_state(H_BUSY_OTHER); return; }
     if (!dma_pick()) { set_state(H_NO_DMA); return; }
-    if (!mai_ours) {                                     /* the firmware's, not mine, left from a lost clock */
+    if (!mai_ours) {                                     /* the firmware's, not mine left from a lost clock */
         const uint32_t regs[S_N] = { hw->mai_thr, hw->mai_fmt, hw->mai_smp, hw->ch_map, hw->mai_cfg, hw->aud_pkt,
                                      hw->crp, hw->cts0, hw->cts1, hw->phy, hw->mai_ctl };
         for (int i = 0; i < S_N; i++) saved[i] = rd(saved_reg[i] = regs[i]);
@@ -823,6 +827,7 @@ void aga_hdmi_boot(uint8_t *fb_va, uintptr_t fb_phys)
         }
         uint32_t a = nb ? edid_audio(ed, nb) : 0;
         edid_log(ed, nb);
+        edid_eld(ed, nb, &eld);                          /* the Sound monitor shows it */
         if (a & EDID_SEEN) {
             sink_rates = (a & EDID_RATES) | (1u << R_48K);   /* 48 kHz always: what HDMI sound began with */
             sink_24 = (a & EDID_24) != 0;
@@ -984,7 +989,7 @@ static int ahi_seen;                             /* the driver has written somet
    driver is 40 ms ahead, or 100 ms after its first frame came - new, or
    after it ran dry. Read at once, a player that stalled right after its
    first buffer (one opening a file on the SD card, whose driver spins
-   while it reads) left holes, heard as shitty crackling; held, its start comes
+   while it reads) left holes, heard as crackling; held, its start comes
    40 ms later, whole. A ring that runs dry waits the same way: one gap,
    not a crackle of many. 40 ms: driver 6.2 keeps 42 ms more than its
    buffers; an older one, never that far ahead with small buffers, starts
@@ -1129,6 +1134,216 @@ void aga_hdmi_ahi(int on)
 
 int aga_hdmi_ahi_live(void) { return __atomic_load_n(&ahi_live, __ATOMIC_ACQUIRE) != 0; }
 
+/* ---- HiFi volume (1.118): AHI programs' sound, which HDMI volume leaves alone -
+   The HDMI volume ($5840) is Paula's: AHI's sound comes mastered at full
+   scale and is added after it. This turns AHI's down on its own, d dB, from
+   agaboot's Sound monitor - 0 to 62, 63 silence. 65536 is 0 dB: at it the
+   ring's frames reach HDMI as before, to the bit. $5180 + E6(d), from core 0's
+   trap; the feed takes it at its start. */
+static const int32_t hifi_gain_tab[63] = {
+    65536, 58409, 52057, 46396, 41350, 36854, 32846, 29274, 26090, 23253, 20724, 18471, 16462, 14672, 13076, 11654,
+    10387, 9257, 8250, 7353, 6554, 5841, 5206, 4640, 4135, 3685, 3285, 2927, 2609, 2325, 2072, 1847,
+    1646, 1467, 1308, 1165, 1039, 926, 825, 735, 655, 584, 521, 464, 414, 369, 328, 293,
+    261, 233, 207, 185, 165, 147, 131, 117, 104, 93, 83, 74, 66, 58, 52 };
+static volatile int32_t hifi_gain16 = 65536;
+static volatile uint32_t hifi_db;
+
+void aga_hdmi_hifi_volume(int d)
+{
+    if (d < 0 || d > 63) return;
+    hifi_db = (uint32_t)d;
+    __atomic_store_n(&hifi_gain16, d >= 63 ? 0 : hifi_gain_tab[d], __ATOMIC_RELEASE);
+}
+
+/* ---- the Sound monitor (1.118): what HDMI plays, for agaboot's window ------
+   agaboot's Sound monitor (tools/agaboot/monitor.c) lends a ring in the 68k's
+   fast RAM, as aga-hdmi.audio does its own: a header, then frames of two
+   16-bit samples - the top 16 of the 24 the HDMI ring gets, after the volumes,
+   the filters and the AHI mix: what the screen's speakers play. Core 3 writes
+   them as the feed writes the HDMI ring, and the window draws its meters,
+   scope and spectrum from them at its own pace, with no trap per sample.
+   The header, big-endian as the 68k reads it. The window writes magic and
+   frames (a power of two, 2048 to 65536) and zeroes the two peaks after
+   reading them; the rest is mine, written at every feed's end: the frames
+   written since it began (counting on past the ring), the rate, the largest
+   sample since the window last looked, left and right (24 bits), the state
+   (MON_* below), the lead in frames, the resyncs, the AHI frames waiting and
+   the times the AHI ring ran dry, the rates the screen takes (rate_hz's order)
+   and the HiFi volume. No feed - no sound wanted on HDMI - and the count
+   stands still, which is how the window tells. Words: $5140 + E4(n) four more
+   bits of the ring's address, highest first; $5161 the ring from that
+   address, $5160 none, which returns only once no feed writes the old ring,
+   so the window may free it straight after.
+   The window counts beat up a few times a second, paused or not. A ring
+   whose beat stands for 3 s, or whose magic is gone, is let go before the
+   feed writes to it - a window that died, or memory a soft reboot handed on
+   (the 68k's RESET lets it go too, aga_machine_reset). State 0 then tells a
+   window that was only held up to lend it again.
+   The header is 256 bytes: after the counts, the limiter's least gain since
+   the window looked (Q16; the window puts 65536 back), the effects as the
+   kernel has them (fx_word), and the screen's ELD from its EDID - its name,
+   its short audio descriptors and speakers (aga_edid.h), set when the ring
+   is taken. Then Paula's voices: a window that asks for them (vframes, a
+   power of two, 1024 to 65536; 0 none) gets a second ring after the frames,
+   one word a frame of the mix's own rate (vrate) - voice 0 in the top byte
+   (core/src/audio.c, aga_audio_voices) - with its count (vwr), each voice's
+   registers, pan and level, and vstate: 1 the voices come (a game in the
+   sandbox), 2 the voice mixer is on. */
+#define MON_MAGIC   0x4D4F4E31u                  /* "MON1" */
+#define MON_TAKEN   0x80000000u                  /* the kernel took the ring */
+#define MON_HDMI    1u                           /* HDMI sound plays */
+#define MON_AHI     2u                           /* an AHI ring is on */
+#define MON_AHIPLAY 4u                           /* ... and the feed plays it now */
+#define MON_AHI32   8u                           /* ... 32-bit frames (HiFi) */
+#define MON_LOWLAT  16u                          /* ... low latency */
+#define MON_OUT24   32u                          /* the screen gets 24 bits */
+#define MON_PAULABL 64u                          /* Paula on HDMI band-limited */
+#define MON_PAULA   128u                         /* the emulated chipset's sound in it (the sandbox is up) */
+/* 256 and 512 are RGB2RTG's (MON_TONE, MON_LEDF - its monitor shares this
+   header, EMM #2188): keep them free here */
+struct mon_voice { uint32_t lc; uint16_t len, per; uint8_t vol, flags, pan, level; };
+struct mon_hdr {
+    uint32_t magic, frames, wr, rate, peak_l, peak_r, state, lead, resyncs, ahi_fill, ahi_under, offer, hifi_db, beat, lim, fx;
+    struct edid_eld eld;                         /* 49 bytes */
+    uint8_t pad[64 - sizeof(struct edid_eld)];
+    uint32_t vframes, vwr, vrate, vstate;
+    struct mon_voice v[4];
+    uint8_t pad2[64];
+};
+_Static_assert(sizeof(struct mon_voice) == 12, "monitor.c's voice is 12 bytes");
+_Static_assert(sizeof(struct mon_hdr) == 256, "monitor.c's header is 256 bytes");
+static struct mon_hdr *volatile mon_live;
+static uint32_t mon_latch;
+static struct mon_hdr *mon_cur;                  /* core 3's: the ring the feed writes */
+static uint32_t mon_wr, mon_mask, mon_pk_l, mon_pk_r, mon_resyncs, mon_beat;
+static uint32_t *mon_vring, mon_vmask, mon_vwr, mon_vrd;   /* Paula's voices into the window's second ring */
+static uint64_t mon_beat_t;                      /* when beat last moved */
+static int16_t *mon_pcm;
+
+void aga_hdmi_monitor_nibble(int d) { mon_latch = (mon_latch << 4) | ((uint32_t)d & 15u); }
+
+void aga_hdmi_monitor(int on)
+{
+    if (!on) {
+        __atomic_store_n(&mon_live, (struct mon_hdr *)0, __ATOMIC_RELEASE);
+        __asm__ volatile("dmb ish" ::: "memory");
+        /* a feed under way may still hold the old ring: let it end (well
+           under a millisecond; 20 ms at most, as set_rate waits) */
+        uint64_t t = cntvct() + cntfrq() / 50;
+        while ((__atomic_load_n(&feed_seq, __ATOMIC_SEQ_CST) & 1) && cntvct() < t) __asm__ volatile("yield");
+        return;
+    }
+    uint32_t a = mon_latch;
+    int why = a < 0x200000u ? 1 : (a & 3) ? 2 : a > 0xFFF00000u ? 3 : !ahi_mapped(a, sizeof(struct mon_hdr)) ? 4 : 0;
+    struct mon_hdr *m = (struct mon_hdr *)(uintptr_t)a;
+    uint32_t n = why ? 0 : m->frames, vn = why ? 0 : m->vframes;
+    if (!why) why = m->magic != MON_MAGIC ? 5 : (n < 2048 || n > 65536 || (n & (n - 1))) ? 7
+                  : (vn && (vn < 1024 || vn > 65536 || (vn & (vn - 1)))) ? 6
+                  : !ahi_mapped(a, sizeof(struct mon_hdr) + n * 4 + vn * 4) ? 8 : 0;
+    if (why) {
+        static char line[] = "[AGA] monitor: ring at XXXXXXXX refused (N)";
+        for (int i = 0; i < 8; i++) line[23 + i] = "0123456789abcdef"[(a >> (28 - 4 * i)) & 15];
+        line[41] = (char)('0' + why);
+        aga_diag_log(line);
+        return;
+    }
+    m->wr = 0;
+    m->peak_l = m->peak_r = 0;
+    m->rate = rate_hz[rate_i];
+    m->offer = offer_rates();
+    m->hifi_db = hifi_db;
+    m->lim = 65536;
+    m->fx = 0;
+    m->eld = eld;
+    m->vwr = 0;
+    m->vstate = 0;
+    m->state = MON_TAKEN | (state == H_RUNNING ? MON_HDMI : 0);
+    __asm__ volatile("dmb ish" ::: "memory");
+    __atomic_store_n(&mon_live, m, __ATOMIC_RELEASE);
+}
+
+/* ---- the effects (1.118, aga_fx.h): equalizer, preamp, crossfeed, balance,
+   limiter - agaboot's Equalizer window. Two words a setting: $5200 + E5(v)
+   the value (0-31), then $5240 + E4(k) gives it to setting k (aga_fx.h's
+   order: bands 0-9, preamp, on, limiter, balance, crossfeed). From core 0's
+   trap only the numbers are kept; core 3 works the filters out from them at
+   the next feed (floating point, never in the trap). Off and flat until
+   agaboot sends them, as before. */
+static uint32_t fx_latch;
+static volatile int8_t fx_req[FX_NPARAM];
+static volatile uint32_t fx_seq;
+static uint32_t fx_seen = ~0u;
+static int fx_ri = -1;
+static fx_t fx;
+
+void aga_hdmi_fx_value(int v) { fx_latch = (uint32_t)v & 31u; }
+
+void aga_hdmi_fx_param(int k)
+{
+    if (k < 0 || k >= FX_NPARAM) return;
+    fx_req[k] = fx_decode(k, fx_latch);
+    __atomic_add_fetch(&fx_seq, 1, __ATOMIC_RELEASE);
+}
+
+/* the effects as the kernel has them, for the monitor: on, limiter,
+   crossfeed (2 bits), preamp + 12 (5), balance + 12 (5), bands not flat (4) */
+/* ---- Paula's voices (1.118): the voice mixer, and what each voice plays for
+   the Sound monitor. The mixer's words: the value word above ($5200 + E5(v)),
+   then $5260 + E4(k): k 0-3 voice k's pan (v - 8: -8 left .. 8 right), 4-7
+   voice k-4's level (0 silent, 1-16: -30 dB .. 0 dB in 2 dB steps), 8 the
+   mixer on (v & 1). Off, or each voice at its own side at 0 dB, the mix is
+   as before to the bit (host/tests/test_audio.c, test_blep.c). The glue
+   gives the gains to the core (both outputs) and the band-limited path here
+   takes them too. */
+static volatile int8_t vreq_pan[4] = { -8, 8, 8, -8 }, vreq_lev[4] = { 16, 16, 16, 16 };
+static volatile int vreq_on;
+static volatile uint32_t vseq;
+static uint32_t blep_vseen = ~0u;
+static const int16_t pan_cos[17] = { 256, 255, 251, 245, 237, 226, 213, 198, 181, 162, 142, 121, 98, 74, 50, 25, 0 };
+static const int16_t lev_q8[17] = { 0, 8, 10, 13, 16, 20, 26, 32, 41, 51, 64, 81, 102, 128, 162, 203, 256 };
+
+void aga_hdmi_voice_param(int k)
+{
+    int v = (int)fx_latch;
+    if (k >= 0 && k < 4) vreq_pan[k] = (int8_t)(v > 16 ? 8 : v - 8);
+    else if (k >= 4 && k < 8) vreq_lev[k - 4] = (int8_t)(v > 16 ? 16 : v);
+    else if (k == 8) vreq_on = v & 1;
+    else return;
+    __atomic_add_fetch(&vseq, 1, __ATOMIC_RELEASE);
+}
+
+/* each voice's gain into left and right, Q8: constant power across the pan */
+void aga_hdmi_voice_gains(int *on, int32_t gl[4], int32_t gr[4])
+{
+    *on = vreq_on;
+    for (int n = 0; n < 4; n++) {
+        int i = vreq_pan[n] + 8, g = lev_q8[vreq_lev[n]];
+        gl[n] = (pan_cos[i] * g) >> 8;
+        gr[n] = (pan_cos[16 - i] * g) >> 8;
+    }
+}
+
+/* what the voices played since the last call, from the glue (core 3) - kept
+   here until a feed hands them to the monitor's ring */
+#define VBUF 8192
+static uint32_t vbuf[VBUF], vbuf_wr, vrate_now;
+static struct aga_voice vinfo[4];
+static uint64_t vlast_t;
+
+void aga_hdmi_voices(const uint32_t *v, int n, const struct aga_voice *info, uint32_t rate)
+{
+    for (int i = 0; i < n; i++) vbuf[vbuf_wr++ & (VBUF - 1)] = v[i];
+    for (int i = 0; i < 4; i++) vinfo[i] = info[i];
+    vrate_now = rate;
+    vlast_t = cntvct();
+}
+
+static uint32_t fx_word(void)
+{
+    return (uint32_t)(fx_req[FX_ON] & 1) | (uint32_t)(fx_req[FX_LIM] & 1) << 1 | (uint32_t)(fx_req[FX_XFEED] & 3) << 2
+         | (uint32_t)(fx_req[FX_PRE] + 12) << 4 | (uint32_t)(fx_req[FX_BAL] + 12) << 9 | (uint32_t)fx.nb << 14;
+}
+
 /* ---- the feed: what both of Paula's paths share ----------------------------- */
 
 struct feed {
@@ -1138,6 +1353,10 @@ struct feed {
     struct ahi_hdr *ah;
     uint32_t ahi_wr;
     int ahi_hold;                        /* the ring ran dry and waits: these frames are holes */
+    int32_t ahi_g;                       /* HiFi volume, 65536 = 0 dB */
+    uint32_t lead;
+    struct mon_hdr *mon;                 /* the Sound monitor's ring, or none */
+    int fx;                              /* the effects run (aga_fx.h) */
 };
 
 /* A feed's start: 0 when it may not run now. Counts itself in, resyncs on a
@@ -1164,7 +1383,7 @@ static int feed_begin(struct feed *f)
     int was_idle = __atomic_load_n(&idle, __ATOMIC_SEQ_CST) || stale;
     if (was_idle || lead < lead_low || lead > lead_high) {
         /* (re)start a lead ahead of the DMA, silence in between and beyond */
-        if (!was_idle) aga_diag_inc(AGA_D_HDMI_RESYNCS);
+        if (!was_idle) { aga_diag_inc(AGA_D_HDMI_RESYNCS); mon_resyncs++; }
         wpos = (rpos + lead_target) % ring_frames;
         silence((rpos + 8) % ring_frames, lead_target - 8 + horizon);
         sil_end = (wpos + horizon) % ring_frames;
@@ -1186,10 +1405,56 @@ static int feed_begin(struct feed *f)
     f->ppm = ppm;
     aga_diag_set(AGA_D_HDMI_LEAD, lead);
     aga_diag_set(AGA_D_HDMI_PPM, (uint32_t)ppm);
+    f->lead = lead;
     f->fm = filt_mode;
     f->fl = filt_led;
     f->fk = hf_k[f->ri];
     f->gain16 = hdmi_gain16;
+    f->ahi_g = __atomic_load_n(&hifi_gain16, __ATOMIC_ACQUIRE);
+    /* the effects: worked out again when a setting or the rate changed */
+    uint32_t fq = __atomic_load_n(&fx_seq, __ATOMIC_ACQUIRE);
+    if (fq != fx_seen || f->ri != fx_ri) {
+        int8_t set[FX_NPARAM];
+        for (int k = 0; k < FX_NPARAM; k++) set[k] = fx_req[k];
+        fx_design(&fx, set, rate_hz[f->ri]);
+        fx_seen = fq;
+        fx_ri = f->ri;
+    }
+    f->fx = fx.on;
+    /* the Sound monitor: its ring now (a new one counts on from where its
+       window set it) */
+    struct mon_hdr *mh = __atomic_load_n(&mon_live, __ATOMIC_ACQUIRE);
+    if (mh != mon_cur) {
+        mon_cur = mh;
+        if (mh) {
+            mon_mask = mh->frames - 1;
+            mon_pcm = (int16_t *)(mh + 1);
+            mon_vmask = mh->vframes ? mh->vframes - 1 : 0;
+            mon_vring = mh->vframes ? (uint32_t *)((uint8_t *)(mh + 1) + mh->frames * 4) : (uint32_t *)0;
+            mon_vwr = mh->vwr;
+            mon_vrd = vbuf_wr;                   /* from now on */
+            mon_wr = mh->wr;
+            mon_pk_l = mon_pk_r = 0;
+            mon_beat = mh->beat;
+            mon_beat_t = cntvct();
+        }
+    }
+    if (mh) {                            /* its window still there? */
+        uint64_t now = cntvct();
+        if (mh->beat != mon_beat) { mon_beat = mh->beat; mon_beat_t = now; }
+        if (mh->magic != MON_MAGIC || now - mon_beat_t > 3 * cntfrq()) {
+            struct mon_hdr *e = mh;
+            /* let go first, then state 0: a window that lends it again on
+               seeing 0 is not let go by me a moment later */
+            if (__atomic_compare_exchange_n(&mon_live, &e, (struct mon_hdr *)0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
+                && mh->magic == MON_MAGIC)
+                __atomic_store_n(&mh->state, 0u, __ATOMIC_RELEASE);
+            aga_diag_log("[AGA] monitor: its window went quiet - ring let go");
+            mon_cur = (struct mon_hdr *)0;
+            mh = (struct mon_hdr *)0;
+        }
+    }
+    f->mon = mh;
     /* AHI: the ring now, and what the driver has written into it */
     struct ahi_hdr *ah = __atomic_load_n(&ahi_live, __ATOMIC_ACQUIRE);
     if (ah != ahi_cur) {
@@ -1242,12 +1507,12 @@ static inline void feed_emit(struct feed *f, int32_t pl, int32_t pr)
     if (f->ah) {                                         /* one AHI frame for each HDMI frame, the same rate */
         if (ahi_rd != f->ahi_wr) {
             uint32_t k = ahi_rd & ahi_mask;
-            if (ahi_pcm32) {                             /* 32 bits: the top 24 */
-                l += ahi_pcm32[2 * k] >> 8;
-                r += ahi_pcm32[2 * k + 1] >> 8;
-            } else {
-                l += 256 * ahi_pcm[2 * k];
-                r += 256 * ahi_pcm[2 * k + 1];
+            if (ahi_pcm32) {                             /* 32 bits: the top 24, at the HiFi volume */
+                l += (int32_t)(((int64_t)ahi_pcm32[2 * k] * f->ahi_g) >> 24);
+                r += (int32_t)(((int64_t)ahi_pcm32[2 * k + 1] * f->ahi_g) >> 24);
+            } else {                                     /* 16 bits: 256 * s at 0 dB, as before */
+                l += (int32_t)(((int64_t)ahi_pcm[2 * k] * f->ahi_g) >> 8);
+                r += (int32_t)(((int64_t)ahi_pcm[2 * k + 1] * f->ahi_g) >> 8);
             }
             ahi_rd++;
             ahi_seen = 1;
@@ -1258,10 +1523,21 @@ static inline void feed_emit(struct feed *f, int32_t pl, int32_t pr)
                 ahi_wait_t0 = 0;
             }
         }
-        l = clamp24(l);
-        r = clamp24(r);
     } else if (f->ahi_hold) {
         ahi_under++;
+    }
+    if (f->fx) fx_run(&fx, &l, &r);                     /* the effects, on the whole mix */
+    l = clamp24(l);                                      /* in range already without AHI or effects */
+    r = clamp24(r);
+    if (f->mon) {                                        /* the Sound monitor: the top 16 of what goes out */
+        int32_t ml = l, mr = r;                          /* clamped above */
+        uint32_t k = mon_wr & mon_mask;
+        mon_pcm[2 * k] = (int16_t)(ml >> 8);
+        mon_pcm[2 * k + 1] = (int16_t)(mr >> 8);
+        mon_wr++;
+        uint32_t al = (uint32_t)(ml < 0 ? -ml : ml), ar = (uint32_t)(mr < 0 ? -mr : mr);
+        if (al > mon_pk_l) mon_pk_l = al;
+        if (ar > mon_pk_r) mon_pk_r = ar;
     }
     put_frame(wpos, l, r);
     if (++wpos >= ring_frames) wpos = 0;
@@ -1279,6 +1555,44 @@ static void feed_end(struct feed *f)
     if (f->ah) {
         __atomic_store_n(&f->ah->rd, ahi_rd, __ATOMIC_RELEASE);   /* the driver paces itself by it */
         ahi_report(f->ahi_wr - ahi_rd);
+    }
+    if (f->mon) {                                        /* the Sound monitor: the count after the frames */
+        struct mon_hdr *m = f->mon;
+        struct ahi_hdr *ah = __atomic_load_n(&ahi_live, __ATOMIC_ACQUIRE);
+        if (mon_pk_l > m->peak_l) m->peak_l = mon_pk_l;
+        if (mon_pk_r > m->peak_r) m->peak_r = mon_pk_r;
+        mon_pk_l = mon_pk_r = 0;
+        m->rate = rate_hz[f->ri];
+        m->lead = f->lead;
+        m->resyncs = mon_resyncs;
+        m->ahi_fill = f->ah ? f->ahi_wr - ahi_rd : 0;
+        m->ahi_under = ahi_under;
+        m->offer = offer_rates();
+        m->hifi_db = hifi_db;
+        uint32_t lq = (uint32_t)fx.lmin >> 14;           /* Q30 to Q16 */
+        if (lq < m->lim) m->lim = lq;
+        fx.lmin = FX_ONE;
+        m->fx = fx_word();
+        if (mon_vring) {                                 /* Paula's voices, as the glue gave them */
+            if (vbuf_wr - mon_vrd > VBUF) mon_vrd = vbuf_wr - VBUF;
+            while (mon_vrd != vbuf_wr) mon_vring[mon_vwr++ & mon_vmask] = vbuf[mon_vrd++ & (VBUF - 1)];
+            for (int i = 0; i < 4; i++) {
+                m->v[i].lc = vinfo[i].lc;
+                m->v[i].len = vinfo[i].len;
+                m->v[i].per = vinfo[i].per;
+                m->v[i].vol = vinfo[i].vol;
+                m->v[i].flags = vinfo[i].flags;
+                m->v[i].pan = (uint8_t)(vreq_pan[i] + 8);
+                m->v[i].level = (uint8_t)vreq_lev[i];
+            }
+            m->vrate = vrate_now;
+            m->vstate = ((int64_t)(cntvct() - vlast_t) < (int64_t)(cntfrq() / 10) ? 1u : 0u) | (vreq_on ? 2u : 0u);
+            __atomic_store_n(&m->vwr, mon_vwr, __ATOMIC_RELEASE);
+        }
+        m->state = MON_TAKEN | MON_HDMI | (ah ? MON_AHI : 0) | (f->ah ? MON_AHIPLAY : 0)
+                 | (ah && (ah->flags & AHI_S32) ? MON_AHI32 : 0) | (ah && (ah->flags & AHI_LOWLAT) ? MON_LOWLAT : 0)
+                 | (out_24() ? MON_OUT24 : 0) | (paula_bl ? MON_PAULABL : 0) | (aga_enabled ? MON_PAULA : 0);
+        __atomic_store_n(&m->wr, mon_wr, __ATOMIC_RELEASE);
     }
     __asm__ volatile("dmb ish" ::: "memory");
     __atomic_store_n(&last_feed, cntvct(), __ATOMIC_RELEASE);
@@ -1346,7 +1660,7 @@ void aga_hdmi_feed_steps(const aga_step_t *s, int n, uint64_t now, uint32_t cck_
 {
     struct feed f;
     if (!feed_begin(&f)) { blep_live = 0; return; }
-    if (!blep_inited) { blep_init(&blep, f.ri, now, 0); blep_inited = 1; }
+    if (!blep_inited) { blep_init(&blep, f.ri, now, 0); blep_inited = 1; blep_vseen = ~0u; }
     /* HDMI samples per colour clock, 32.32: fewer while the lead is long */
     uint64_t rnom = ((uint64_t)rate_hz[f.ri] << 32) / cck_hz;
     uint64_t r = rnom - (uint64_t)(((int64_t)rnom * f.ppm) / 1000000);
@@ -1363,6 +1677,16 @@ void aga_hdmi_feed_steps(const aga_step_t *s, int n, uint64_t now, uint32_t cck_
         blep_live = 1;
     } else {
         blep_retime(&blep, blep_now, r);
+    }
+    uint32_t vq = __atomic_load_n(&vseq, __ATOMIC_ACQUIRE);
+    if (vq != blep_vseen) {                              /* the voice mixer, as it is now */
+        int on;
+        int32_t gl[4], gr[4], w[4][2];
+        aga_hdmi_voice_gains(&on, gl, gr);
+        for (int c = 0; c < 4; c++) { w[c][0] = gl[c]; w[c][1] = gr[c]; }
+        if (blep_is_paula(w)) on = 0;                    /* Paula's own wiring: the plain sums, to the bit */
+        blep_weights(&blep, on, w);
+        blep_vseen = vq;
     }
     for (int i = 0; i < n; i++) blep_step(&blep, s[i].t, s[i].ch, s[i].level);
     int32_t w16;
@@ -1425,11 +1749,11 @@ static void check(void)
     int c = dma_ch;
     uint32_t cb = rd(DMA_CB(c)), cs = rd(DMA_CS(c));
     if (cb != cb_bus) {
-        /* Someone else's control block (a 68k driver took the channel after
-           I did): theirs now, not reset under it (dma_lost). CONBLK_AD 0
-           and not running is only an idle channel: someone reset it and
-           nobody runs it - mine again in place, from the ring's start, as
-           1.112 restarted a stopped channel. */
+        /* Someone else's control block (a 68k driver took the fucking
+           channel after I did): theirs now, not reset under it (dma_lost).
+           CONBLK_AD 0 and not running is only an idle channel: someone reset
+           it and nobody runs it - mine again in place, from the ring's
+           start, as 1.112 restarted a stopped channel. */
         if (cb || (cs & CS_ACTIVE) || !start_dma()) { dma_lost(c); return; }
         aga_diag_inc(AGA_D_HDMI_FIXUPS);
         aga_diag_log("[AGA] HDMI audio: its DMA channel was reset - started again");
@@ -1449,10 +1773,10 @@ static void check(void)
     uint32_t ctl = rd(hw->mai_ctl), err = ctl & M_FLAGS, n = rd(hw->crp) & 0xFFFFF, our_n = rate_n[rate_i];
     if ((ctl & M_ENABLE) && n && n != our_n) {
         /* Enabled with an N of its own: another driver reset the MAI and
-           started it under mine. Theirs now (state 8, as at a start): my
-           DMA stops, its registers stay as that driver set them, and only
-           my slot 7 waits for Sound Off or my next start. A hotplug looks
-           different - the firmware leaves the MAI off, or N 0. */
+           started the fucker under mine. Theirs now (state 8, as at a
+           start): my DMA stops, its registers stay as that driver set them,
+           and only my slot 7 waits for Sound Off or my next start. A hotplug
+           looks different - the firmware leaves the MAI off, or N 0. */
         set_state(H_BUSY_OTHER);
         dma_stop();
         mai_ours = 0;

@@ -18,6 +18,9 @@
 #include <string.h>
 #include "aga/chipset.h"
 #include "aga_glue.h"
+void aga_hdmi_voice_gains(int *on, int32_t gl[4], int32_t gr[4]);
+void aga_hdmi_voices(const uint32_t *v, int n, const aga_voice_t info[4], uint32_t rate);
+
 #include "mmu.h"
 #include "A64.h"          /* MMU_* page attributes */
 #include "cache.h"        /* Emu68's software I/D caches: flushed/invalidated around redirection */
@@ -2007,11 +2010,17 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
             if (aga_beam_mode == 2) { if (add > 0xFFFF) add = 0xFFFF; }
             else {
                 if (add > BEAM_LEAD_CCK) add = BEAM_LEAD_CCK;
-                /* v1.117: clamp by the SAME packed snapshot used to
-                   calculate the beam value, in aga_peek_beam_at(). */
+                /* AGA-PiStorm 1.118: never report beyond the line the core
+                   is actually rendering. */
+                int h = aga_get_hpos(aga), mh = aga_cycles_per_line(aga);
+                if (mh > 0 && h >= 0) {
+                    if (h >= mh - 1) add = 0;
+                    else if ((uint64_t)h + add >= (uint64_t)mh)
+                        add = (uint64_t)(mh - 1 - h);
+                }
             }
         }
-        *value = aga_peek_beam_at(aga, reg, size, (uint32_t)add, aga_beam_mode != 2);
+        *value = aga_peek_beam_at(aga, reg, size, (uint32_t)add);
         aga_diag_beam_value((uint16_t)*value);   /* the values a raster wait keeps seeing */
 #ifdef AGA_PROBES
         /* A game that waits for one exact raster line does it in one of two
@@ -2052,13 +2061,13 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
                    interpolation lands on */
                 aga_diag_beam_byte((uint8_t)*value, gap, reg == 0x007);
             } else {
-                uint32_t both = aga_peek_beam_at(aga, VPOSR, 4, (uint32_t)add, aga_beam_mode != 2);
+                uint32_t both = aga_peek_beam_at(aga, VPOSR, 4, (uint32_t)add);
                 pair_line0 = (((both >> 16) & 7) << 8) | ((both >> 8) & 0xFF);
                 pair_t0 = now2; pair_hi = (uint16_t)*value; pair_open = 1;
             }
             if (reg == 0x006 && pair_open) {
                 aga_diag_beam_line((uint16_t)(((pair_hi & 7) << 8) | (*value & 0xFF)), gap);
-                uint32_t both = aga_peek_beam_at(aga, VPOSR, 4, (uint32_t)add, aga_beam_mode != 2);
+                uint32_t both = aga_peek_beam_at(aga, VPOSR, 4, (uint32_t)add);
                 uint32_t line_now = (((both >> 16) & 7) << 8) | ((both >> 8) & 0xFF);
                 aga_diag_inc(AGA_D_BEAM_PAIRS);
                 if (line_now != pair_line0) aga_diag_inc(AGA_D_BEAM_PAIR_SKIPS);
@@ -2894,6 +2903,7 @@ void aga_chipset_main(void)
                    the pacing clock for the standard from now on */
                 int row = 0, woven = aga_frame_woven(aga, &row), ntsc = aga_is_ntsc(aga);
                 aga_video_set_frame(woven, row, ntsc);
+                aga_video_set_frame_len(aga_last_frame_cck(aga));
                 int ax0, ax1, ay0, ay1;            /* and its display window, for Size Auto */
                 int aok = aga_last_frame_window(aga, &ax0, &ax1, &ay0, &ay1);
                 aga_video_auto_window(aok, ax0, ax1, ay0, ay1);
@@ -3106,9 +3116,18 @@ void aga_chipset_main(void)
             /* at the rate the real Paula plays: 3546895 / 127 on a PAL
                crystal, 3579545 / 128 on an NTSC one (aga_audio.c) */
             extern uint32_t aga_audio_rate(void);
+            /* AGA-PiStorm 1.118 voice mixer + sound monitor. */
+            int von;
+            int32_t vgl[4], vgr[4];
+            aga_hdmi_voice_gains(&von, vgl, vgr);
+            aga_audio_set_voices(aga, von, vgl, vgr);
             int n = aga_audio_pull(aga, buf, maxf, (int)aga_audio_rate());
             if (bl) ns = aga_audio_steps(aga, steps, AGA_STEP_RING, &steps_now);
+            static uint32_t vwords[4096];
+            aga_voice_t vinf[4];
+            int nv = aga_audio_voices(aga, vwords, 4096, vinf);
             unlock();
+            aga_hdmi_voices(vwords, nv, vinf, aga_audio_rate());
             if (bl && aga_loop_stop == 0)
                 aga_hdmi_feed_steps(steps, ns, steps_now, paced_ntsc ? 3579545u : 3546895u);
             /* rung 5 stops here: aga_audio_pull has run (pure computation over

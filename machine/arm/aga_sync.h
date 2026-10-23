@@ -48,12 +48,42 @@ struct hsync {
     int far;                  /* frames in a row the phase moved too far to measure */
     int reach;                /* 0 learning, 1 steering, -1 out of reach (needs more or less than the porch allows) */
     uint32_t slips;           /* phase jumps of half a picture or more: a frame shown twice or not at all */
+    uint32_t len_prev, pair;  /* the last emulated frame's length and the last pair's (hsync_len), 0 none */
+    uint32_t remeasures;      /* measures started again because the frames' length changed */
 };
 
 static inline void hsync_reset(struct hsync *s)
 {
     s->prev = -1; s->n = 0; s->moved = 0; s->ksum = 0; s->blocks = 0; s->need16 = 0; s->ph16 = -1;
     s->k = 0; s->steady = 0; s->far = 0; s->reach = 0; s->slips = 0;
+    s->len_prev = 0; s->pair = 0; s->remeasures = 0;
+}
+
+/* The emulated frame's length, in colour clocks (aga_last_frame_cck), each
+   frame shown before hsync_step. The need is measured over blocks and then
+   only moves halfway at each, so it is kept from one game to the next: a
+   game whose frames are longer or shorter than the last one's - a 312-line
+   PAL game after a 313-line one, PAL after NTSC - was steered with the old
+   need for a block and settled over several, 5-8 s with a slip or two
+   (RGB2RTG 0.76-dev82, EMM #2196, where the A1200's frame measure carried a
+   screen's length into the next). The kernel makes the frames, so it knows
+   their length exactly: when it changes, the measure starts again and its
+   first block, 32 frames, sets the need outright. Taken by pairs, so
+   interlace's 312/313 and NTSC's alternating long and short lines count as
+   the steady lengths they are. The porch in force stays until then. */
+static inline void hsync_len(struct hsync *s, uint32_t len)
+{
+    if (!len) return;
+    if (s->len_prev) {
+        uint32_t pair = len + s->len_prev;
+        if (s->pair && pair != s->pair) {
+            s->n = 0; s->moved = 0; s->ksum = 0; s->blocks = 0; s->need16 = 0;
+            s->steady = 0; s->far = 0; s->reach = 0;
+            s->remeasures++;
+        }
+        s->pair = pair;
+    }
+    s->len_prev = len;
 }
 
 /* One frame: `phase` the HVS line it was presented at (0..vactive-1; -1 in

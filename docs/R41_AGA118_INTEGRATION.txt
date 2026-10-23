@@ -1,0 +1,55 @@
+EMU68AGA BARE METAL R41 AGA-PiStorm 1.118 + R40a USB — RELEASE CANDIDATE 1
+Date: 2026-10-23
+
+THIS IS A LOCAL HARDWARE TEST CANDIDATE. IT HAS NOT BEEN PUBLISHED AS A RELEASE.
+
+BASE
+- Hardware-verified R40a TinyUSB big-endian USB fix.
+- R40a corrects USB descriptor VID/PID and HID wReportLength on AArch64-BE.
+- Physical controller 057E:2009 was confirmed working on R40a.
+
+AGA-PISTORM 1.118 INTEGRATION
+- 1.118 chipset core timing changes.
+- Measured PAL/NTSC frame colour-clock length.
+- HDMI/HVS frame-length remeasurement and porch control.
+- 1.118 NTSC scanline controls.
+- 1.118 HDMI audio/equalizer/effects path.
+- 1.118 Paula voice mixer and Sound Monitor backend.
+- 1.118 EDID/ELD additions and BLEP updates.
+- 1.118 RTG/P96 handoff updates.
+- Standalone agaboot command routing for picture, NTSC scanline, EQ, Sound Monitor and voice mixer controls.
+- R40a USB/keyboard/gamepad code and diagnostics retained; old v0.10.60 CC0 USB runtime was NOT imported.
+
+MATCHED AMIGA UTILITIES
+C:agaboot
+C:whdwrap
+SYS:Utilities/AGA-SoundMonitor
+All three were rebuilt from the imported AGA-PiStorm 1.118 source with the local m68k-amigaos-gcc toolchain.
+
+VALIDATION
+- Pi3 bare-metal kernel build: PASS.
+- R40a actual-source raw-wire endian regression: PASS x86 + ARM64-BE.
+- 057E:2009 receiver/gamepad HID regression: PASS x86 + ARM64-BE.
+- USB keyboard isolation/repeat regression: PASS x86 + ARM64-BE.
+- DWC2 ARM64-BE regression: PASS.
+- HID descriptor regression: PASS.
+- AGA-PiStorm 1.118 PAL frame measurement: PASS (71051 colour clocks).
+- AGA-PiStorm 1.118 NTSC variable frame measurement: PASS (59832/59833 colour clocks).
+- HDMI remeasurement on emulated frame-length change: PASS.
+- Physical R41 combined build: NOT YET CONFIRMED.
+
+INSTALL FOR HARDWARE TEST
+1. Back up the current working boot FAT32 kernel8.img.
+2. Copy BOOT/kernel8.img to the boot partition as kernel8.img.
+3. Boot and verify the POST says:
+   TINYUSB PI3 / R41 AGA118
+4. Confirm the previously fixed USB gamepad still works without holding fire.
+5. Install C/agaboot as C:agaboot.
+6. Install C/whdwrap if used.
+7. Install Utilities/AGA-SoundMonitor as SYS:Utilities/AGA-SoundMonitor.
+8. Test Workbench/RTG handoff, native AGA games, HDMI sound, PAL/NTSC switching, CRT/flicker/scanline settings and WHDLoad.
+
+DO NOT PUBLISH THIS BINARY UNTIL THE PHYSICAL R41 TEST IS CONFIRMED.
+
+Kernel SHA-256:
+a58a7c3d444e93a38174207b5d1251f10028c33ae0be39deeb14e7f27fca80e1

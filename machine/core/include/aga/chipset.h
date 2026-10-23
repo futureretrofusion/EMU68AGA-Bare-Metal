@@ -162,6 +162,18 @@ int      aga_last_frame_window(const aga_t *a, int *x0, int *x1, int *y0, int *y
 uint32_t aga_blit_count(const aga_t *a);            /* blits started since reset */
 void     aga_audio_stats(const aga_t *a, uint32_t *on, uint32_t *words, uint32_t *nz);  /* 4 each */
 void     aga_audio_set_mask(aga_t *a, int mask);    /* bit n: mix channel n */
+void aga_audio_set_voices(aga_t *a, int on, const int32_t gl[4], const int32_t gr[4]);
+typedef struct aga_voice {
+    uint32_t lc;                   /* AUDxLC */
+    uint16_t len, per;             /* AUDxLEN, AUDxPER */
+    uint8_t  vol;                  /* AUDxVOL, 0-64 */
+    uint8_t  flags;                /* AGA_VOICE_* */
+} aga_voice_t;
+#define AGA_VOICE_DMA   1          /* its DMA is on */
+#define AGA_VOICE_PLAYS 2          /* Paula's state machine runs it */
+#define AGA_VOICE_HEARD 4          /* not modulating another voice */
+#define AGA_VOICE_MIXED 8          /* not masked out (aga_audio_set_mask) */
+int      aga_audio_voices(aga_t *a, uint32_t *out, int max, aga_voice_t info[4]);
 void     aga_audio_triggers(const aga_t *a, uint32_t *out, int *count);  /* 32 x 6 */
 void     aga_audio_volstats(const aga_t *a, uint32_t *wr, uint32_t *nz, uint32_t *dmaoff);
 void     aga_audio_wrapstats(const aga_t *a, uint32_t *wrap, uint32_t *irq);
@@ -179,6 +191,7 @@ int      aga_get_ipl(const aga_t *a);
 int      aga_get_vpos(const aga_t *a);
 int      aga_get_hpos(const aga_t *a);
 int      aga_frame_count(const aga_t *a);
+uint32_t aga_last_frame_cck(const aga_t *a);
 int      aga_lines_per_frame(const aga_t *a);
 int      aga_cycles_per_line(const aga_t *a);     /* this line's: NTSC lines alternate 227 and 228 */
 /* Last completed frame, AGA_OUT_W x AGA_OUT_H, 0x00RRGGBB. */
@@ -255,7 +268,7 @@ int      aga_is_beam_reg(uint32_t reg);
 uint32_t aga_peek_beam(const aga_t *a, uint32_t reg, int size);
 /* same, plus the colour clocks elapsed since the chipset thread last stepped,
    so a beam wait sees every position and not only multiples of the step */
-uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_cck, int same_line);
+uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_cck);
 uint16_t aga_peek_reg(const aga_t *a, uint32_t reg);
 uint16_t aga_peek_dmacon(const aga_t *a);   /* the live DMACON, not an accumulation */
 uint32_t aga_peek_dmacon_log(const aga_t *a, int i);  /* the last 8 writes, oldest first */

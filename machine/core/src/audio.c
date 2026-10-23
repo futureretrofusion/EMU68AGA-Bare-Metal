@@ -4,14 +4,15 @@
  * Each channel is advanced once per scanline at colour-clock precision; the
  * output is box-filtered into a stereo ring buffer at `audio_rate` Hz.
  *
- * My own simplified Paula; no UAE/WinUAE code or data is copied. Four rules
- * come from WinUAE audio.cpp (audio_state_channel2), rewritten here: a sample
- * the CPU starts needs its interrupt not pending, and an ignored AUDxDAT write
- * is dropped; the first DMA word is requested at once and raises its interrupt
- * when it arrives; with DMA switched off a channel still waiting for its first
- * word stops while a playing one plays out; with DMA off the interrupt is
- * raised for each word and the channel stops only if the previous one is
- * still pending. The field names dat_written and intreq2 are WinUAE's.
+ * My own simplified Paula; not one damn byte of UAE/WinUAE code or data is
+ * copied. Four rules come from WinUAE audio.cpp (audio_state_channel2),
+ * rewritten here: a sample the CPU starts needs its interrupt not pending,
+ * and an ignored AUDxDAT write is dropped; the first DMA word is requested
+ * at once and raises its interrupt when it arrives; with DMA switched off a
+ * channel still waiting for its first word stops while a playing one plays
+ * out; with DMA off the interrupt is raised for each word and the channel
+ * stops only if the previous one is still pending. The field names
+ * dat_written and intreq2 are WinUAE's.
  *   WinUAE audio.cpp: Copyright 1995, 1996, 1997 Bernd Schmidt,
  *     Copyright 1996 Marcus Sundberg, Copyright 1996 Manfred Thole,
  *     Copyright 2006 Toni Wilen
@@ -21,6 +22,8 @@
 
 #define AUD_RING 32768      /* stereo frames */
 static int16_t ring[AUD_RING * 2];
+static uint32_t vring[AUD_RING];   /* the four voices at each frame (aga_audio_voices) */
+static uint32_t vring_rd;
 static uint32_t ring_wr, ring_rd;
 
 /* box filter accumulators (cck-weighted sums) */
@@ -72,7 +75,9 @@ void aud_reset(aga_t *a)
     memset(a->aud, 0, sizeof a->aud);
     a->audio_rate = 48000;
     a->aud_mask = 15;
+    a->vmix_on = 0;
     ring_wr = ring_rd = 0;
+    vring_rd = 0;
     acc_l = acc_r = 0;
     acc_cck = 0;
     aud_clock(a);
@@ -152,8 +157,8 @@ void aud_dmacon_changed(aga_t *a, uint16_t old, uint16_t new_)
                    A ProTracker sample begins with a zero word by convention, so
                    the first word says nothing. This says whether the DATA IS
                    THERE: zero means my chip RAM copy has no sound at that
-                   address, which would be my fault; large means the data is
-                   fine and the silence is the volume's doing. */
+                   address, which would be mine; large means the data is fine
+                   and the silence is the volume's doing. */
                 {
                     uint32_t words = c->len && c->len < 256 ? c->len : 256;   /* LEN 0: 65,536 */
                     int peak = 0;
@@ -217,7 +222,7 @@ static void chan_next_word(aga_t *a, int n, audio_channel_t *c)
         /* Paula's length counter counts down through 0: an AUDxLEN of 0 is
            65,536 words, a 128 KB sample (WinUAE: wlen = (wlen - 1) & 0xffff
            unless it is 1). Mine stopped at anything below 2, so LEN 0 looped
-           a single word and raised AUDx at every one (found by RGB2RTG). */
+           a single word and raised AUDx at every damn one (found by RGB2RTG). */
         if (c->lencnt != 1) {
             c->lencnt = (uint16_t)(c->lencnt - 1);
         } else {
@@ -233,8 +238,8 @@ static void chan_next_word(aga_t *a, int n, audio_channel_t *c)
             if ((a->aud_wrap[n] & 511) == 0) {
                 /* Is the buffer I keep replaying actually SILENT? A game turns
                    a one-shot into silence by pointing the channel at a short
-                   quiet loop; if what I loop has signal in it, I am looping a
-                   piece of the effect instead, and that is the drone. */
+                   quiet loop; if what I loop has signal, I am looping
+                   part of the effect instead, and that's the bloody drone. */
                 uint32_t *w = a->aud_wrapinfo[a->aud_wrapinfo_head & 31];
                 uint32_t words = c->len && c->len < 64 ? c->len : 64;   /* LEN 0: 65,536 */
                 int peak = 0;
@@ -266,9 +271,9 @@ static void chan_run(aga_t *a, int n, audio_channel_t *c, int cck, int64_t *l, i
     /* A channel that modulates the next one (ADKCON USExVy / USExPy: bits n
        and n + 4; channel 3's modulate nothing) is not heard - its words are
        the next channel's volume or period, and Paula does not output it
-       (WinUAE audio_update_adkmasks). Mine mixed the bastards in as 8-bit
-       samples: a loud buzz on HDMI and on the real Paula (found by RGB2RTG).
-       The modulation itself is still not emulated - the next channel plays at
+       (WinUAE audio_update_adkmasks). Mine mixed them in as 8-bit samples: a
+       loud bloody buzz on HDMI and on the real Paula (found by RGB2RTG). The
+       modulation itself is still not emulated - the next channel plays at
        its own volume and period. */
     int heard = !((a->adkcon >> n) & 0x11);
     int mixed = heard && (a->aud_mask & (1 << n));
@@ -289,7 +294,13 @@ static void chan_run(aga_t *a, int n, audio_channel_t *c, int cck, int64_t *l, i
         if (c->cur_sample && vol && heard) a->aud_audible[n]++;
         /* Masked channels still RUN - their pointers, interrupts and timing are
            what the game depends on - they simply do not reach the mix. */
-        if (a->aud_mask & (1 << n)) { if (left) *l += s; else *r += s; }
+        if (a->aud_mask & (1 << n)) {
+            if (!a->vmix_on) { if (left) *l += s; else *r += s; }
+            else {                         /* the voice mixer: where this voice sits, how loud */
+                *l += (int64_t)s * a->vgl[n] >> 8;
+                *r += (int64_t)s * a->vgr[n] >> 8;
+            }
+        }
         t += step;
         c->percnt -= step;
         if (c->percnt <= 0) {
@@ -309,13 +320,14 @@ static void chan_run(aga_t *a, int n, audio_channel_t *c, int cck, int64_t *l, i
                 /* Paula raises the channel's interrupt request as soon as the
                    first word of a new DMA start is in - "your pointer and length
                    are taken, queue the next ones" (WinUAE: state 1 -> 5,
-                   setirq). I only raised it when a sample ran out and looped.
-                   Banshee polls INTREQR for exactly this bit and turns the
-                   volume up only once it sees it. It retriggers its gun twice a
-                   second with a 0.84 s sample that therefore never reaches its
-                   end, so the bit never came: 293 shots started at volume 0 and
-                   fucking stayed there, and the right speaker was silent 84% of
-                   the time while a real A1200 plays four sounds a second. */
+                   setirq). I only raised the damn thing when a sample ran out
+                   and looped. Banshee polls INTREQR for exactly this bit and
+                   turns the volume up only once it sees it. It retriggers its
+                   gun twice a second with a 0.84 s sample that therefore never
+                   reaches its end, so the bit never came: 293 shots started at
+                   volume 0 and stayed there, and the right speaker was silent
+                   84% of the time while a real A1200 plays four sounds a
+                   second. */
                 aga_intreq_set(a, (uint16_t)(INTF_AUD0 << n)); a->dbg_audirq[2]++;
             } else if (c->state == 2) {    /* high byte played, play low byte */
                 c->cur_sample = (int8_t)(c->dat & 0xFF);
@@ -412,6 +424,14 @@ void aud_line_tick(aga_t *a)
             uint32_t idx = ring_wr & (AUD_RING - 1);
             ring[idx * 2] = (int16_t)sl;
             ring[idx * 2 + 1] = (int16_t)sr;
+            uint32_t vw = 0;                       /* the voices, as they stand at this frame */
+            for (int n = 0; n < 4; n++) {
+                const audio_channel_t *c = &a->aud[n];
+                int heard = c->state && !((a->adkcon >> n) & 0x11);
+                int v = heard ? ((int)c->cur_sample * c->vol) >> 6 : 0;
+                vw |= (uint32_t)(uint8_t)(int8_t)(v > 127 ? 127 : v < -128 ? -128 : v) << (24 - 8 * n);
+            }
+            vring[idx] = vw;
             ring_wr++;
             acc_l = acc_r = 0;
             acc_cck -= cck_per_sample;   /* keep the remainder: do not drift */
@@ -437,6 +457,32 @@ int aga_audio_pull(aga_t *a, int16_t *lr, int frames, int rate)
    how many sample words it fetched. The glue publishes these into the counter
    block once a frame. */
 void aga_audio_set_mask(aga_t *a, int mask) { a->aud_mask = mask & 15; }
+
+void aga_audio_set_voices(aga_t *a, int on, const int32_t gl[4], const int32_t gr[4])
+{
+    a->vmix_on = on != 0;
+    for (int n = 0; n < 4; n++) {
+        a->vgl[n] = gl[n];
+        a->vgr[n] = gr[n];
+    }
+}
+
+int aga_audio_voices(aga_t *a, uint32_t *out, int max, aga_voice_t info[4])
+{
+    if (ring_wr - vring_rd > (uint32_t)max) vring_rd = ring_wr - (uint32_t)max;
+    int k = 0;
+    while (vring_rd != ring_wr) out[k++] = vring[vring_rd++ & (AUD_RING - 1)];
+    for (int n = 0; n < 4; n++) {
+        const audio_channel_t *c = &a->aud[n];
+        info[n].lc = c->lc;
+        info[n].len = c->len;
+        info[n].per = c->per;
+        info[n].vol = (uint8_t)(c->vol > 64 ? 64 : c->vol);
+        info[n].flags = (uint8_t)((c->dmaen ? AGA_VOICE_DMA : 0) | (c->state ? AGA_VOICE_PLAYS : 0)
+                      | (!((a->adkcon >> n) & 0x11) ? AGA_VOICE_HEARD : 0) | ((a->aud_mask >> n) & 1 ? AGA_VOICE_MIXED : 0));
+    }
+    return k;
+}
 
 /* The last 32 channel starts, oldest first: chan, lc, len, per, vol, word0. */
 void aga_audio_triggers(const aga_t *a, uint32_t *out, int *count)

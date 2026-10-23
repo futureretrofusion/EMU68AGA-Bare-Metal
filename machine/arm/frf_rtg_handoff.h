@@ -10,6 +10,7 @@ typedef struct {
     uint32_t boot_list;
     uint32_t external_list;
     unsigned frames;
+    unsigned external_stable;
     unsigned rtg_owns;
     unsigned saw_native_off;
     unsigned prev_native;
@@ -41,19 +42,31 @@ static inline int frf_rtg_handoff_step(frf_rtg_handoff *h,
                    live != 0 && live != own_a && live != own_b &&
                    live != h->boot_list;
     int rising = native && !h->prev_native;
-    if (external && (had_aga_output || h->frames >= 16u)) {
-        if (!h->rtg_owns) {
-            ++h->takeovers;
-            h->rtg_owns = 1;
-            h->saw_native_off = 0;
+    /* External HVS page flips are not evidence of a mode change while
+     * a native AGA game is active. Accept the RTG desktop only after
+     * native output has stopped and its external list is stable. */
+    if (!native && external && (had_aga_output || h->frames >= 16u)) {
+        if (h->external_list == live) {
+            if (h->external_stable < 3u) ++h->external_stable;
+        } else {
+            h->external_list = live;
+            h->external_stable = 1u;
         }
-        h->external_list = live;
+        if (h->external_stable >= 2u && !h->rtg_owns) {
+            ++h->takeovers;
+            h->rtg_owns = 1u;
+            h->saw_native_off = 1u;
+        }
+    } else if (!h->rtg_owns) {
+        h->external_stable = 0u;
+        h->external_list = 0u;
     }
     if (h->rtg_owns) {
         if (!native) h->saw_native_off = 1;
         if (rising && h->saw_native_off) {
             h->rtg_owns = 0;
             h->saw_native_off = 0;
+            h->external_stable = 0;
             ++h->returns;
         }
     }

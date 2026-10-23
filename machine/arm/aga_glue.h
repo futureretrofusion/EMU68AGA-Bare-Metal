@@ -107,12 +107,14 @@ void aga_video_hdmi_sync(int on);    /* HDMI sync: the HDMI frame follows the em
 void aga_video_set_sharp(int on);    /* nearest-neighbour scaling instead of the smooth kernel */
 void aga_video_set_look(int look);   /* 0 sharp, 1 smooth, 2 TV (blends across) - $592L */
 void aga_video_set_scale(int mode);  /* 0 4:3, 1 integer, 2 fill - $597S */
+void aga_video_set_ntsc_scanlines(int v); /* $517n, v1.118 */
 void aga_video_set_scanlines(int level);   /* 0 off .. 4 (25% steps) - $598L */
 void aga_video_set_laced_scanlines(int level);   /* the same, woven interlaced frames - $59En */
 void aga_video_set_mask(int level);            /* the CRT mask: 0 off, 1-4 = 25-100% dark ($510n) */
 void aga_video_set_scan_shape(int shape);      /* the scanlines' shape: 0 Even, 1 Crisp, 2 Whole lines ($511n) */
 void aga_video_set_border(int down, int pct);    /* TV border across / down, 0-10% - $59Bn / $59Cn */
 void aga_video_set_frame(int woven, int row, int ntsc);   /* core 3, before each present */
+void aga_video_set_frame_len(uint32_t cck); /* v1.118 measured HDMI frame clocks */
 void aga_video_set_pos_x(int x);     /* the picture right by x hires pixels - $57nn */
 void aga_video_set_pos_y(int y);     /* and down by y lines - $56nn */
 void aga_video_calibrate(int on);    /* the Position screen, desktop only - $593N */

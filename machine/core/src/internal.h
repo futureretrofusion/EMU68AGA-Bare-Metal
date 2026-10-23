@@ -245,7 +245,6 @@ struct aga {
 
     /* beam */
     int hpos, vpos, lof, maxhpos, maxvpos, ntsc;
-    uint32_t beam_word;  /* v1.117 atomic beam snapshot: vpos hpos LOL LOF */
     int lol;                    /* this line is a long one (NTSC, 228 cck): maxhpos includes it */
     int ntsc_strap;             /* the Alice's PAL/NTSC strap, VPOSR's ID: cfg.ntsc at the reset */
     int vblank_end;
@@ -254,6 +253,8 @@ struct aga {
     int frame;
     int lof_toggle;
     uint32_t line_no;           /* lines since the reset, for "within two lines" */
+    uint32_t frame_cck;        /* completed-line clocks in current emulated frame */
+    uint32_t last_frame_cck;   /* exact length of last completed frame */
 
     /* generic registers */
     uint16_t regs[256];
@@ -387,6 +388,8 @@ struct aga {
        channel produce silence, and one of these four values must say why. */
     uint32_t aud_trig[32][6];      /* chan, lc, len, per, vol, first sample word */
     uint32_t aud_trig_head;
+    int      vmix_on;
+    int32_t vgl[4], vgr[4];
     int      aud_mask;             /* bit n: mix channel n. 0 = not yet set = all */
     int      pf_data_nonzero;      /* a bitplane fetch in this frame returned non-zero data */
     int      last_frame_data;      /* same, for the last completed frame */
@@ -413,14 +416,6 @@ struct aga {
     int trace_cur, trace_done;
 #endif
 };
-
-static inline void beam_publish(aga_t *a)
-{
-    uint32_t w = ((uint32_t)(a->vpos & 0x7FF) << 16)
-       | ((uint32_t)a->hpos & 0x1FF)
-       | (a->lol ? 1u<<30 : 0) | (a->lof ? 1u<<31 : 0);
-    __atomic_store_n(&a->beam_word,w,__ATOMIC_RELEASE);
-}
 
 /* Record a DMA slot. Compiled out entirely unless AGA_TRACE is defined. */
 static inline void aga_trace_at(aga_t *a, int hpos, uint8_t type, uint16_t reg, uint32_t addr)
