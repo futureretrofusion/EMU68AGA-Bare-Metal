@@ -206,27 +206,6 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
        HID usage; only claim a boot-mouse interface if it also advertises
        a joystick or gamepad collection. Never claim a boot keyboard. */
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
-    /* R21: exact hardware 057E:2009, interface 0, HID protocol 0.
-       R20 incorrectly searched for 220D:330C and required idle reports
-       before allowing a candidate. Physical R18/R20 device table shows
-       057E2009 at address 1. Claim this controller at HID mount.
-       Never claim an ordinary boot keyboard/mouse interface. */
-    if(have_vidpid && frf_r20_is_receiver(vid,pid,idx) &&
-       protocol==HID_ITF_PROTOCOL_NONE) {
-        const int slot=first_free();
-        if(slot<0)return;
-        struct pad_itf *p=&pads[slot];
-        memset(p,0,sizeof(*p));
-        p->addr=addr;p->idx=idx;p->report_is_common=5u;
-        p->next_submit_ms=tusb_time_millis_api()+10u;
-        ++active_pads;
-        r20_dev=((uint32_t)addr<<16)|idx;
-        frf_r26_receiver_addr=addr;
-        frf_r26_receiver_idx=idx;
-        kprintf("[FRF-R39] 057E:2009 HID controller claimed at USB %u interface %u, PAD=%u\n",
-                addr,idx,active_pads);
-        return;
-    }
     /* R30: the working USPi implementation uses the actual HID report
        descriptor for buttons, hat, and axes. Do that before raw fallback. */
     if(have_vidpid && vid==0x220du && pid==0x330cu &&
@@ -297,6 +276,26 @@ void frf_tinyusb_pad_mount(uint8_t addr,uint8_t idx,
             kprintf("[FRF-R19] HID descriptor gamepad dev=%u interface=%u fields=%u id=%u\n",
                     addr,idx,parsed.count,parsed.first_id);
         }
+        return;
+    }
+    /* R41: R40a fixed the big-endian HID descriptor length, so 057E:2009
+       must prefer its real HID descriptor. The old early compatibility claim
+       collapsed all buttons into a single Boolean fire. Only fall back to the
+       legacy 24-byte profile when descriptor parsing genuinely failed. */
+    if(have_vidpid && frf_r20_is_receiver(vid,pid,idx) &&
+       protocol==HID_ITF_PROTOCOL_NONE) {
+        const int slot=first_free();
+        if(slot<0)return;
+        struct pad_itf *p=&pads[slot];
+        memset(p,0,sizeof(*p));
+        p->addr=addr;p->idx=idx;p->report_is_common=5u;
+        p->next_submit_ms=tusb_time_millis_api()+10u;
+        ++active_pads;
+        r20_dev=((uint32_t)addr<<16)|idx;
+        frf_r26_receiver_addr=addr;
+        frf_r26_receiver_idx=idx;
+        kprintf("[FRF-R41] 057E:2009 descriptor unavailable; legacy 24B fallback at USB %u interface %u\n",
+                addr,idx);
         return;
     }
     for(uint8_t j=0;j<n;++j) {

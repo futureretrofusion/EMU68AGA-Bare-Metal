@@ -158,6 +158,26 @@ int main(void)
     assert(joy==0x0300u && fire==1);
     frf_tinyusb_pad_unmount(4,0);
     assert(joy==0 && fire==0);
+    /* R41: 057E:2009 must prefer the parsed descriptor. Verify three
+       independent HID button usages survive the complete pad publish path. */
+    buttons_port1=0;
+    frf_tinyusb_pad_mount(5,3,desc24,sizeof(desc24));
+    assert(frf_tinyusb_gamepad_count()==1);
+    uint8_t sw24[24]={0};
+    sw24[0]=128; sw24[1]=128; sw24[2]=8;
+    frf_tinyusb_pad_report(5,3,sw24,24);
+    assert(joy==0 && fire==0 && buttons_port1==0);
+    sw24[3]=1u;
+    frf_tinyusb_pad_report(5,3,sw24,24);
+    assert(fire==1 && buttons_port1==1u);
+    sw24[3]=2u;
+    frf_tinyusb_pad_report(5,3,sw24,24);
+    assert(fire==0 && buttons_port1==2u);
+    sw24[3]=4u;
+    frf_tinyusb_pad_report(5,3,sw24,24);
+    assert(fire==0 && buttons_port1==4u);
+    frf_tinyusb_pad_unmount(5,3);
+    assert(frf_tinyusb_gamepad_count()==0);
     /* R33: observed 220D:330C with non-gamepad descriptor: fallback
        must accept ID02 directions without requiring an ID01/fire. */
     frf_tinyusb_pad_mount(4,0,mouse_only,3);
