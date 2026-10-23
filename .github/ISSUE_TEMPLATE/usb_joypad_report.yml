@@ -1,0 +1,75 @@
+name: USB joypad / input report
+description: Report controller, keyboard or mouse behaviour
+title: "[USB] "
+labels: ["usb", "input"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        USB behaviour is hardware-specific. Please provide the exact controller identity and what works or fails.
+  - type: input
+    id: version
+    attributes:
+      label: EMU68AGA version
+      placeholder: v0.10.40a
+    validations:
+      required: true
+  - type: input
+    id: controller
+    attributes:
+      label: Controller / device name
+      placeholder: Nintendo Switch Pro Controller / generic USB pad / keyboard model
+    validations:
+      required: true
+  - type: input
+    id: vidpid
+    attributes:
+      label: USB VID:PID
+      description: If known, provide the host-order value, for example 057E:2009.
+      placeholder: 057E:2009
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection type
+      options:
+        - Direct USB
+        - USB hub
+        - Wireless USB receiver
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: working
+    attributes:
+      label: What works?
+      placeholder: D-pad, analog stick, fire 1, fire 2, keyboard, mouse...
+    validations:
+      required: true
+  - type: textarea
+    id: broken
+    attributes:
+      label: What does not work?
+      placeholder: All buttons map to fire 1, second button missing, repeats keys, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: mapping
+    attributes:
+      label: Observed mapping
+      description: List button-to-Amiga-function mappings if known.
+      placeholder: |
+        Button A -> Fire 1
+        Button B -> Fire 2
+        D-pad -> Joystick directions
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Include POST output, FRFPadLive output, USB descriptors, report bytes, or screenshots if available.
+  - type: checkboxes
+    id: test
+    attributes:
+      label: Hardware confirmation
+      options:
+        - label: Tested on a physical Raspberry Pi / Amiga setup.
+          required: true
