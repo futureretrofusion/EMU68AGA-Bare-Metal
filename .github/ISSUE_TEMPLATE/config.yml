@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: General questions and discussion
+    url: https://github.com/futureretrofusion/EMU68AGA-Bare-Metal/discussions
+    about: Use Discussions for setup questions, ideas and general conversation that are not reproducible bug reports.
