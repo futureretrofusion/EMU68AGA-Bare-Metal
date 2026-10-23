@@ -137,7 +137,11 @@ int frf_hid_gamepad_parse(struct frf_hid_map *out,const uint8_t *data,
           for(unsigned i=0;i<g.report_count && out->count<FRF_HID_FIELDS;++i) {
             uint32_t usage=local_usage(&l,i),page=g.usage_page;
             if(usage>>16u){page=usage>>16u;usage&=0xffffu;}
-            int kind=kind_for(page,usage);
+            /* Match the working USPi parser: once an INPUT(Data,Var)
+               belongs to Usage Page Button, every field in its Report Count
+               is a physical button even if the clone descriptor omits,
+               repeats or sparsely labels individual Usage items. */
+            int kind=(page==9u)?BUTTON:kind_for(page,usage);
             if(!kind)continue;
             struct frf_hid_field *f=&out->field[out->count++];
             f->bit=(uint16_t)(offset+i*g.report_size);
