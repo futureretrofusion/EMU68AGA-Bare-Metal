@@ -10,6 +10,7 @@
 #include "frf_r19_hid_descriptor.h"
 #include "frf_r27_220d.h"
 #include "frf_r33_id02.h"
+#include "../frf_joymap.h"
 
 #define FRF_PAD_SLOTS 8u
 struct pad_itf {
@@ -51,7 +52,7 @@ static volatile uint32_t descriptor_packets,descriptor_valid,descriptor_joy,desc
 static volatile uint32_t descriptor_last_address,descriptor_fields;
 extern int frf_r20_is_receiver(uint16_t,uint16_t,uint8_t);
 extern int frf_r20_observed_neutral(const uint8_t*,uint16_t);
-extern int frf_r20_decode(const uint8_t*,uint16_t,uint16_t*,int*);
+extern int frf_r20_decode(const uint8_t*,uint16_t,uint16_t*,uint32_t*);
 static volatile uint32_t r20_seen,r20_valid,r20_rejected,r20_joy,r20_fire,r20_dev;
 uint32_t frf_r20_seen(void){return r20_seen;}
 uint32_t frf_r20_valid(void){return r20_valid;}
@@ -103,6 +104,7 @@ int frf_pad_is_dyonder(uint16_t vid,uint16_t pid)
 }
 extern void aga_virtual_joy_set(int port,uint16_t joydat,int fire);
 extern void aga_virtual_pad_buttons(int port,uint32_t buttons);
+extern void aga_virtual_pad_line_snapshot(uint8_t *pra,uint16_t *potgor);
 extern void kprintf(const char*,...);
 
 extern uint32_t frf_tinyusb_xpad_count(void);
@@ -162,9 +164,11 @@ static void frf_pad_publish_device(uint8_t addr) {
         fire|=p->published_fire!=0;
         buttons|=p->buttons_state;
     }
-    /* Primary fire and button 2/3 have independent Amiga paths. */
-    aga_virtual_joy_set(port,joy,fire);
-    aga_virtual_pad_buttons(port,buttons);
+    /* Convert decoded physical-button bits through the external profile.
+       With no valid profile, preserve verified R40a low-nibble Fire1. */
+    const uint32_t logical=frf_joymap_apply(buttons);
+    aga_virtual_joy_set(port,joy,(logical&1u)!=0u);
+    aga_virtual_pad_buttons(port,logical);
 }
 static void frf_pad_publish_report(struct pad_itf *p,uint16_t joy,
                                    int fire,uint32_t buttons) {
@@ -382,7 +386,7 @@ static void map_standard_report(const uint8_t *data)
                 (((left!=0)^(up!=0))?0x0100u:0u) |
                 (right?0x0002u:0u) |
                 (((right!=0)^(down!=0))?0x0001u:0u));
-    aga_virtual_joy_set(1,joy,(buttons&0x0fu)!=0u);
+    aga_virtual_joy_set(1,joy,(buttons&1u)!=0u);
 }
 /* Exact legacy USPi ShanWan 2563:0576 191-byte descriptor decoding:
  * report 01 [2 button bytes] [hat 0..8] [X,Y,Rx,Ry 0..255] [2 vendor].
@@ -481,11 +485,13 @@ int frf_r20_compat_receive(uint8_t addr,uint8_t idx,
     }
     ++r20_seen;
     uint16_t joy=0;
-    int fire=0;
-    if(frf_r20_decode(data,len,&joy,&fire)) {
+    uint32_t buttons=0;
+    if(frf_r20_decode(data,len,&joy,&buttons)) {
         ++r20_valid;
+        const int fire=(buttons&1u)!=0u;
         r20_joy=joy;r20_fire=(uint32_t)fire;
-        frf_pad_publish_report(p,joy,fire,(uint32_t)(fire!=0));
+        frf_r32_last_buttons=buttons;
+        frf_pad_publish_report(p,joy,fire,buttons);
         ++gamepad_reports;
         ++p->reports;
     } else ++r20_rejected;
@@ -522,28 +528,34 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
                 frf_hid_gamepad_decode_buttons_ordered(&p->desc_map,data,len,&state,&present);
             if(have_buttons) {
               p->buttons_state=(p->buttons_state&~present)|(state&present);
-              p->fire_report_state=(uint8_t)((p->buttons_state&0x0fu)!=0u);
+              p->fire_report_state=(uint8_t)((p->buttons_state&1u)!=0u);
               frf_r32_last_buttons=p->buttons_state;
             }
             joy=p->joy_report_state;
             for(unsigned rid=0;rid<4u;rid++)
                 joy=frf_r33_merge_joy(joy,p->joy_by_report[rid]);
             fire=p->fire_report_state;
+
+            frf_pad_publish_report(p,joy,fire,p->buttons_state);
 #ifdef FRF_R41_BUTTON_TRACE
             {
                 static uint32_t trace_buttons=0xffffffffu;
-                static uint16_t trace_joy=0xffffu;
-                static int trace_fire=-1;
-                if(p->buttons_state!=trace_buttons || joy!=trace_joy || fire!=trace_fire) {
-                    kprintf("[R41-BTN] raw=%02x %02x %02x %02x %02x %02x %02x %02x mask=%08x fire=%u joy=%04x\n",
+                static uint16_t trace_joy=0xffffu,trace_pot=0xffffu;
+                static uint8_t trace_pra=0xffu;
+                uint8_t pra=0; uint16_t pot=0;
+                aga_virtual_pad_line_snapshot(&pra,&pot);
+                if(p->buttons_state!=trace_buttons || joy!=trace_joy ||
+                   pra!=trace_pra || (pot&0x5000u)!=(trace_pot&0x5000u)) {
+                    kprintf("[R41-BTN] raw=%02x %02x %02x %02x %02x %02x %02x %02x mask=%08x PRA7=%u POT14=%u POT12=%u joy=%04x\n",
                         len>0?data[0]:0u,len>1?data[1]:0u,len>2?data[2]:0u,len>3?data[3]:0u,
                         len>4?data[4]:0u,len>5?data[5]:0u,len>6?data[6]:0u,len>7?data[7]:0u,
-                        p->buttons_state,(unsigned)(fire!=0),joy);
-                    trace_buttons=p->buttons_state;trace_joy=joy;trace_fire=fire;
+                        p->buttons_state,(unsigned)((pra&0x80u)==0u),
+                        (unsigned)((pot&0x4000u)==0u),(unsigned)((pot&0x1000u)==0u),joy);
+                    trace_buttons=p->buttons_state; trace_joy=joy;
+                    trace_pra=pra; trace_pot=pot;
                 }
             }
 #endif
-            frf_pad_publish_report(p,joy,fire,p->buttons_state);
             descriptor_joy=joy;
             descriptor_fire=(uint32_t)fire;
             ++descriptor_valid;

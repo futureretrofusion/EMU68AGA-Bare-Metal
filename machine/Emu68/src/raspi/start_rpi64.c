@@ -13,6 +13,7 @@
 #include "A64.h"
 #include "config.h"
 #include "support.h"
+#include "../frf_usb/frf_joymap.h"
 #include "tlsf.h"
 #include "mmu.h"
 #include "devicetree.h"
@@ -379,9 +380,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"v0.10.41 / AGA 1.118",cyan);
+    post_text(x+10,y+25,"v0.10.42 / AGA 1.118",cyan);
 #else
-    post_text(x+10,y+25,"v0.10.41 / AGA 1.118",cyan);
+    post_text(x+10,y+25,"v0.10.42 / AGA 1.118",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -1276,6 +1277,9 @@ static int frf_wifi_opted_in(void)
 
 void platform_post_init()
 {
+#if defined(FRF_USB_TINYUSB)
+    frf_joymap_init();
+#endif
     void *base_vcmem;
     uint32_t size_vcmem;
 

@@ -18,6 +18,7 @@
 #include <string.h>
 #include "aga/chipset.h"
 #include "aga_glue.h"
+#include "frf_potgor_model.h"
 void aga_hdmi_voice_gains(int *on, int32_t gl[4], int32_t gr[4]);
 void aga_hdmi_voices(const uint32_t *v, int n, const aga_voice_t info[4], uint32_t rate);
 
@@ -187,13 +188,17 @@ static volatile uint16_t frf_potgo;
 static volatile uint16_t frf_pad_potgor[2];
 static volatile uint32_t frf_pad_fullbuttons[2];
 
-uint8_t aga_virtual_ciaa_buttons(void)
+static uint8_t frf_virtual_ciaa_buttons_value(void)
 {
-    __atomic_fetch_add(&frf_guest_ciaa_reads,1u,__ATOMIC_RELAXED);
     uint8_t v = 0xC0u;
     if (frf_fire_bits & 1u) v &= (uint8_t)~0x40u;
     if (frf_fire_bits & 2u) v &= (uint8_t)~0x80u;
     return v;
+}
+uint8_t aga_virtual_ciaa_buttons(void)
+{
+    __atomic_fetch_add(&frf_guest_ciaa_reads,1u,__ATOMIC_RELAXED);
+    return frf_virtual_ciaa_buttons_value();
 }
 void aga_virtual_joy_set(int port, uint16_t joydat, int fire)
 {
@@ -210,8 +215,11 @@ void aga_virtual_pad_buttons(int port,uint32_t buttons)
  if((unsigned)port>1u)return;
  __atomic_store_n(&frf_pad_fullbuttons[port],buttons,__ATOMIC_RELEASE);
  uint16_t mask=0;
- if(buttons&2u)mask|=port?0x4000u:0x0400u;
- if(buttons&4u)mask|=port?0x1000u:0x0100u;
+ /* Independent Amiga port-2 buttons. Button 1 is handled by CIA-A fire.
+    Button 2 -> RY/pin 9 (POTGOR bit 14), button 3 -> RX/pin 5 (bit 12).
+    Button 4 is deliberately unmapped. Never drive port-1 POTGOR bits. */
+ if(port==1 && (buttons&2u))mask|=0x4000u;
+ if(port==1 && (buttons&4u))mask|=0x1000u;
  __atomic_store_n(&frf_pad_potgor[port],mask,__ATOMIC_RELEASE);
 }
 void aga_virtual_mouse_update(int dx, int dy, unsigned buttons)
@@ -225,6 +233,23 @@ void aga_virtual_mouse_update(int dx, int dy, unsigned buttons)
     if (buttons & 1u) __atomic_fetch_or(&frf_fire_bits, 1u, __ATOMIC_ACQ_REL);
     else              __atomic_fetch_and(&frf_fire_bits, (uint8_t)~1u, __ATOMIC_ACQ_REL);
 }
+static uint16_t frf_virtual_potgor_value(void)
+{
+    uint16_t pg = __atomic_load_n(&frf_potgo, __ATOMIC_ACQUIRE);
+    uint8_t mb = __atomic_load_n(&frf_mouse_buttons, __ATOMIC_ACQUIRE);
+    extern int frf_usb_early_startup_active(void);
+    if (frf_usb_early_startup_active()) mb |= 3u;
+    uint16_t pad = __atomic_load_n(&frf_pad_potgor[0],__ATOMIC_ACQUIRE) |
+                   __atomic_load_n(&frf_pad_potgor[1],__ATOMIC_ACQUIRE);
+    return frf_potgor_model(pg,mb,pad);
+}
+
+void aga_virtual_pad_line_snapshot(uint8_t *pra, uint16_t *potgor)
+{
+    if (pra) *pra = frf_virtual_ciaa_buttons_value();
+    if (potgor) *potgor = frf_virtual_potgor_value();
+}
+
 #endif
 
 static uint16_t hook_ext_read(void *u, uint32_t reg)
@@ -239,23 +264,7 @@ static uint16_t hook_ext_read(void *u, uint32_t reg)
         __atomic_fetch_add(&frf_guest_joy1_reads,1u,__ATOMIC_RELAXED);
         return __atomic_load_n(&frf_joydat[1], __ATOMIC_ACQUIRE);
     }
-    if (reg == POTGOR) {
-        uint16_t pg = __atomic_load_n(&frf_potgo, __ATOMIC_ACQUIRE);
-        uint16_t v = (uint16_t)((pg & 0xAA00u) | 0x5500u);
-        uint8_t mb = __atomic_load_n(&frf_mouse_buttons, __ATOMIC_ACQUIRE);
-        if ((pg & 0x0800u) && !(pg & 0x0400u)) v &= (uint16_t)~0x0400u;
-        if ((pg & 0x0200u) && !(pg & 0x0100u)) v &= (uint16_t)~0x0100u;
-        extern int frf_usb_early_startup_active(void);
-        if (frf_usb_early_startup_active()) mb |= 3u;
-        if (mb & 2u) v &= (uint16_t)~0x0400u;
-        if (mb & 4u) v &= (uint16_t)~0x0100u;
-        uint16_t pad=__atomic_load_n(&frf_pad_potgor[0],__ATOMIC_ACQUIRE) | __atomic_load_n(&frf_pad_potgor[1],__ATOMIC_ACQUIRE);
-        if(!(pg&0x8000u))v&=(uint16_t)~(pad&0x4000u);
-        if(!(pg&0x2000u))v&=(uint16_t)~(pad&0x1000u);
-        if(!(pg&0x0800u))v&=(uint16_t)~(pad&0x0400u);
-        if(!(pg&0x0200u))v&=(uint16_t)~(pad&0x0100u);
-        return v;
-    }
+    if (reg == POTGOR) return frf_virtual_potgor_value();
     /* No receive-side serial device is attached. Real Paula reports the
        transmitter empty/shift-register empty bits; returning $FFFF here was
        a hybrid stub leak and is not a valid virtual-Paula state. */
