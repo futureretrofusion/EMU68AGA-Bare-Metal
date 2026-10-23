@@ -18,6 +18,7 @@ Hardware-verified Pi 3 USB/HID endian correction, including working gamepad dire
 ## Start here
 
 - [Download current v0.10.40a release](https://github.com/futureretrofusion/EMU68AGA-Bare-Metal/releases/tag/v0.10.40a) — hardware-verified kernel and matching build ZIP.
+- **[Use the latest CaffeineOS and replace its Emu68 kernel](docs/INSTALL_CAFFEINEOS.md)** — easiest complete-system route. Keep the CaffeineOS Amiga partitions and Raspberry Pi firmware, replace the selected Emu68 kernel with the current EMU68AGA `kernel8.img`, and use our known-good **1280×720p 50 Hz** HDMI configuration.
 - [Installation and AGS 3.1 Classic SD-card guide](docs/INSTALL_AGS31_CLASSIC.md) — complete partition layout, boot files, Kickstart, AGS and troubleshooting.
 - [Bare Metal splash and embedded artwork](docs/BARE_METAL_SPLASH.md) — exact source/build instructions.
 
