@@ -515,22 +515,34 @@ void frf_tinyusb_pad_report(uint8_t addr,uint8_t idx,
                 else p->joy_report_state=joy;
             }
             uint32_t state=0,present=0;
-            uint16_t bvid=0,bpid=0;
-            const int uspi_button_order=
-                tuh_vid_pid_get(addr,&bvid,&bpid) &&
-                frf_r20_is_receiver(bvid,bpid,idx);
-            const int have_buttons=uspi_button_order ?
-                frf_hid_gamepad_decode_buttons_ordered(&p->desc_map,data,len,&state,&present) :
-                frf_hid_gamepad_decode_buttons(&p->desc_map,data,len,&state,&present);
+            /* Exact USPi button semantics for every descriptor-driven pad:
+               one contiguous field, physical report order, no Usage-based
+               per-device renumbering. */
+            const int have_buttons=
+                frf_hid_gamepad_decode_buttons_ordered(&p->desc_map,data,len,&state,&present);
             if(have_buttons) {
               p->buttons_state=(p->buttons_state&~present)|(state&present);
-              p->fire_report_state=(uint8_t)((p->buttons_state&1u)!=0u);
+              p->fire_report_state=(uint8_t)((p->buttons_state&0x0fu)!=0u);
               frf_r32_last_buttons=p->buttons_state;
             }
             joy=p->joy_report_state;
             for(unsigned rid=0;rid<4u;rid++)
                 joy=frf_r33_merge_joy(joy,p->joy_by_report[rid]);
             fire=p->fire_report_state;
+#ifdef FRF_R41_BUTTON_TRACE
+            {
+                static uint32_t trace_buttons=0xffffffffu;
+                static uint16_t trace_joy=0xffffu;
+                static int trace_fire=-1;
+                if(p->buttons_state!=trace_buttons || joy!=trace_joy || fire!=trace_fire) {
+                    kprintf("[R41-BTN] raw=%02x %02x %02x %02x %02x %02x %02x %02x mask=%08x fire=%u joy=%04x\n",
+                        len>0?data[0]:0u,len>1?data[1]:0u,len>2?data[2]:0u,len>3?data[3]:0u,
+                        len>4?data[4]:0u,len>5?data[5]:0u,len>6?data[6]:0u,len>7?data[7]:0u,
+                        p->buttons_state,(unsigned)(fire!=0),joy);
+                    trace_buttons=p->buttons_state;trace_joy=joy;trace_fire=fire;
+                }
+            }
+#endif
             frf_pad_publish_report(p,joy,fire,p->buttons_state);
             descriptor_joy=joy;
             descriptor_fire=(uint32_t)fire;

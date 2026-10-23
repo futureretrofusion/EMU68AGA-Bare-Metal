@@ -31,7 +31,13 @@ void aga_virtual_joy_set(int port,uint16_t value,int f) {
     if(port==0){joy0=value;fire0=f;return;}
     joy=value;fire=f; ++calls;
 }
-void kprintf(const char *fmt,...) {(void)fmt;}
+void kprintf(const char *fmt,...) {
+#ifdef FRF_R41_BUTTON_TRACE
+    va_list ap;va_start(ap,fmt);vprintf(fmt,ap);va_end(ap);
+#else
+    (void)fmt;
+#endif
+}
 uint32_t frf_tinyusb_xpad_count(void) {return 0;}
 bool tuh_vid_pid_get(uint8_t addr,uint16_t *vid,uint16_t *pid) {
     if(addr==1) {*vid=0x2563;*pid=0x0576;return true;}
@@ -172,10 +178,17 @@ int main(void)
     assert(fire==1 && buttons_port1==1u);
     sw24[3]=2u;
     frf_tinyusb_pad_report(5,3,sw24,24);
-    assert(fire==0 && buttons_port1==2u);
+    assert(fire==1 && buttons_port1==2u);
     sw24[3]=4u;
     frf_tinyusb_pad_report(5,3,sw24,24);
-    assert(fire==0 && buttons_port1==4u);
+    assert(fire==1 && buttons_port1==4u);
+    sw24[3]=3u;
+    frf_tinyusb_pad_report(5,3,sw24,24);
+    assert(fire==1 && buttons_port1==3u);
+    sw24[3]=0u; sw24[2]=0u;
+    frf_tinyusb_pad_report(5,3,sw24,24);
+    assert(joy==0x0100u && fire==0 && buttons_port1==0u);
+    sw24[2]=8u;
     frf_tinyusb_pad_unmount(5,3);
     assert(frf_tinyusb_gamepad_count()==0);
     /* R33: observed 220D:330C with non-gamepad descriptor: fallback
