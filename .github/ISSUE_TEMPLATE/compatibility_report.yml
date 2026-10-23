@@ -1,0 +1,63 @@
+name: Software / game compatibility report
+description: Report whether a game, demo or application works
+title: "[COMPAT] "
+labels: ["compatibility"]
+body:
+  - type: input
+    id: software
+    attributes:
+      label: Software / game / demo
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: EMU68AGA version
+      placeholder: v0.10.40a
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: CaffeineOS/AGS/custom setup, WHDLoad version, RTG/native AGA, etc.
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Works correctly
+        - Works with minor issues
+        - Playable but significant issues
+        - Does not work
+        - Crashes / resets
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Describe graphics, sound, input, timing, stability and performance.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction / launch method
+      description: Exact launch command, WHDLoad slave/version, settings, or steps.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Screenshots, video, logs, crash output or other diagnostics.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: Tested on real hardware.
+          required: true
+        - label: I included the exact EMU68AGA version.
+          required: true
