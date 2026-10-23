@@ -355,6 +355,8 @@ static volatile uint32_t native_usb_live[16];
 #endif
 
 #endif
+#define FRF_RELEASE_COMPACT_POST 1
+
 static void frf_post_draw(void)
 {
     if (__atomic_load_n(&post_stop,__ATOMIC_ACQUIRE)) return;
@@ -377,9 +379,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"TINYUSB PI3 / R41 AGA118",cyan);
+    post_text(x+10,y+25,"v0.10.41 / AGA 1.118",cyan);
 #else
-    post_text(x+10,y+25,"TINYUSB PI3 / R41 AGA118",cyan);
+    post_text(x+10,y+25,"v0.10.41 / AGA 1.118",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -463,6 +465,7 @@ static void frf_post_draw(void)
     post_text(x+171,y+207,"BLKS:",cyan);
     post_hex(x+220,y+207,native_usb_storage_blocks,8,cyan);
 #endif
+#if !FRF_RELEASE_COMPACT_POST
 #if defined(FRF_USB_TINYUSB)
     /* Display unsupported USB vendor interfaces too, not merely devices
        successfully claimed by HID. This makes R13 useful even when PAD=0. */
@@ -653,6 +656,7 @@ static void frf_post_draw(void)
         }
     }
 #endif
+#endif /* !FRF_RELEASE_COMPACT_POST */
 #else
     post_text(x+10,y+111,"USB KB/MS/GP/MSC:",white);
     uint32_t a=__atomic_load_n(&post_kb,__ATOMIC_RELAXED);
