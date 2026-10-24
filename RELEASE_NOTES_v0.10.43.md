@@ -23,3 +23,7 @@ Reboot after replacing `DEVS:usbmass.device` so the 0.2 driver is loaded.
 
 ## Rollback
 Restore the v0.10.42 `kernel8.img` and the previous `DEVS:usbmass.device` together.
+
+## Important: usbmass.device is required
+
+The kernel alone is not enough for AmigaOS USB mass storage. You MUST install the matching `DEVS:usbmass.device` from this release. If the old `usbmass.device 0.1` remains installed or resident, the USB disk will appear write-protected even with the v0.10.43 kernel. Install both the new `kernel8.img` and `DEVS:usbmass.device`, then reboot before testing USB storage.
