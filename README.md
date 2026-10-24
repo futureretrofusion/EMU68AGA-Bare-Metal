@@ -12,8 +12,8 @@ PiStorm and AGA-PiStorm have already shown how much of an Amiga can run in softw
 
 Our role is to adapt and integrate the existing emulation for standalone use, and improve compatibility as development continues. Credit for the underlying work belongs to **Emu68, AGA-PiStorm and their contributors**, with further acknowledgements below.
 
-**Current release: EMU68AGA Version 0.1-Alpha (18 October 2026).**
-Pi 3 experimental tester build. See [release notes](RELEASE_NOTES_v0.1-alpha.md), [source build instructions](docs/BUILD_v0.1-alpha.md), and the `v0.1-alpha` release tag. The splash footer reads **EMU68AGA Version 0.1-Alpha**. USB input and storage still have known issues; see release notes.
+**Current release: EMU68AGA Bare Metal v0.10.43 (25 October 2026).**
+Pi 3 AGA 1.118 release with hardware-verified USB mass-storage writes and multi-button USB input. See [v0.10.43 release notes](RELEASE_NOTES_v0.10.43.md) and the `v0.10.43` release tag.
 
 ## Start here
 

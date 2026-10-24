@@ -380,9 +380,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"v0.10.42 / AGA 1.118",cyan);
+    post_text(x+10,y+25,"v0.10.43 / AGA 1.118",cyan);
 #else
-    post_text(x+10,y+25,"v0.10.42 / AGA 1.118",cyan);
+    post_text(x+10,y+25,"v0.10.43 / AGA 1.118",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
