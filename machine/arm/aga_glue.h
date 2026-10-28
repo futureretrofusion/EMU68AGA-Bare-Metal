@@ -108,6 +108,8 @@ void aga_video_set_sharp(int on);    /* nearest-neighbour scaling instead of the
 void aga_video_set_look(int look);   /* 0 sharp, 1 smooth, 2 TV (blends across) - $592L */
 void aga_video_set_scale(int mode);  /* 0 4:3, 1 integer, 2 fill - $597S */
 void aga_video_set_ntsc_scanlines(int v); /* $517n, v1.118 */
+void aga_video_scan_select(int what);
+void aga_video_scan_value(int value);
 void aga_video_set_scanlines(int level);   /* 0 off .. 4 (25% steps) - $598L */
 void aga_video_set_laced_scanlines(int level);   /* the same, woven interlaced frames - $59En */
 void aga_video_set_mask(int level);            /* the CRT mask: 0 off, 1-4 = 25-100% dark ($510n) */

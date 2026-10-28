@@ -26,6 +26,8 @@ static int frf_virtual_aga_picture_write(uint64_t far, int size, uint64_t raw)
     if ((v & 0xFFF0u) == 0x5900u) { aga_video_set_zoom((int)(v & 7u)); aga_video_set_sharp((int)((v >> 3) & 1u)); return 1; }
     if ((v & 0xFFFCu) == 0x5920u) { aga_video_set_look((int)(v & 3u)); return 1; }
     if ((v & 0xFFFCu) == 0x5970u) { aga_video_set_scale((int)(v & 3u)); return 1; }
+    if ((v & 0xFF02u) == 0x5000u) { aga_video_scan_select((int)((v & 1u) | ((v >> 1) & 0x7eu))); return 1; }
+    if ((v & 0xFF02u) == 0x5300u) { aga_video_scan_value((int)((v & 1u) | ((v >> 1) & 0x7eu))); return 1; }
     if ((v & 0xFFF8u) == 0x5980u) { aga_video_set_scanlines((int)(v & 7u)); return 1; }
     if ((v & 0xFF00u) == 0x5700u) { aga_video_set_pos_x((int)(int8_t)(v & 0xffu)); return 1; }
     if ((v & 0xFF00u) == 0x5600u) { aga_video_set_pos_y((int)(int8_t)(v & 0xffu)); return 1; }
@@ -1102,6 +1104,12 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5920) { aga_video_set_look((int)(value & 3)); return 1; }
     /* $597S: scale, 0 4:3 / 1 integer / 2 fill; $598L: scanlines, 0 off to 4 - agaboot RTG Image */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5970) { aga_video_set_scale((int)(value & 3)); return 1; }
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFF02u) == 0x5000u) {
+        aga_video_scan_select((int)((value & 1u) | ((value >> 1) & 0x7eu))); return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFF02u) == 0x5300u) {
+        aga_video_scan_value((int)((value & 1u) | ((value >> 1) & 0x7eu))); return 1;
+    }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x5980) { aga_video_set_scanlines((int)(value & 7)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0x5700) { aga_video_set_pos_x((int8_t)(value & 0xFF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0x5600) { aga_video_set_pos_y((int8_t)(value & 0xFF)); return 1; }
@@ -1697,6 +1705,12 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5920) { aga_video_set_look((int)(value & 3)); return 1; }
     /* $597S: scale, 0 4:3 / 1 integer / 2 fill; $598L: scanlines, 0 off to 4 - agaboot RTG Image */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5970) { aga_video_set_scale((int)(value & 3)); return 1; }
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFF02u) == 0x5000u) {
+        aga_video_scan_select((int)((value & 1u) | ((value >> 1) & 0x7eu))); return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFF02u) == 0x5300u) {
+        aga_video_scan_value((int)((value & 1u) | ((value >> 1) & 0x7eu))); return 1;
+    }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x5980) { aga_video_set_scanlines((int)(value & 7)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0x5700) { aga_video_set_pos_x((int8_t)(value & 0xFF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0x5600) { aga_video_set_pos_y((int8_t)(value & 0xFF)); return 1; }
