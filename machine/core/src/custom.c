@@ -8,8 +8,8 @@
  * read-back defaults.
  *   WinUAE custom.cpp: Copyright 1995-2002 Bernd Schmidt,
  *     Copyright 1995 Alessandro Bissacco, Copyright 2000-2025 Toni Wilen
- * Changed from the UAE/WinUAE code for AGA-PISTORM in 2026.
- * UAE and WinUAE are GPL, like this file.
+ * Promijenjeno u odnosu na UAE/WinUAE kod za AGA-STORM 2026.
+ * UAE i WinUAE su GPL, kao i ova datoteka.
  */
 #include <stdlib.h>
 #include <stdio.h>
@@ -18,7 +18,7 @@
 #include "tone_tab.h"
 
 /* --------------------------------------------------------------------------
- * logging
+ * logiranje
  * ------------------------------------------------------------------------ */
 #ifdef AGA_PISTORM
 extern void vkprintf(const char *format, va_list args);
@@ -50,7 +50,7 @@ void aga_set_log(aga_t *a, void (*log)(void *user, const char *msg), void *user)
 }
 
 /* --------------------------------------------------------------------------
- * lifecycle
+ * životni ciklus
  * ------------------------------------------------------------------------ */
 aga_t *aga_create(uint8_t *chipram, uint32_t chipram_size, const aga_config_t *cfg)
 {
@@ -140,8 +140,8 @@ int aga_tone_build(uint8_t lut[256], int percent, int gamma)
 {
     const uint32_t *gt = tone_gamma[gamma >= 0 && gamma < TONE_GAMMAS ? gamma : 0];
     int64_t pct = percent > 100 ? (percent > 200 ? 200 : percent) : 100;
-    int64_t G = pct * 65536 / 100;                          /* gain, 1/65536 */
-    int64_t X0 = 200 * 65536 / pct - 65536;                 /* the knee: 2/g - 1 */
+    int64_t G = pct * 65536 / 100;                          /* pojačanje, 1/65536 */
+    int64_t X0 = 200 * 65536 / pct - 65536;                 /* koljeno: 2/g - 1 */
     int64_t A = X0 < 65536 ? G * 65536 / (2 * (65536 - X0)) : 0;
     int ident = 1;
     for (int v = 0; v < 256; v++) {
@@ -209,7 +209,7 @@ void aga_reset(aga_t *a)
     a->ntsc = cfg.ntsc;
     a->ntsc_strap = cfg.ntsc;
     a->beamcon0 = a->ntsc ? 0 : BEAMCON0_DISPLAYPAL;
-    a->win_x0 = a->win_y0 = a->last_win_x0 = a->last_win_y0 = 1 << 20;        /* no window yet */
+    a->win_x0 = a->win_y0 = a->last_win_x0 = a->last_win_y0 = 1 << 20;        /* još nema okna */
     a->win_x1 = a->win_y1 = a->last_win_x1 = a->last_win_y1 = -(1 << 20);
     set_geometry(a);
     bright_build(a);
@@ -238,7 +238,7 @@ void aga_reset(aga_t *a)
 }
 
 /* --------------------------------------------------------------------------
- * helpers
+ * pomoćnici
  * ------------------------------------------------------------------------ */
 int aga_dma_enabled(const aga_t *a, uint16_t mask)
 {
@@ -292,7 +292,7 @@ static void setclr(uint16_t *reg, uint16_t v)
 }
 
 /* --------------------------------------------------------------------------
- * register reads
+ * čitanja registara
  * ------------------------------------------------------------------------ */
 static uint16_t ext_read(aga_t *a, uint32_t reg, uint16_t dflt)
 {
@@ -376,7 +376,7 @@ uint32_t aga_read(aga_t *a, uint32_t addr, int size)
 }
 
 /* --------------------------------------------------------------------------
- * register writes
+ * upisi registara
  * ------------------------------------------------------------------------ */
 static void DMACON_write(aga_t *a, uint16_t v)
 {
@@ -391,7 +391,7 @@ static void DMACON_write(aga_t *a, uint16_t v)
     a->dmacon = nv;
     if ((old ^ nv) & (DMAF_AUDEN | DMAF_DMAEN))
         aud_dmacon_changed(a, old, nv);
-    /* audio DMA bits may be mirrored to a real Paula by the glue */
+    /* glue može preslikati audio DMA bitove na pravu Paulu */
     if (a->hooks.ext_write && (v & (DMAF_AUDEN | DMAF_DMAEN)))
         a->hooks.ext_write(a->hooks.user, DMACON, v);
     if (!(old & DMAF_COPEN) && (nv & DMAF_COPEN) && (nv & DMAF_DMAEN)) {
@@ -427,7 +427,7 @@ static void INTREQ_write(aga_t *a, uint16_t v)
        its background-restore blits went missing - black rectangles over the
        sea. The counters above still say when an acknowledge swallowed one. */
     if (a->hooks.ext_write && !(v & 0x8000) && (v & (INTF_PORTS | INTF_EXTER))) {
-        /* forward clears of the mirrored real-hardware interrupt bits */
+        /* proslijedi čišćenja preslikanih bitova prekida stvarnog hardvera */
         a->hooks.ext_write(a->hooks.user, INTREQ, v & (INTF_PORTS | INTF_EXTER));
     }
     aga_update_ipl(a);
@@ -464,7 +464,7 @@ void aga_custom_wput(aga_t *a, uint32_t reg, uint16_t v)
     switch (reg) {
     case DSKPTH: case DSKPTL: case DSKLEN: case DSKDAT: case DSKSYNC:
         if (dsk_write(a, reg, v)) break;
-        /* fall through: real drives */
+        /* padni kroz: pravi pogoni */
     case SERDAT: case SERPER: case POTGO: case JOYTEST:
         if (a->hooks.ext_write) a->hooks.ext_write(a->hooks.user, reg, v);
         break;
@@ -565,7 +565,7 @@ void aga_write(aga_t *a, uint32_t addr, uint32_t value, int size)
 }
 
 /* --------------------------------------------------------------------------
- * beam
+ * zraka
  * ------------------------------------------------------------------------ */
 static void end_of_line(aga_t *a)
 {
@@ -716,10 +716,10 @@ static inline void cck_step(aga_t *a)
             aga_intreq_set(a, INTF_VERTB);
         }
     }
-    /* sprite DMA slots 0x15..0x34 */
+    /* sprite DMA slotovi 0x15..0x34 */
     if (h >= 3 && h <= 9 && (h & 1)) aga_trace_at(a, h, AGA_DMA_REFRESH, REFPTR, 0);
     if (h >= 0x19 && h < 0x19 + 4 * AGA_MAX_SPRITES) spr_dma_slot(a, h);
-    /* audio DMA slots 0x0D,0x0F,0x11,0x13 */
+    /* audio DMA slotovi 0x0D,0x0F,0x11,0x13 */
     if (h >= 0x0D && h <= 0x13 && (h & 1)) aud_dma_slot(a, h);
 }
 
@@ -729,12 +729,15 @@ void aga_run_cycles(aga_t *a, int cck)
         cck_step(a);
         a->hpos++;
         if (a->hpos >= a->maxhpos) {
+            a->frame_cck += (uint32_t)a->maxhpos;
             end_of_line(a);
             a->hpos = 0;
             a->vpos++;
             a->line_no++;
             int lines = a->maxvpos + (a->lof ? 1 : 0);
             if (a->vpos >= lines) {
+                a->last_frame_cck = a->frame_cck;
+                a->frame_cck = 0;
                 a->vpos = 0;
                 if (a->pf.bplcon0 & BPLCON0_LACE) a->lof ^= 1;
                 else a->lof = 1;
@@ -792,6 +795,7 @@ int aga_get_ipl(const aga_t *a)          { return a->ipl; }
 int aga_get_vpos(const aga_t *a)         { return a->vpos; }
 int aga_get_hpos(const aga_t *a)         { return a->hpos; }
 int aga_frame_count(const aga_t *a)      { return a->frame; }
+uint32_t aga_last_frame_cck(const aga_t *a) { return a->last_frame_cck; }
 int aga_lines_per_frame(const aga_t *a)  { return a->maxvpos + (a->lof ? 1 : 0); }
 int aga_cycles_per_line(const aga_t *a)  { return a->maxhpos; }   /* this line's: 227, or 228 with LOL */
 const uint32_t *aga_framebuffer(const aga_t *a)
@@ -819,7 +823,7 @@ uint32_t *aga_framebuffer_live(aga_t *a)
  */
 int aga_is_beam_reg(uint32_t reg) { reg &= 0x1FE; return reg == VPOSR || reg == VHPOSR; }
 
-/* add_cck: colour clocks elapsed since the chipset thread last stepped.
+/* add_cck: colour clocks protekli od zadnjeg koraka chipset dretve.
  *
  * The loop advances the beam CHUNK_CCK at a time, so without this hpos only
  * ever takes values 8 apart. A beam wait tests for an EXACT horizontal
@@ -837,15 +841,15 @@ uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_c
     uint32_t vpos = (uint32_t)a->vpos, hpos = (uint32_t)a->hpos;
     int lol = a->lol;
     if (add_cck) {
-        /* line by line: NTSC's alternate 228 and 227 colour clocks, so one
-           divide by the line length no longer says where the beam is */
+        /* redak po redak: NTSC izmjenjuje 228 i 227 colour clocks, pa jedno
+           dijeljenje dužinom retka više ne kaže gdje je zraka */
         uint32_t base = a->ntsc ? AGA_NTSC_HPOS : AGA_PAL_HPOS;
         uint32_t maxv = (uint32_t)a->maxvpos + (a->lof ? 1 : 0);
         if (!maxv) maxv = 313;
         uint32_t cur = a->maxhpos > 0 ? (uint32_t)a->maxhpos : base;
         hpos += add_cck;
         if (hpos < cur) {
-            /* still on this line */
+            /* još na ovom retku */
         } else if (!line_toggles(a)) {
             /* this line first, at its own length: a BEAMCON0 LOLDIS written
                on a long NTSC line leaves it 228 clocks, the lines after it 227 */
@@ -855,8 +859,8 @@ uint32_t aga_peek_beam_at(const aga_t *a, uint32_t reg, int size, uint32_t add_c
             vpos += hpos / base;
             hpos %= base;
         } else {
-            /* whole pairs of lines first (one long, one short: LOL is
-               where it was), then at most two single lines */
+            /* prvo cijeli parovi redaka (jedan dug, jedan kratak: LOL je
+               gdje je bio), zatim najviše dva pojedinačna retka */
             uint32_t pairs = hpos / (2 * base + 1);
             hpos -= pairs * (2 * base + 1);
             vpos += 2 * pairs;
@@ -897,8 +901,8 @@ uint16_t aga_peek_reg(const aga_t *a, uint32_t reg) { return a->regs[(reg & 0x1F
 uint16_t aga_peek_dmacon(const aga_t *a) { return a->dmacon; }
 uint32_t aga_peek_fetch_stat(const aga_t *a, int i) { return a->dbg_fetch[i & 7]; }
 uint32_t aga_peek_audirq(const aga_t *a, int i) { return (unsigned)i < 5 ? a->dbg_audirq[i] : 0; }
-/* Diagnostics: one ordered log of the events that decide BPLCON0's fate.
-   A = type<<24 | frame; B = value<<16 | vpos<<7 | hpos>>1. Types: 1 CPU
+/* Diagnostika: jedan poredani dnevnik događaja koji odlučuju sudbinu BPLCON0.
+   A = type<<24 | frame; B = value<<16 | vpos<<7 | hpos>>1. Tipovi: 1 CPU
    BPLCON0, 2 CPU COP1LC, 3 CPU COP2LC, 4 CPU COPJMP1, 5 CPU COPJMP2, 6 CPU
    DMACON, 7 copper BPLCON0, 8 copper restart (COP1LC low word), 9 copper
    COPJMP. The first CPU BPLCON0 with bitplanes (trigger) freezes the 16
@@ -912,7 +916,7 @@ void aga_dbg_event(aga_t *a, int type, uint16_t value, int trigger)
         a->ev_pre[k][0] = ea; a->ev_pre[k][1] = eb;
         if (trigger) {
             uint32_t n = a->ev_pre_n < 16 ? a->ev_pre_n : 16;
-            for (uint32_t i = 0; i < n; i++) {           /* oldest first, the trigger last */
+            for (uint32_t i = 0; i < n; i++) {           /* najstariji prvi, trigger posljednji */
                 uint32_t j = (a->ev_pre_n - n + i) & 15;
                 a->ev_log[i][0] = a->ev_pre[j][0]; a->ev_log[i][1] = a->ev_pre[j][1];
             }
@@ -946,7 +950,7 @@ uint32_t aga_peek_evlog(const aga_t *a, int i)
 /* i 0-7: restart addresses, 8-15: their frames, 16: how many, 17-20: copper BPLCON0 n/pc/val/frame */
 uint32_t aga_peek_copdbg(const aga_t *a, int i)
 {
-    if (i < 8)  return a->dbg_coprs_addr[(a->dbg_coprs_n - 1 - (uint32_t)i) & 7];   /* 0 = newest */
+    if (i < 8)  return a->dbg_coprs_addr[(a->dbg_coprs_n - 1 - (uint32_t)i) & 7];   /* 0 = najnoviji */
     if (i < 16) return a->dbg_coprs_frame[(a->dbg_coprs_n - 1 - (uint32_t)(i - 8)) & 7];
     switch (i) {
     case 16: return a->dbg_coprs_n;

@@ -226,7 +226,7 @@ struct MemoryBlock *sys_memory;
 extern uint32_t vid_memory;
 extern uintptr_t vid_base;
 extern uintptr_t unicam_base;
-extern uintptr_t aga_chip_base;   /* AGA-PISTORM virtual chip RAM (physical) */
+extern uintptr_t aga_chip_base;   /* AGA-STORM virtualni chip RAM (fizički) */
 extern uint32_t aga_chip_size;
 extern uintptr_t unicam_size;
 #ifdef FRF_VIRTUAL_AGA
@@ -256,6 +256,8 @@ void mmu_init()
         int address_cells = dt_get_property_value_u32(e, "#address-cells", 1, TRUE);
         int block_size = 4 * (size_cells + address_cells);
         int block_count = p->op_length / block_size;
+
+        int cma_set = 0;
 
         sys_memory = tlsf_malloc(tlsf, (1 + block_count) * sizeof(struct MemoryBlock));
         for (int block=0; block < block_count; block++)
@@ -314,7 +316,7 @@ void mmu_init()
                 }
             }
 
-            /* AGA-PISTORM: reserve the virtual chip RAM (2 MB aligned) */
+            /* AGA-STORM: rezerviraj virtualni chip RAM (poravnat na 2 MB) */
             if (aga_chip_size != 0 && aga_chip_base == 0) {
                 if (addr + size <= 0x40000000) {
                     size -= (aga_chip_size + (4 << 20) + 0x1fffff) & ~0x1fffff;
@@ -354,6 +356,27 @@ void mmu_init()
                 update_needed = 1;
             }
 #endif
+
+            /*
+                Ako /emu68/cma@0 čvor postoji (dtoverlay=cma), provjeri njegovo reg svojstvo. Ako je base address
+                postavljen na 0, dodijeli mu sada nešto memorije, pod uvjetom da memorijski blok završava ispod 1GB
+                (neki Pi periferni uređaji mogli bi ga trebati). Upstream c5dd251 + f5a2c00, ovdje zauzet nakon
+                ostalih blokova, da njihove adrese ostanu kakve su bile.
+            */
+            if (!cma_set) {
+                of_property_t *p = dt_find_property(dt_find_node("/emu68/cma@0"), "reg");
+                if (p) {
+                    uint32_t *reg = p->op_value;
+                    if (reg[1] != 0 && reg[0] == 0 && addr + size <= 0x40000000) {
+                        size -= (reg[1] + 0x1fffff) & ~0x1fffff;
+                        size -= 2 << 20;
+                        reg[0] = addr + size + (2 << 20);
+                        update_needed = 1;
+                        cma_set = 1;
+                    }
+                }
+            }
+
             if (update_needed)
             {
                 // Put the block back into device tree, this time in updated form
@@ -664,7 +687,7 @@ void mmu_unmap(uintptr_t virt, uintptr_t length)
         int idx_l2 = (virt >> 21) & 0x1ff;
         int idx_l3 = (virt >> 12) & 0x1ff;
         uint64_t e1 = root->mp_entries[idx_l1];
-        if ((e1 & 3) != 3) { virt += 4096; length -= 4096; continue; }   /* unmapped or 1G block: leave */
+        if ((e1 & 3) != 3) { virt += 4096; length -= 4096; continue; }   /* nemapirano ili 1G blok: ostavi */
         struct mmu_page *l2 = (struct mmu_page *)((e1 & 0x7ffffff000ULL) + PHYS_VIRT_OFFSET);
         uint64_t e2 = l2->mp_entries[idx_l2];
         if ((e2 & 3) == 1)
@@ -674,7 +697,7 @@ void mmu_unmap(uintptr_t virt, uintptr_t length)
                 virt += 0x200000; length -= 0x200000;
                 continue;
             }
-            /* split the block into 4K pages, then fall through and clear one */
+            /* razdvoji blok na 4K stranice, zatim propusti i obriši jednu */
             uint32_t attr_low = (uint32_t)(e2 & 0xfff) & ~3u;
             uint32_t attr_high = (uint32_t)(e2 >> 52);
             uintptr_t base_phys = e2 & 0x0000ffffffe00000ULL;

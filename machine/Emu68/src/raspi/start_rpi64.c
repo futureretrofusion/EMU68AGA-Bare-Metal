@@ -13,6 +13,7 @@
 #include "A64.h"
 #include "config.h"
 #include "support.h"
+#include "../frf_usb/frf_joymap.h"
 #include "tlsf.h"
 #include "mmu.h"
 #include "devicetree.h"
@@ -27,8 +28,8 @@
 #include "logo/logo_ppc.h"
 #include "logo/logo_pistorm.h"
 #ifdef AGA_PISTORM
-#include "logo/logo_aga.h"      /* "AGA-Pistorm for ECS", tools/mklogo.py */
-#include "logo/logo_aga_rgb.h"  /* the colour splash, tools/mklogo_rgb.py */
+#include "logo/logo_aga.h"      /* "AGA-Storm for ECS", tools/mklogo.py */
+#include "logo/logo_aga_rgb.h"  /* splash u boji, tools/mklogo_rgb.py */
 #endif
 #ifdef PISTORM_ANY_MODEL
 #include "ps_protocol.h"
@@ -80,8 +81,8 @@ void put_char(uint8_t c)
                 for (int x=0; x < 8; x++) {
                     if (byte & (0x80 >> x)) {
 #ifdef AGA_PISTORM
-                        /* logo=black's grey: AGA-PISTORM's splash is always
-                           on black (below), so black text would vanish */
+                        /* siva logo=black: AGA-STORM splash je uvijek
+                           na crnom (ispod), pa bi crni tekst nestao */
                         pos_in_image[x] = LE16(0x630c);
 #else
                         if (purple) {
@@ -225,9 +226,9 @@ void draw_logo(struct EmuLogo *logo, uint32_t start_x, uint32_t start_y)
    tools/mklogo_rgb.py bakes it in at release time. */
 static void draw_logo_rgb(uint32_t start_x, uint32_t start_y, uint32_t scale)
 {
-    /* each source pixel becomes a scale x scale block: whole-pixel scaling
-       keeps the version's pixel letters sharp, and the kernel only has to
-       carry the picture at its small size */
+    /* svaki izvorni piksel postaje blok scale x scale: cjelobrojno skaliranje
+       drži pixel slova verzije oštrima, a kernel mora nositi
+       sliku samo u njezinoj maloj veličini */
     uint16_t *row = (uint16_t *)((uintptr_t)framebuffer + pitch * start_y) + start_x;
     uint32_t x = 0;
     for (uint32_t i = 0; i + 1 < LOGO_AGA_RGB_LEN; i += 2) {
@@ -244,23 +245,640 @@ static void draw_logo_rgb(uint32_t start_x, uint32_t start_y, uint32_t scale)
 }
 #endif
 
-/* Boot-stage pixels in the top-left corner, for photo-based diagnosis
- * when no serial adapter is attached. Each square is a distinct milestone:
- * 1 splash, 2 USB released, 3 gate completed, 4 guest input armed, 5 68k jump,
- * 6 CPU1 released, 7 USB environment started, 8 USB init entry,
- * 9 USB init returned, 10 USB input ready.
- * Only written during boot before guest video takes over. */
+/* EMU68AGA RC6 pre-boot POST overlay.
+ * Replaces the non-descriptive milestone squares. This framebuffer is
+ * exclusively a boot splash: never paint again after the 68k handoff.
+ * CPU0/CPU1 callbacks may race during boot; a nonblocking lock protects
+ * rectangle drawing and keeps USB callbacks responsive.
+ */
+static volatile uint32_t post_flags;
+static volatile uint32_t post_lock, post_stop;
+static volatile uint32_t post_kb=~0u, post_ms=~0u, post_gp=~0u, post_storage=~0u;
+static volatile uint32_t post_rx, post_bad, post_err, post_id, post_len;
+static volatile uint32_t post_raw0, post_raw1, post_joy, post_fire, post_events;
+static volatile uint32_t post_decoded;
+
+static void post_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c)
+{
+    if (!framebuffer || x>=fb_width || y>=fb_height) return;
+    if (w>fb_width-x) w=fb_width-x;
+    if (h>fb_height-y) h=fb_height-y;
+    c=LE16(c);
+    for (uint32_t yy=0;yy<h;yy++) {
+        uint16_t *p=(uint16_t*)((uintptr_t)framebuffer+pitch*(y+yy))+x;
+        for (uint32_t xx=0;xx<w;xx++) p[xx]=c;
+    }
+}
+static void post_char(uint32_t x,uint32_t y,uint8_t c,uint16_t fg)
+{
+    if (c<32 || c>=127 || x+8>fb_width || y+16>fb_height) return;
+    uint32_t loc=(topaz8_charloc[c-32]>>16)>>3;
+    const uint8_t *data=&topaz8_chardata[loc];
+    uint16_t color=LE16(fg);
+    for (unsigned yy=0;yy<16;yy++) {
+        uint8_t bits=*data;
+        uint16_t *p=(uint16_t*)((uintptr_t)framebuffer+pitch*(y+yy))+x;
+        for (unsigned xx=0;xx<8;xx++)
+            if (bits&(0x80u>>xx)) p[xx]=color;
+        if (yy&1u) data+=192;
+    }
+}
+static void post_text(uint32_t x,uint32_t y,const char *str,uint16_t fg)
+{
+    while (*str && x+8<=fb_width) {
+        post_char(x,y,(uint8_t)*str++,fg);
+        x+=8;
+    }
+}
+static void post_dec(uint32_t x,uint32_t y,uint32_t n,unsigned digits,uint16_t col)
+{
+    char buf[12];
+    if (digits>10) digits=10;
+    for (unsigned i=0;i<digits;i++) {
+        buf[digits-1-i]='0'+(n%10u);
+        n/=10u;
+    }
+    buf[digits]=0;
+    post_text(x,y,buf,col);
+}
+static void post_hex(uint32_t x,uint32_t y,uint32_t n,unsigned digits,uint16_t col)
+{
+    const char hex[]="0123456789ABCDEF";
+    char buf[9];
+    if (digits>8) digits=8;
+    for (unsigned i=0;i<digits;i++) {
+        buf[digits-1-i]=hex[n&15u];
+        n>>=4;
+    }
+    buf[digits]=0;
+    post_text(x,y,buf,col);
+}
+static void post_row(uint32_t x,uint32_t y,const char *name,
+                     const char *state,uint16_t color)
+{
+    post_text(x,y,name,0xbdf7u);
+    post_text(x+152u,y,state,color);
+}
+#ifdef FRF_USB_PASSIVE_TEST
+static volatile uint32_t post_dwc2_id;
+static volatile uint32_t post_dwc2_rc = ~0u;
+static volatile uint32_t post_key_count;
+#endif
+#ifdef FRF_USB_NATIVE_DWC2
+static volatile uint32_t native_usb_stage, native_usb_rc;
+static volatile uint32_t native_usb_detail, native_usb_aux;
+static volatile uint32_t native_usb_cpu1_seen, native_usb_cpu1_chip;
+static volatile uint32_t native_usb_ahb_config;
+static volatile uint32_t native_usb_ep0_hcchar,native_usb_ep0_hctsiz;
+static volatile uint32_t native_usb_storage_detected,native_usb_pad_detected;
+static volatile uint32_t native_usb_storage_blocks;
+static volatile uint32_t native_vendor_id,native_vendor_iface,native_vendor_kind;
+static volatile uint32_t native_vendor_mounts;
+static volatile uint32_t native_dyonder_ok,native_dyonder_ignored;
+/* Per USB address snapshot, not last-vendor wins. Bit flags:
+   1=whole device mount, 2=HID, 4=MSC, 8=vendor interface. */
+#define FRF_USB_ADDR_MAX 16u
+struct frf_device_snapshot {
+    volatile uint32_t id,iface,flags;
+};
+static struct frf_device_snapshot native_usb_addr[FRF_USB_ADDR_MAX];
+static volatile uint32_t native_usb_addr_events;
+static volatile uint32_t native_usb_link[15];
+static volatile uint32_t native_usb_probe[7];
+static volatile uint32_t native_usb_packet_words[55];
+static volatile uint32_t native_r19_map[6];
+static volatile uint32_t native_r20_compat[6];
+static volatile uint32_t native_r26_get[4];
+
+
+#ifdef FRF_USB_DIAG_HOLD
+static volatile uint32_t native_usb_live[16];
+#endif
+
+#endif
+#define FRF_RELEASE_COMPACT_POST 1
+
+static void frf_post_draw(void)
+{
+    if (__atomic_load_n(&post_stop,__ATOMIC_ACQUIRE)) return;
+    if (!framebuffer || pitch<fb_width*2u || fb_width<340u ||
+        fb_height<246u) return;
+    if (__atomic_exchange_n(&post_lock,1u,__ATOMIC_ACQUIRE)) return;
+
+    const uint32_t w=310u, h=227u, x=fb_width-w-12u, y=12u;
+    const uint16_t white=0xe71cu, green=0x27e4u, amber=0xfd40u, cyan=0x3e19u;
+    const uint32_t flags=__atomic_load_n(&post_flags,__ATOMIC_ACQUIRE);
+    post_rect(x,y,w,h,0x0822u);
+    post_rect(x,y,w,2,cyan);
+    post_rect(x,y,2,h,cyan);
+    post_rect(x+w-2,y,2,h,cyan);
+    post_rect(x,y+h-2,w,2,cyan);
+    post_text(x+10,y+7,"EMU68AGA  SYSTEM POST",white);
+#ifdef FRF_USB_PASSIVE_TEST
+    post_text(x+10,y+25,"RC8 / USB INPUT TEST",cyan);
+#else
+#ifdef FRF_USB_NATIVE_DWC2
+#ifdef FRF_USB_TINYUSB
+#ifdef FRF_USB_DIAG_HOLD
+    post_text(x+10,y+25,"FRF 1.121 / RC8",cyan);
+#else
+    post_text(x+10,y+25,"FRF 1.121 / RC8",cyan);
+#endif
+#else
+    post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
+#endif
+#else
+    post_text(x+10,y+25,"PI3 BARE METAL / RC8",cyan);
+#endif
+#endif
+    post_rect(x+8,y+44,w-16,1,0x2965u);
+
+    post_row(x+10,y+50,"AGA VIDEO",(flags&(1u<<1))?"READY":"WAIT ",
+             (flags&(1u<<1))?green:amber);
+    post_row(x+10,y+67,"ROM + MEMORY",(flags&(1u<<2))?"READY":"WAIT ",
+             (flags&(1u<<2))?green:amber);
+#ifdef FRF_USB_NATIVE_DWC2
+    const uint32_t ns=__atomic_load_n(&native_usb_stage,__ATOMIC_ACQUIRE);
+    const uint32_t nr=__atomic_load_n(&native_usb_rc,__ATOMIC_ACQUIRE);
+    const uint32_t cpu1=__atomic_load_n(&native_usb_cpu1_seen,__ATOMIC_ACQUIRE);
+    const char *ns_status =
+#ifdef FRF_USB_DIAG_HOLD
+          (ns==8u && nr==(uint32_t)-8 &&
+           native_usb_live[13]>0u)?"HID NONBOOT":
+          (ns==8u && nr==(uint32_t)-8 &&
+           native_usb_live[12]>0u)?"DEVICES ONLY":
+#endif
+          (ns==8u && nr==0u)?"HID READY":
+          (ns==8u && nr==(uint32_t)-12)?"NONBOOT HID":
+          (ns==8u && nr==(uint32_t)-11)?"DEV NO HID":
+          (ns==8u && nr==(uint32_t)-10)?"ENUM XFER FAIL":
+          (ns==8u && nr==(uint32_t)-9)?"DMA ADDRESS":
+          (ns==8u && nr==(uint32_t)-6)?"NO PORT PWR":
+          (ns==8u && nr==(uint32_t)-7)?"NO ROOT HUB":
+          (ns==8u && nr!=(uint32_t)0)?"NO USB DEV":
+          (ns==7u && nr==0u)?"HID FOUND":
+          (ns==4u && nr==(uint32_t)-7)?"NO HUB":
+          (ns==4u && nr==(uint32_t)-6)?"NO PORT PWR":
+          (ns==3u && nr!=(uint32_t)0)?"CORE FAIL":
+          (ns==2u && nr!=(uint32_t)0)?"PROBE FAIL":
+          (ns==1u && nr!=(uint32_t)0)?"FW PWR FAIL":
+          (nr!=(uint32_t)0)?"USB ERROR":
+          (ns>=6u)?"ENUM SCAN":
+          (ns>=3u)?"DWC2 DMA":
+          (ns>=1u)?"POWER":
+          cpu1?"CORE1":"NO CPU1";
+    post_row(x+10,y+84,"USB HOST",ns_status,
+             (ns>=7u&&nr==0u)?green:amber);
+#else
+    post_row(x+10,y+84,"USB HOST",(flags&(1u<<9))?"READY":"WAIT ",
+             (flags&(1u<<9))?green:amber);
+#endif
+
+    post_rect(x+8,y+106,w-16,1,0x2965u);
+#ifdef FRF_USB_NATIVE_DWC2
+    /* On-screen checkpoints: 1 firmware power, 2 probe, 3 host init,
+       4 root port, 5 FIFO, 6 USB enumeration, 7 HID ready. */
+    post_text(x+10,y+111,"USB STAGE:",white);
+    post_dec(x+105,y+111,native_usb_stage,2,cyan);
+    post_text(x+156,y+111,"RC:",white);
+    post_hex(x+188,y+111,native_usb_rc,8,native_usb_rc?amber:green);
+    post_text(x+10,y+135,"DETAIL:",white);
+    post_hex(x+74,y+135,native_usb_detail,8,cyan);
+    post_text(x+10,y+159,"AUX:",white);
+    post_hex(x+60,y+159,native_usb_aux,8,cyan);
+    post_text(x+10,y+183,"CPU1:",white);
+    post_dec(x+62,y+183,cpu1,1,cpu1?green:amber);
+    post_text(x+102,y+183,"AGA:",white);
+    post_dec(x+143,y+183,native_usb_cpu1_chip,1,cyan);
+    post_text(x+175,y+183,"AHB:",white);
+    post_hex(x+211,y+183,native_usb_ahb_config,8,cyan);
+    post_rect(x+8,y+204,w-16,1,0x2965u);
+#ifdef FRF_USB_DIAG_HOLD
+    post_text(x+10,y+207,"EP0:",cyan);
+    post_hex(x+48,y+207,native_usb_ep0_hcchar,8,cyan);
+    post_text(x+121,y+207,"SIZ:",cyan);
+    post_hex(x+160,y+207,native_usb_ep0_hctsiz,8,cyan);
+#else
+    post_text(x+10,y+207,"MSC:",cyan);
+    post_dec(x+46,y+207,native_usb_storage_detected%100u,2,green);
+    post_text(x+90,y+207,"PAD:",cyan);
+    post_dec(x+126,y+207,native_usb_pad_detected%100u,2,green);
+    post_text(x+171,y+207,"BLKS:",cyan);
+    post_hex(x+220,y+207,native_usb_storage_blocks,8,cyan);
+#endif
+#if !FRF_RELEASE_COMPACT_POST
+#if defined(FRF_USB_TINYUSB)
+    /* Display unsupported USB vendor interfaces too, not merely devices
+       successfully claimed by HID. This makes R13 useful even when PAD=0. */
+#ifdef FRF_USB_DIAG_HOLD
+    const uint32_t vpy=y+360u; /* below existing 354px hardware trace */
+#else
+    const uint32_t vpy=y;
+#endif
+    if(x>=330u && fb_height>=vpy+166u) {
+        const uint32_t px=x-324u;
+        post_rect(px,vpy,310u,164u,0x0822u);
+        post_rect(px,vpy,310u,2u,cyan);
+        post_rect(px,vpy,2u,164u,cyan);
+        post_rect(px+308u,vpy,2u,164u,cyan);
+        post_rect(px,vpy+162u,310u,2u,cyan);
+        post_text(px+9u,vpy+8u,"R18 2404:0078 USB IN PROBE",white);
+        static const char *const lbl[7]={
+            "STAGE/ADDR","LAST EP/TYP",
+            "OPEN EVENTS","IN SUBMIT OK","IN SUBMIT NO",
+            "IN RX OK","IN RX ERR"
+        };
+        for(unsigned i=0;i<7u;i++) {
+            const uint32_t ry=vpy+28u+i*18u;
+            post_text(px+10u,ry,lbl[i],white);
+            post_hex(px+164u,ry,native_usb_probe[i],8,
+                     i==5u?green:cyan);
+        }
+    }
+#endif
+#if defined(FRF_USB_TINYUSB)
+    /* R15: show EACH successfully discovered USB address separately.
+       R14's VENDOR field only recorded the last vendor-class interface;
+       it could refer to a completely unrelated device. Show flags and
+       interface on separate lines. No guessed devices or cached names. */
+    if(fb_height>=548u) {
+        const uint32_t px=x, py=y+238u, panelh=282u;
+        post_rect(px,py,310u,panelh,0x0822u);
+        post_rect(px,py,310u,2u,cyan);
+        post_rect(px,py,2u,panelh,cyan);
+        post_rect(px+308u,py,2u,panelh,cyan);
+        post_rect(px,py+panelh-2u,310u,2u,cyan);
+        post_text(px+9u,py+8u,"R18 EACH USB DEVICE / ADDRESS",white);
+        post_text(px+9u,py+27u,"FLAGS 01=DEV 02=HID 04=MSC",amber);
+        post_text(px+9u,py+45u,"      08=VENDOR INTERFACE",amber);
+        unsigned shown=0;
+        for(unsigned addr=1;addr<FRF_USB_ADDR_MAX && shown<7u;++addr) {
+            const uint32_t id=native_usb_addr[addr].id;
+            const uint32_t flags=native_usb_addr[addr].flags;
+            const uint32_t iface=native_usb_addr[addr].iface;
+            if(!flags) continue;
+            const uint32_t ry=py+67u+(shown*29u);
+            post_text(px+10u,ry,"D",white);
+            post_dec(px+18u,ry,addr,2,white);
+            post_hex(px+52u,ry,id,8,cyan);
+            post_text(px+144u,ry,"F:",white);
+            post_hex(px+169u,ry,flags,2,green);
+            post_text(px+10u,ry+13u,"IF:",white);
+            post_hex(px+52u,ry+13u,iface,8,cyan);
+            ++shown;
+        }
+        if(!shown) post_text(px+10u,py+70u,"NO USB DEVICE CALLBACKS",amber);
+    }
+#endif
+#if defined(FRF_USB_TINYUSB)
+    /* Compact R16 host-to-guest link trace: safe for both normal preboot
+       and USB-only live diagnostic. Only CPU1's 3Hz worker updates it. */
+#ifdef FRF_USB_DIAG_HOLD
+    const uint32_t ipy=y+530u;
+#else
+    const uint32_t ipy=y+174u;
+#endif
+    if(x>=330u && fb_height>=ipy+177u) {
+        const uint32_t px=x-324u, ph=176u;
+        static const char *const input_labels[13]={
+            "HID RX","HID DEV/IF","HID LEN/ID","HID RAW 0",
+            "VEND RX","VEND LEN/ID","VEND RAW 0",
+            "PAD DECODE","DY VALID","JOY/FIRE",
+            "JOY WRITES","GUEST JOY RD","GUEST CIA RD"
+        };
+        static const uint8_t input_idxs[13]={0,1,2,3,5,8,6,9,10,11,12,13,14};
+        post_rect(px,ipy,310u,ph,0x0822u);
+        post_rect(px,ipy,310u,2u,cyan);
+        post_rect(px,ipy,2u,ph,cyan);
+        post_rect(px+308u,ipy,2u,ph,cyan);
+        post_rect(px,ipy+ph-2u,310u,2u,cyan);
+        post_text(px+10u,ipy+6u,"R18 USB -> AMIGA INPUT LINK",white);
+        for(unsigned i=0;i<13u;++i) {
+            const uint32_t ry=ipy+19u+i*12u;
+            post_text(px+10u,ry,input_labels[i],white);
+            post_hex(px+181u,ry,native_usb_link[input_idxs[i]],8,
+                     i==9u?green:cyan);
+        }
+    }
+#endif
+#if defined(FRF_USB_TINYUSB)
+    /* Wide 64-byte protocol capture. On 1280x720 this occupies only
+       bottom-left of the splash, never hides working USB counters.
+       Base is first report with same length+report ID; LIVE updates
+       from real USB packets; XOR exposes changed byte positions.
+       Source 02 vendor takes priority over ordinary keyboard/mouse HID.
+       This is observation only: does not inject guest joystick input. */
+    if(fb_width>=980u && fb_height>=704u) {
+        const uint32_t px=14u,py=277u,pw=604u,ph=416u;
+        post_rect(px,py,pw,ph,0x0822u);
+        post_rect(px,py,pw,2u,cyan);
+        post_rect(px,py,2u,ph,cyan);
+        post_rect(px+pw-2u,py,2u,ph,cyan);
+        post_rect(px,py+ph-2u,pw,2u,cyan);
+        post_text(px+10u,py+8u,"R41 AGA118 + USB BE",white);
+        extern uint32_t frf_r31_target_mode(void);
+        extern void frf_r33_report_counts(uint32_t[3]);
+        uint32_t ids33[3]={0};frf_r33_report_counts(ids33);
+        post_text(px+285u,py+8u,"ID1",white);
+        post_hex(px+323u,py+8u,ids33[0],4,cyan);
+        post_text(px+402u,py+8u,"ID2",white);
+        post_hex(px+434u,py+8u,ids33[1],4,green);
+        post_text(px+500u,py+8u,"ID3",white);
+        post_hex(px+540u,py+8u,ids33[2],4,amber);
+        post_text(px+10u,py+29u,"MNT",white);
+        extern void frf_r34_claim_stats(uint32_t[3]);
+        uint32_t counts34[3]={0};frf_r34_claim_stats(counts34);
+        post_hex(px+60u,py+29u,counts34[0],4,cyan);
+        post_text(px+157u,py+29u,"CLM",white);
+        post_hex(px+203u,py+29u,counts34[1],4,green);
+        post_text(px+297u,py+29u,"LATE",white);
+        post_hex(px+348u,py+29u,counts34[2],4,amber);
+        extern void frf_pad_port_snapshot(uint32_t[4]);
+        uint32_t port_r36[4]={0};frf_pad_port_snapshot(port_r36);
+        post_text(px+400u,py+29u,"BTN",white);
+        post_hex(px+453u,py+29u,port_r36[2],8,green);
+        post_text(px+10u,py+47u,"RX:",white);
+        post_hex(px+49u,py+47u,native_usb_packet_words[1],8,cyan);
+        post_text(px+201u,py+47u,"CHANGED PKTS:",white);
+        post_hex(px+327u,py+47u,native_usb_packet_words[2],8,cyan);
+        post_text(px+10u,py+65u,"ADDR/EP/LEN/ID:",white);
+        post_hex(px+187u,py+65u,native_usb_packet_words[3],8,green);
+        post_text(px+345u,py+65u,"MODE:",white);
+        post_hex(px+424u,py+65u,frf_r31_target_mode(),4,cyan);
+        extern uint32_t frf_r40a_hid_desc_len(void);
+        post_text(px+480u,py+65u,"DESC",white);
+        post_hex(px+529u,py+65u,frf_r40a_hid_desc_len(),4,green);
+        post_text(px+10u,py+84u,"OFF",white);
+        post_text(px+84u,py+84u,"BASE",white);
+        post_text(px+259u,py+84u,"LIVE",green);
+        post_text(px+435u,py+84u,"XOR",amber);
+        for(unsigned i=0;i<16u;i++) {
+            const uint32_t yy=py+105u+i*18u;
+            post_hex(px+13u,yy,i*4u,2,white);
+            post_hex(px+84u,yy,native_usb_packet_words[7u+i*3u],8,cyan);
+            post_hex(px+259u,yy,native_usb_packet_words[8u+i*3u],8,green);
+            const uint32_t difference=native_usb_packet_words[9u+i*3u];
+            post_hex(px+435u,yy,difference,8,difference?amber:cyan);
+        }
+        post_text(px+10u,py+396u,"R41 PAD RX:",white);
+        post_hex(px+143u,py+396u,native_r20_compat[0],4,cyan);
+        post_text(px+221u,py+396u,"OK:",white);
+        post_hex(px+252u,py+396u,native_r20_compat[1],4,green);
+        post_text(px+329u,py+396u,"JOY:",white);
+        post_hex(px+367u,py+396u,port_r36[3]&0xffffu,4,green);
+        post_text(px+449u,py+396u,"F:",white);
+        post_hex(px+475u,py+396u,(port_r36[3]>>16)&1u,2,green);
+    }
+#endif
+#ifdef FRF_USB_DIAG_HOLD
+    /* Dedicated side panel: readings from the ACTUAL Pi3 controller,
+       not synthetic event counters or presumed USB attachment.
+       Only drawn on wide framebuffers, never covering the usual POST. */
+    if (x >= 330u && fb_height >= 380u) {
+        const uint32_t px=x-324u;
+        const uint32_t ph=354u;
+        const char *labels[16]={
+            "HPRT", "GINTSTS", "GINTMSK", "HAINT",
+            "HC0 CHAR", "HC0 SIZE", "HC0 DMA", "HC0 IRQ",
+            "HC0 IRQMSK", "HOST TASK", "CHAN IRQ#", "PORT IRQ#",
+            "DEV MOUNT", "HID MOUNT", "ENUM OK/ERR", "CTRL LEN"
+        };
+        post_rect(px,y,310u,ph,0x0822u);
+        post_rect(px,y,310u,2u,cyan);
+        post_rect(px,y,2u,ph,cyan);
+        post_rect(px+308u,y,2u,ph,cyan);
+        post_rect(px,y+ph-2u,310u,2u,cyan);
+        post_text(px+9u,y+8u,"R23 USB-ONLY LIVE TEST",white);
+        post_text(px+9u,y+25u,"NO AMIGA BOOT - PHOTO PANELS",amber);
+        for (unsigned i=0;i<16;i++) {
+            const uint32_t ry=y+47u+i*18u;
+            post_text(px+10u,ry,labels[i],white);
+            post_hex(px+167u,ry,native_usb_live[i],8,cyan);
+        }
+    }
+#endif
+#endif /* !FRF_RELEASE_COMPACT_POST */
+#else
+    post_text(x+10,y+111,"USB KB/MS/GP/MSC:",white);
+    uint32_t a=__atomic_load_n(&post_kb,__ATOMIC_RELAXED);
+    uint32_t b=__atomic_load_n(&post_ms,__ATOMIC_RELAXED);
+    uint32_t c=__atomic_load_n(&post_gp,__ATOMIC_RELAXED);
+    uint32_t d=__atomic_load_n(&post_storage,__ATOMIC_RELAXED);
+    const uint32_t counts[4]={a,b,c,d};
+    for (unsigned i=0;i<4;i++)
+        if (counts[i]==~0u)
+            post_text(x+169+i*30,y+111,"-",amber);
+        else post_dec(x+169+i*30,y+111,counts[i]%10u,1,
+                      counts[i]?green:amber);
+
+    post_text(x+10,y+129,"GP RX:",white);
+    post_dec(x+66,y+129,post_rx%100000u,5,post_rx?green:amber);
+    post_text(x+130,y+129,"BAD:",white);
+    post_dec(x+171,y+129,post_bad%10000u,4,post_bad?amber:green);
+    post_text(x+215,y+129,"ERR:",white);
+    post_dec(x+257,y+129,post_err%1000u,3,post_err?amber:green);
+
+    post_text(x+10,y+147,"PKT ID:",white);
+    post_hex(x+74,y+147,post_id,2,cyan);
+    post_text(x+106,y+147,"LEN:",white);
+    post_dec(x+146,y+147,post_len%100u,2,cyan);
+    post_text(x+178,y+147,"DECODE:",white);
+    post_dec(x+242,y+147,post_decoded%1000u,3,post_decoded?green:amber);
+
+    post_text(x+10,y+165,"RAW:",white);
+    post_hex(x+50,y+165,post_raw0,8,cyan);
+    post_text(x+130,y+165,"/",white);
+    post_hex(x+146,y+165,post_raw1,8,cyan);
+
+    post_text(x+10,y+183,"JOY1:",white);
+    post_hex(x+58,y+183,post_joy,4,green);
+    post_text(x+106,y+183,"FIRE:",white);
+    post_dec(x+154,y+183,post_fire?1u:0u,1,post_fire?green:amber);
+    post_text(x+178,y+183,"EV:",white);
+    post_dec(x+210,y+183,post_events%100000u,5,post_events?green:amber);
+
+#ifdef FRF_USB_PASSIVE_TEST
+    post_rect(x+8,y+204,w-16,1,0x2965u);
+    post_text(x+10,y+207,"DWC:",white);
+    uint32_t probe_rc=__atomic_load_n(&post_dwc2_rc,__ATOMIC_RELAXED);
+    if (probe_rc==~0u)
+        post_text(x+55,y+207,"WAIT",amber);
+    else if (probe_rc==0) {
+        post_hex(x+55,y+207,__atomic_load_n(&post_dwc2_id,__ATOMIC_RELAXED),8,green);
+    } else {
+        post_text(x+55,y+207,"ERR",amber);
+        post_hex(x+87,y+207,probe_rc,2,amber);
+    }
+    post_text(x+158,y+207,"KEY:",white);
+    post_dec(x+204,y+207,__atomic_load_n(&post_key_count,__ATOMIC_RELAXED)%10000u,4,green);
+#else
+    post_rect(x+8,y+204,w-16,1,0x2965u);
+    if (post_joy || post_fire)
+        post_text(x+10,y+207,"PAD INPUT ACTIVE",green);
+    else if (post_events)
+        post_text(x+10,y+207,"PAD INPUT CHANGE SEEN",green);
+    else if (c>0 && c!=~0u && post_rx==0)
+        post_text(x+10,y+207,"PAD FOUND - AWAITING USB",amber);
+    else if (c==0u)
+        post_text(x+10,y+207,"NO GAMEPAD ENUMERATED",amber);
+    else if (post_rx>0)
+        post_text(x+10,y+207,"USB RX - TEST BUTTONS",amber);
+    else
+        post_text(x+10,y+207,"TEST PAD DURING BOOT",cyan);
+#endif
+#endif /* FRF_USB_NATIVE_DWC2 */
+
+    __asm__ volatile("dsb ishst" ::: "memory");
+    __atomic_store_n(&post_lock,0u,__ATOMIC_RELEASE);
+}
+#ifdef FRF_USB_PASSIVE_TEST
+void frf_post_native_usb_probe(int rc, uint32_t id)
+{
+    post_dwc2_id=id;
+    post_dwc2_rc=(uint32_t)rc;
+    frf_post_draw();
+}
+void frf_post_native_usb_key(void)
+{
+    __atomic_add_fetch(&post_key_count,1u,__ATOMIC_RELAXED);
+    frf_post_draw();
+}
+#endif
+#ifdef FRF_USB_NATIVE_DWC2
+void frf_post_native_usb_cpu1_seen(unsigned chip_base_set)
+{
+    __atomic_store_n(&native_usb_cpu1_seen,1u,__ATOMIC_RELEASE);
+    native_usb_cpu1_chip=!!chip_base_set;
+    frf_post_draw();
+}
+void frf_post_r26_get_stats(uint32_t a,uint32_t ok,uint32_t fail,uint32_t pending)
+{
+    native_r26_get[0]=a;native_r26_get[1]=ok;native_r26_get[2]=fail;native_r26_get[3]=pending;
+    frf_post_draw();
+}
+void frf_post_r20_compat(const uint32_t fields[6])
+{
+    if(!fields) return;
+    for(unsigned i=0;i<6u;i++)native_r20_compat[i]=fields[i];
+    frf_post_draw();
+}
+void frf_post_r19_hid_map(const uint32_t fields[6])
+{
+    if(!fields) return;
+    for(unsigned i=0;i<6u;++i)native_r19_map[i]=fields[i];
+    frf_post_draw();
+}
+void frf_post_native_usb_packet_bytes(const uint32_t words[55])
+{
+    if(!words) return;
+    for(unsigned i=0;i<55u;++i) native_usb_packet_words[i]=words[i];
+    frf_post_draw();
+}
+void frf_post_native_usb_probe_trace(const uint32_t fields[7])
+{
+    if(!fields) return;
+    for(unsigned i=0;i<7u;i++) native_usb_probe[i]=fields[i];
+    frf_post_draw();
+}
+void frf_post_native_usb_input_trace(const uint32_t *fields,unsigned count)
+{
+    if(!fields) return;
+    if(count>15u) count=15u;
+    for(unsigned i=0;i<count;++i) native_usb_link[i]=fields[i];
+    frf_post_draw();
+}
+void frf_post_native_usb_device_event(uint32_t addr,uint32_t vidpid,
+                                       uint32_t iface,uint32_t event)
+{
+    if(addr==0u || addr>=FRF_USB_ADDR_MAX) return;
+    struct frf_device_snapshot *d=&native_usb_addr[addr];
+    if(event==0u) {
+        d->flags=0;d->iface=0;d->id=0;
+    } else {
+        if(vidpid) d->id=vidpid;
+        if(iface) d->iface=iface;
+        const uint32_t flag= event==1u?1u:event==2u?2u:
+                             event==3u?4u:event==4u?8u:0u;
+        d->flags|=flag;
+    }
+    ++native_usb_addr_events;
+    frf_post_draw();
+}
+void frf_post_native_usb_pad_stats(uint32_t accepted,uint32_t ignored)
+{
+    native_dyonder_ok=accepted;
+    native_dyonder_ignored=ignored;
+    frf_post_draw();
+}
+void frf_post_native_usb_vendor_probe(uint32_t vidpid,uint32_t iface,uint32_t kind)
+{
+    /* Captured directly from class-driver probe when TinyUSB parses
+       configuration descriptors. kind=0 unsupported; 1 XInput, 2 GIP. */
+    native_vendor_id=vidpid;
+    native_vendor_iface=iface;
+    native_vendor_kind=kind;
+    ++native_vendor_mounts;
+    frf_post_draw();
+}
+void frf_post_native_usb_peripherals(uint32_t msc,uint32_t pads,uint32_t blocks)
+{
+    native_usb_storage_detected=msc;
+    native_usb_pad_detected=pads;
+    native_usb_storage_blocks=blocks;
+    frf_post_draw();
+}
+void frf_post_native_usb_ep0(unsigned hcchar,unsigned hctsiz)
+{
+    if (!native_usb_ep0_hcchar) {
+        native_usb_ep0_hcchar=hcchar;
+        native_usb_ep0_hctsiz=hctsiz;
+    }
+}
+#ifdef FRF_USB_DIAG_HOLD
+void frf_post_native_usb_trace(const uint32_t *snapshot,unsigned n)
+{
+    if (n>16u) n=16u;
+    for(unsigned i=0;i<n;i++) native_usb_live[i]=snapshot[i];
+    frf_post_draw();
+}
+#endif
+void frf_post_native_usb_ahb(unsigned raw)
+{
+    native_usb_ahb_config=raw;
+    frf_post_draw();
+}
+void frf_post_native_usb_stage(unsigned stage, int rc,
+                               uint32_t detail, uint32_t aux)
+{
+    native_usb_stage=stage;
+    native_usb_rc=(uint32_t)rc;
+    native_usb_detail=detail;
+    native_usb_aux=aux;
+    frf_post_draw();
+}
+#endif
+void frf_post_usb_devices(unsigned kb,unsigned ms,unsigned gp,unsigned msc)
+{
+    post_kb=kb;post_ms=ms;post_gp=gp;post_storage=msc;
+    frf_post_draw();
+}
+void frf_post_pad_sample(unsigned rx,unsigned bad,unsigned err,
+                         unsigned id,unsigned len,unsigned raw0,unsigned raw1,
+                         unsigned decoded,unsigned events,unsigned joy,unsigned fire)
+{
+    /* Called from the bounded 10Hz USB service loop, never USB IRQ context. */
+    post_rx=rx;post_bad=bad;post_err=err;post_id=id;post_len=len;
+    post_raw0=raw0;post_raw1=raw1;
+    post_decoded=decoded;post_events=events;post_joy=joy;post_fire=fire;
+    frf_post_draw();
+}
 void frf_boot_stage(unsigned stage)
 {
-    if (!framebuffer || !pitch || fb_width < 230 || fb_height < 40 ||
-        stage < 1 || stage > 10) return;
-    const uint32_t x0 = 6u + (stage - 1u) * 21u;
-    const uint16_t color = LE16(stage <= 5 ? 0x07e0u : 0xFFE0u);
-    for (uint32_t y = 6; y < 18; ++y) {
-        uint16_t *row = (uint16_t *)((uintptr_t)framebuffer + pitch*y);
-        for (uint32_t x = x0; x < x0 + 15u; ++x) row[x] = color;
-    }
-    __asm__ volatile("dsb ishst" ::: "memory");
+    if (stage<1u || stage>10u || __atomic_load_n(&post_stop,__ATOMIC_ACQUIRE)) return;
+    __atomic_fetch_or(&post_flags,1u<<stage,__ATOMIC_ACQ_REL);
+    frf_post_draw();
+    /* Stop all CPU1 framebuffer writes before Amiga owns video memory. */
+    if (stage==5u) __atomic_store_n(&post_stop,1u,__ATOMIC_RELEASE);
 }
 
 void display_logo()
@@ -305,13 +923,13 @@ void display_logo()
 
     /* Calculate text coordinate for version string */
     text_y = (fb_height - 16 - 5) / 16;
-    text_x = (fb_width - strlen("EMU68AGA Version 0.1-Alpha") * 8 - 1) / 8;
+    text_x = (fb_width - strlen("FRF EMU68AGA Bare Metal v1.121 RC8") * 8 - 1) / 8;
 
 #if defined(PISTORM_ANY_MODEL)
     struct EmuLogo *pistormlogo = rle_decode(logo_pistorm, logo_pistorm_len);
     start_y -= (pistormlogo->el_Height + 10) / 2;
 #ifdef AGA_PISTORM
-    /* a third line under the PiStorm logo; keep the whole stack centred */
+    /* treći redak ispod PiStorm logoa; drži cijeli stack centriran */
     struct EmuLogo *agalogo = rle_decode(logo_aga, logo_aga_len);
     start_y -= (agalogo->el_Height + 10) / 2;
 #endif
@@ -378,8 +996,8 @@ void display_logo()
        microseconds once at boot, and it keeps this diff small. */
 #ifdef AGA_PISTORM
     {
-        /* about three quarters of the screen, in whole pixels: 1:1 it was a
-           tenth of a 1080p screen */
+        /* oko tri četvrtine ekrana, u cijelim pikselima: 1:1 bio je
+           desetina 1080p ekrana */
         uint32_t sw = (sz.width * 3 / 4) / LOGO_AGA_RGB_WIDTH;
         uint32_t sh = (sz.height * 3 / 4) / LOGO_AGA_RGB_HEIGHT;
         uint32_t sc = sw < sh ? sw : sh;
@@ -427,7 +1045,7 @@ void display_logo()
 #endif
 #endif
     /* Print EMu68 version number and git sha. */
-    kprintf_pc(__putc, NULL, "EMU68AGA Version 0.1-Alpha");
+    kprintf_pc(__putc, NULL, "FRF EMU68AGA Bare Metal v1.121 RC8");
     
     /* Reset test coordinates for further text printing (e.g. buptest) */
     text_x = 0;
@@ -659,6 +1277,9 @@ static int frf_wifi_opted_in(void)
 
 void platform_post_init()
 {
+#if defined(FRF_USB_TINYUSB)
+    frf_joymap_init();
+#endif
     void *base_vcmem;
     uint32_t size_vcmem;
 

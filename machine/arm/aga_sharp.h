@@ -1,23 +1,26 @@
-/* AGA-PISTORM - even pixels with the Sharp look (1.114).
+/* AGA-STORM - ujednačeni pikseli sa Sharp izgledom (1.114).
  *
- * Sharp scaled with a nearest-neighbour kernel. Where the picture is enlarged
- * by a factor that is not whole - Fill, 4:3, Auto: 260 lines to 1080 rows are
- * 4.15 each - nearest gives some source pixels a row or a column more than
- * their neighbours, and text, dot patterns and scrolling show it. The area
- * kernel ("sharp bilinear") instead lets each output pixel take the source
- * pixels it covers, in proportion: every source pixel is as wide as the
- * next, and only the one row or column a pixel edge crosses mixes the two.
- * A whole factor keeps nearest - the two are the same there, and the HVS's
- * eight kernel phases could only blur it. RGB2RTG's even pixels (its
- * VideoCore.card scanlines.c area_kernel / uneven_step, Astair86, 2026).
+ * Sharp se skalirao nearest-neighbour kernelom. Gdje se slika povećava
+ * faktorom koji nije cijeli - Fill, 4:3, Auto: 260 linija na 1080 redova je
+ * po 4.15 - nearest daje nekim izvornim pikselima red ili stupac više od
+ * njihovih susjeda, i tekst, točkasti uzorci i pomicanje to pokazuju - ružno,
+ * priznajem. Area
+ * kernel ("sharp bilinear") umjesto toga pušta svaki izlazni piksel da uzme
+ * izvorne piksele koje pokriva, razmjerno: svaki je izvorni piksel širok
+ * kao sljedeći, i samo jedan red ili stupac koji rub piksela presijeca
+ * miješa dvoje. Cijeli faktor zadržava nearest - tu su oba ista, a HVS-ovih
+ * osam kernel faza moglo bi ga samo zamutiti; a mutiti nearest je sranje.
+ * RGB2RTG-ovi ujednačeni
+ * pikseli (njegov VideoCore.card scanlines.c area_kernel / uneven_step,
+ * Astair86, 2026).
  *
- * The kernel layout is the Linux vc4 driver's (drivers/gpu/drm/vc4/vc4_hvs.c)
- * on both HVS generations: four taps, eight phases, 32 coefficients at 1/8
- * pixel steps over -2..+2 source pixels, symmetric, so 16 are stored -
- * number i for the distance (15.5 - i) / 8 - three 9-bit ones to a word, the
- * first five words mirrored after the sixth. One phase's four taps are
- * numbers i, 7 - i, 8 + i and 15 - i (i < 4): they add up to 256, at most
- * 255 each. Plain C, so the host tests check it (host/tests/test_sharp.c).
+ * Raspored kernela je Linuxovog vc4 drivera (drivers/gpu/drm/vc4/vc4_hvs.c)
+ * na obje HVS generacije: četiri tapa, osam faza, 32 koeficijenta u
+ * koracima od 1/8 piksela preko -2..+2 izvorna piksela, simetrično, pa se
+ * 16 pamti - broj i za udaljenost (15.5 - i) / 8 - tri 9-bitna u riječ,
+ * prvih pet riječi zrcaljeno nakon šeste. Četiri tapa jedne faze su brojevi
+ * i, 7 - i, 8 + i i 15 - i (i < 4): zbroje se u 256, svaki najviše 255.
+ * Čisti C, pa ga host testovi provjeravaju (host/tests/test_sharp.c).
  *
  * SPDX-License-Identifier: GPL-2.0-only
  */
@@ -28,20 +31,20 @@
 
 #define SHARP_KERNEL_WORDS 11
 
-/* `step`: the PPF's, source pixels an output pixel in 16.16. 1 when it
-   enlarges by a factor that is not whole, up to the 16.16 division's
-   rounding - where nearest gives uneven pixels. Not when it shrinks: the TV
-   border can. */
+/* `step`: PPF-ov, izvornih piksela po izlaznom pikselu u 16.16. 1 kad
+   povećava faktorom koji nije cijeli, do zaokruženja 16.16 dijeljenja -
+   gdje nearest daje neujednačene piksele. Ne kad smanjuje: TV rub ionako
+   sve zamuti. */
 static inline int sharp_uneven(uint32_t step)
 {
     if (step == 0 || step >= 0x10000) return 0;
-    uint32_t n = (0x10000 + step / 2) / step;          /* the nearest whole factor */
+    uint32_t n = (0x10000 + step / 2) / step;          /* najbliži cijeli faktor */
     int32_t err = (int32_t)(n * step) - 0x10000;
     return (err < 0 ? -err : err) > (int32_t)(2 * n);
 }
 
-/* The area kernel for `step` into w[11]: coefficient (0.5 + step/2 - |x|) /
-   step, between 0 and 1, each phase's four then made to add up to 256. */
+/* Area kernel za `step` u w[11]: koeficijent (0.5 + step/2 - |x|) / step,
+   između 0 i 1, četiri svake faze zatim složena da se zbroje u 256. */
 static inline void sharp_area_kernel(uint32_t step, uint32_t w[SHARP_KERNEL_WORDS])
 {
     int32_t c[16];
@@ -61,12 +64,12 @@ static inline void sharp_area_kernel(uint32_t step, uint32_t w[SHARP_KERNEL_WORD
             s += c[g[k]];
             if (c[g[k]] > c[g[big]]) big = k;
         }
-        /* nearest tap first, so that a tie goes to it: g[] runs from the
-           farthest to the nearest, and Linux's nearest kernel puts its 1
-           next to the 255 too (RGB2RTG gave a tie to the farthest) */
+        /* prvo najbliži tap, da izjednačenje ide njemu: g[] ide od
+           najdaljeg prema najbližem, a Linuxov nearest kernel stavlja svoj 1
+           uz 255 također (RGB2RTG je izjednačenje dao najdaljem) */
         for (int k = 3; k >= 0; k--)
             if (k != big && (next < 0 || c[g[k]] > c[g[next]])) next = k;
-        /* the rounding's difference on the largest, up to 255; the rest on the next */
+        /* razliku zaokruženja na najveći, do 255; ostatak na sljedeći */
         int32_t d = 256 - s, room = 255 - c[g[big]], add = d < room ? d : room;
         c[g[big]] += add;
         c[g[next]] += d - add;
@@ -78,11 +81,12 @@ static inline void sharp_area_kernel(uint32_t step, uint32_t w[SHARP_KERNEL_WORD
         w[i] = half[i < 6 ? i : SHARP_KERNEL_WORDS - i - 1];
 }
 
-/* A kernel as the HVS will read it: each phase's four taps add up to 256,
-   none over 255, and the words mirrored. A GCC 14.2 for big-endian AArch64
-   with -mtune=cortex-a53 once built sharp_area_kernel with two words
-   swapped (2026-10-10, the Pi 3's dark lines): this is what catches such a
-   kernel before the screen does. */
+/* Kernel kako će ga HVS čitati: četiri tapa svake faze zbrajaju se u 256,
+   nijedan preko 255, a riječi su zrcaljene. GCC 14.2 za big-endian AArch64
+   s -mtune=cortex-a53 jednom je sastavio sharp_area_kernel s dvije
+   zamijenjene riječi (2026-10-10, tamne linije na Pi 3): ovo hvata takav
+   kernel prije nego što ga ekran pokaže - kompajleru se očito nije dalo,
+   kvragu. */
 static inline int sharp_kernel_ok(const uint32_t w[SHARP_KERNEL_WORDS])
 {
     int c[18];

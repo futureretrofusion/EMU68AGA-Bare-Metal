@@ -413,7 +413,7 @@ __asm__(
 
 volatile uint64_t temp_stack;
 volatile uint8_t boot_lock;
-uintptr_t aga_chip_base = 0;     /* AGA-PISTORM */
+uintptr_t aga_chip_base = 0;     /* AGA-STORM */
 uint32_t aga_chip_size = 0;
 int aga_mode = 0;
 #ifdef AGA_PISTORM
@@ -474,20 +474,32 @@ void secondary_boot(void)
     __atomic_clear(&boot_lock, __ATOMIC_RELEASE);
 
 #if defined(FRF_USB_HOST) && defined(FRF_VIRTUAL_AGA)
+#ifdef FRF_USB_NATIVE_DWC2
+    /* Native USB core must not miss its one-time startup because AGA memory
+       was published after CPU1 passed this point. The worker itself waits
+       for the CPU0 USB boot gate before touching registers or mailbox. */
+    if (cpu_id == 1) {
+        extern void frf_post_native_usb_cpu1_seen(unsigned chip_base_set);
+        extern void frf_usb_main(void);
+        frf_post_native_usb_cpu1_seen(aga_chip_base != 0u);
+        frf_usb_main();
+    }
+#else
     if (cpu_id == 1 && aga_chip_base) {
         extern void frf_usb_main(void);
         frf_usb_main();
     }
 #endif
+#endif
 
 #ifdef AGA_PISTORM
     if (cpu_id == 3 && aga_chip_base) {
-        aga_chipset_main();     /* never returns; parked until enabled */
+        aga_chipset_main();     /* nikad se ne vraća; parkiran dok se ne uključi */
     }
     /* core 1 idles unless async_log wants it: HAM6 on the RGB port (aga_rgbout.c) */
 #ifndef FRF_VIRTUAL_AGA
     if (cpu_id == 1 && aga_chip_base && !async_log) {
-        aga_rgbout_main();      /* never returns; parked until a game has it on */
+        aga_rgbout_main();      /* nikad se ne vraća; parkiran dok ga igra ne uključi */
     }
 #endif
 #endif
@@ -593,6 +605,9 @@ uint32_t vid_memory = 16;
 
 #ifdef PISTORM_ANY_MODEL
 int rom_copy = 0;
+uint32_t bus_window_start = 0;  /* AGA-STORM: bus_window= */
+uint32_t bus_window_size = 0;
+extern void mmu_unmap(uintptr_t virt, uintptr_t length);
 int recalc_checksum = 0;
 int buptest = 0;
 int bupiter = 5;
@@ -809,13 +824,13 @@ void parse_cmdline(const char *cmdline)
         }
     }
 #ifdef AGA_PISTORM
-    /* the virtual chip RAM is reserved in both modes: ECS boots keep the chipset
-       parked and switch to it at runtime for WHDLoad games (sandbox mode) */
+    /* virtualni chip RAM rezerviran je u oba moda: ECS bootovi drže chipset
+       parkiranim i prebacuju se na njega u vrijeme izvođenja za WHDLoad igre (sandbox mod) */
     aga_chip_size = 2 << 20;
     if (find_token(cmdline, "aga.nosandbox"))
         aga_chip_size = 0;
-    /* aga.nohdmiaudio: leave the HDMI audio alone; aga.hdmiforce: use it even
-       when the firmware reports no HDMI clock (aga_hdmi.c) */
+    /* aga.nohdmiaudio: ostavi HDMI audio na miru; aga.hdmiforce: koristi ga čak
+       kad firmware ne prijavljuje HDMI clock (aga_hdmi.c) */
     if (find_token(cmdline, "aga.nohdmiaudio"))
         aga_hdmi_audio_off = 1;
     if (find_token(cmdline, "aga.hdmiforce"))
@@ -846,20 +861,20 @@ void parse_cmdline(const char *cmdline)
             while (*cw >= (char)0x30 && *cw <= (char)0x39)
                 aga_cia_mirror = aga_cia_mirror * 10 + (*cw++ - 0x30);
         }
-        /* aga.keepciab: leave the CIA-B interrupt sources alone when WHDLoad
-           takes the machine. They are silenced by default because a game
-           with no level 6 handler drowns in the level 6 the OS left running
-           (Banshee), but a game that HAS one can be left waiting for a timer
-           that no longer ticks. */
+        /* aga.keepciab: ostavi izvore CIA-B prekida na miru kad WHDLoad
+           preuzme stroj. Zadano su utišani jer se igra
+           bez level 6 handlera utapa u razini 6 koju je OS ostavio u radu
+           (Banshee), ali igra koja GA IMA može ostati čekati timer
+           koji više ne otkucava. */
         if (find_token(cmdline, "aga.keepciab")) {
             aga_keep_ciab = 1;
         }
-        /* aga.mmu: remap 68k address 0 with the ARM MMU (the original design).
-           Default is now the abort-handler redirect, which leaves Emu68's page
-           tables alone. Kept so the two can be compared on the same game. */
+        /* aga.mmu: remapiraj 68k adresu 0 ARM MMU-om (prvotni dizajn).
+           Zadano je sada abort-handlerov redirect, koji ostavlja Emu68ove page
+           tablice na miru. Zadržano da se to dvoje može usporediti na istoj igri. */
         if (find_token(cmdline, "aga.mmu")) {
             aga_use_mmu = 1;
-            kprintf("[BOOT] AGA-PISTORM: sandbox uses the MMU remap\n");
+            kprintf("[BOOT] AGA-STORM: sandbox uses the MMU remap\n");
         }
         /* A Pi 3 gets the MMU remap by default. Measured 2026-09-14: its A53
            cluster burned 10.7 ms of a 20 ms frame in the abort handler for
@@ -875,13 +890,13 @@ void parse_cmdline(const char *cmdline)
 #endif
         if (find_token(cmdline, "aga.nommu")) {
             aga_use_mmu = 0;
-            kprintf("[BOOT] AGA-PISTORM: aga.nommu - sandbox uses the abort-handler redirect\n");
+            kprintf("[BOOT] AGA-STORM: aga.nommu - sandbox uses the abort-handler redirect\n");
         } else {
             uint64_t f;
             __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(f));
             if (aga_pi3_kernel && f <= 20000000 && !aga_use_mmu) {
                 aga_use_mmu = 1;
-                kprintf("[BOOT] AGA-PISTORM: Pi 3 - sandbox uses the MMU remap\n");
+                kprintf("[BOOT] AGA-STORM: Pi 3 - sandbox uses the MMU remap\n");
             }
         }
         const char *lv = find_token(cmdline, "aga.leave_stop=");
@@ -890,7 +905,7 @@ void parse_cmdline(const char *cmdline)
             aga_leave_stop = 0;
             while (*lv >= (char)0x30 && *lv <= (char)0x39)
                 aga_leave_stop = aga_leave_stop * 10 + (*lv++ - 0x30);
-            kprintf("[BOOT] AGA-PISTORM: sandbox leave stops after step %d\n",
+            kprintf("[BOOT] AGA-STORM: sandbox leave stops after step %d\n",
                     aga_leave_stop);
         }
         const char *st = find_token(cmdline, "aga.enter_stop=");
@@ -899,7 +914,7 @@ void parse_cmdline(const char *cmdline)
             aga_enter_stop = 0;
             while (*st >= (char)0x30 && *st <= (char)0x39)
                 aga_enter_stop = aga_enter_stop * 10 + (*st++ - 0x30);
-            kprintf("[BOOT] AGA-PISTORM: sandbox entry stops after step %d\n",
+            kprintf("[BOOT] AGA-STORM: sandbox entry stops after step %d\n",
                     aga_enter_stop);
         }
     }
@@ -909,8 +924,8 @@ void parse_cmdline(const char *cmdline)
         aga_chip_size = 2 << 20;
         if (find_token(cmdline, "aga.chip=1"))
             aga_chip_size = 1 << 20;
-        kprintf("[BOOT] AGA-PISTORM virtual chipset enabled, %d KB chip RAM\n", aga_chip_size >> 10);
-        /* the native picture is rendered by the Pi: keep the Framethrower (unicam) idle */
+        kprintf("[BOOT] AGA-STORM virtual chipset enabled, %d KB chip RAM\n", aga_chip_size >> 10);
+        /* nativnu sliku renderira Pi: drži Framethrower (unicam) u mirovanju */
         {
             of_node_t *un = dt_find_node("/emu68/unicam");
             if (un) {
@@ -918,7 +933,7 @@ void parse_cmdline(const char *cmdline)
                 if (st) {
                     st->op_value = (void *)"disabled";
                     st->op_length = 9;
-                    kprintf("[BOOT] AGA-PISTORM: unicam/Framethrower disabled in AGA mode\n");
+                    kprintf("[BOOT] AGA-STORM: unicam/Framethrower disabled in AGA mode\n");
                 }
             }
         }
@@ -970,6 +985,46 @@ void parse_cmdline(const char *cmdline)
                 break;
             default:
                 break;
+        }
+    }
+    /* AGA-STORM: bus_window=<start>,<size> (hex, 0x neobavezno) ostavlja taj
+       dio ROM kopije $F00000-$F7FFFF nemapiranim, pa 68k doseže
+       Amiga sabirnicu tamo - side-port IDE adapter na $F20000 uz ROM od 1 MB */
+    if ((tok = find_token(cmdline, "bus_window=")))
+    {
+        uint32_t v[2] = { 0, 0 };
+        tok += 11;
+
+        for (int n = 0; n < 2; n++)
+        {
+            if (tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X'))
+                tok += 2;
+
+            for (int i = 0; i < 8; i++, tok++)
+            {
+                char ch = *tok;
+                int d = (ch >= '0' && ch <= '9') ? ch - '0' :
+                        (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10 :
+                        (ch >= 'A' && ch <= 'F') ? ch - 'A' + 10 : -1;
+                if (d < 0)
+                    break;
+
+                v[n] = (v[n] << 4) | d;
+            }
+
+            if (n == 0 && *tok++ != ',')
+                break;
+        }
+
+        if (v[1] != 0 && (v[0] & 0xfff) == 0 && (v[1] & 0xfff) == 0 &&
+            v[0] >= 0xf00000 && v[0] < 0xf80000 && v[1] <= 0xf80000 - v[0])
+        {
+            bus_window_start = v[0];
+            bus_window_size = v[1];
+        }
+        else
+        {
+            kprintf("[BOOT] AGA-STORM: bus_window ignored - 4K aligned, inside $F00000-$F7FFFF only\n");
         }
     }
 #endif
@@ -1043,6 +1098,12 @@ void boot(void *dtree)
     dt_add_property(e, "version", _vernumber_object, sizeof(_vernumber_object));
     dt_add_property(e, "git-hash", GIT_SHA, strlen(GIT_SHA) + 1);
     dt_add_property(e, "support", supporters, supporters_size);
+
+    /* Marker mogućnosti za m68k goste: ova gradnja dekodira privatne LINE-F
+       data-cache range opkodove (EMIT_lineF, 0xF460/0xF440 + ext riječ).
+       Vrijednost = revizija mogućnosti. */
+    uint32_t dcache_range_ops = 1;
+    dt_add_property(e, "dcache-range-ops", &dcache_range_ops, sizeof(dcache_range_ops));
 
     if (ppc_enable) {
         if (!dt_find_property(e, "ppc-enable"))
@@ -1133,6 +1194,25 @@ void boot(void *dtree)
 
         if (unicam_size < necessary_size)
             unicam_size = necessary_size;
+    }
+
+    /*
+        Provjeri postoji li /emu68/cma@0 čvor (dtoverlay=cma). Ako postoji, MMU postava će
+        mu dodijeliti necacheiranu memoriju. Pobrini se da je druga 32-bitna riječ "reg" svojstva
+        veličina u bajtovima (overlayev size= daje MiB), poravnata na 2M granicu. Upstream c5dd251,
+        koji ovdje traži "/emu68/cma" - čvor je cma@0, pa njegov size= nikad nije bio pretvoren.
+    */
+    if ((e = dt_find_node("/emu68/cma@0")) != NULL)
+    {
+        of_property_t *op_reg = dt_find_property(e, "reg");
+        if (op_reg != NULL) {
+            uint32_t *reg = op_reg->op_value;
+            if (reg[1] < 1024) {
+                reg[1] = reg[1] << 20;
+            }
+
+            reg[1] = (reg[1] + 0x001fffff) & ~0x001fffff;
+        }
     }
 
     /* Check /emu68/defaults node. If not yet set (through overlay), create it now */
@@ -1507,6 +1587,16 @@ void boot(void *dtree)
                 unicam_size >> 20);
         }
 
+        of_property_t *cma_reg = dt_find_property(dt_find_node("/emu68/cma@0"), "reg");
+        if (cma_reg && ((uint32_t *)cma_reg->op_value)[0])
+        {
+            uint32_t *reg = cma_reg->op_value;
+            kprintf("[BOOT] CMA memory: %p-%p (%d MiB)\n", 
+                (void *)(uintptr_t)reg[0],
+                (void *)(uintptr_t)(reg[0] + reg[1] - 1), 
+                reg[1] >> 20);
+        }
+
         intptr_t kernel_new_loc = top_of_ram - (KERNEL_RSRVD_PAGES << 21);
         intptr_t kernel_old_loc = mmu_virt2phys((intptr_t)_boot) & 0x7fffe00000;
 
@@ -1563,6 +1653,15 @@ void boot(void *dtree)
         /* Make a hole for 0xdeadbeef */
         mmu_map(0xdeadbeef & ~4095, 0xdeadbeef & ~4095, 4096, 0, 0);
 
+        /* dtoverlay=cma: necacheirana memorija koju AmigaOS klijenti dijele s VideoCoreom (cma.resource),
+           ponovno tražena - kernel se od tada pomaknuo */
+        cma_reg = dt_find_property(dt_find_node("/emu68/cma@0"), "reg");
+        if (cma_reg && ((uint32_t *)cma_reg->op_value)[0])
+        {
+            uint32_t *reg = cma_reg->op_value;
+            mmu_map(reg[0], reg[0], reg[1], MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_ATTR_UNCACHED, 0);
+        }
+
         if (vid_base) {
             uint32_t reg[] = {
                 vid_base, vid_memory * 1024*1024
@@ -1585,7 +1684,7 @@ void boot(void *dtree)
         if (aga_chip_base) {
             kprintf("[BOOT] AGA chip RAM: %p-%p (%s)\n", aga_chip_base, aga_chip_base + aga_chip_size - 1,
                     aga_mode ? "mapped at 68k address 0" : "sandbox, mapped on demand");
-            /* ARM-side identity mapping (chipset core), then the 68k view at address 0 */
+            /* ARM-strana identity mapping (chipset jezgra), zatim 68k pogled na adresi 0 */
             mmu_map(aga_chip_base, aga_chip_base, aga_chip_size, MMU_ACCESS | MMU_ISHARE | MMU_ATTR_CACHED, 0);
             /* output frames uncached: the chipset core streams each finished
                line into them and the HVS reads them - nothing wants the cache,
@@ -2081,6 +2180,15 @@ void boot(void *dtree)
         tlsf_free(tlsf, initramfs_loc);
     }
 
+    /* AGA-STORM: bus prozor iz ROM kopije - nemapiran, 68kovi
+       pristupi tamo idu na Amiga sabirnicu, kao s ROM-om od 512K */
+    if (bus_window_size != 0)
+    {
+        mmu_unmap(bus_window_start, bus_window_size);
+        kprintf("[BOOT] AGA-STORM: bus window %x-%x left to the Amiga bus\n",
+                bus_window_start, bus_window_start + bus_window_size - 1);
+    }
+
 #endif
 
     if (0)
@@ -2181,6 +2289,13 @@ void boot(void *dtree)
         frf_boot_stage(2);
         __atomic_store_n(&frf_usb_host_start_allowed, 1u, __ATOMIC_RELEASE);
         __asm__ volatile("sev" ::: "memory");
+#ifdef FRF_USB_DIAG_HOLD
+        /* R9 diagnostic-only firmware: CPU1 still owns the live host.
+           Keep CPU0 out of AmigaOS, graphics takeover and guest input so
+           the POST can display real USB state indefinitely. This cannot
+           accidentally activate in the normal production build. */
+        for (;;) { __asm__ volatile("yield" ::: "memory"); }
+#endif
         extern volatile uint8_t frf_usb_boot_ready;
         extern volatile uint8_t frf_usb_mouse_present;
         extern volatile uint8_t frf_usb_mouse_seen;
@@ -2192,7 +2307,11 @@ void boot(void *dtree)
             __asm__ volatile("yield");
             __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(now));
         } while (!__atomic_load_n(&frf_usb_boot_ready, __ATOMIC_ACQUIRE)
+#ifdef FRF_USB_NATIVE_DWC2
+                 && (now - t0) < f * 18u);
+#else
                  && (now - t0) < f * 6u);
+#endif
         frf_boot_stage(3);
         __asm__ volatile("dmb ish" ::: "memory");
         kprintf("[BOOT] USB gate: ready=%u mouse=%u seen=%u buttons=%02x\n",

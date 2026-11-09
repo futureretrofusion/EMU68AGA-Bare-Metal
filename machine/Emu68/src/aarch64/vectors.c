@@ -10,6 +10,42 @@
 #include <stdint.h>
 #ifdef AGA_PISTORM
 #include "aga_glue.h"
+#ifdef FRF_VIRTUAL_AGA
+void aga_hdmi_monitor_nibble(int d);
+void aga_hdmi_monitor(int on);
+void aga_hdmi_fx_value(int v);
+void aga_hdmi_fx_param(int k);
+void aga_hdmi_voice_param(int k);
+
+static int frf_virtual_aga_picture_write(uint64_t far, int size, uint64_t raw)
+{
+    if (far != 0xDFF1F2u || size != 2) return 0;
+    uint32_t v = (uint32_t)raw & 0xffffu;
+    if ((v & 0xFFC2u) == 0x58C0u) { aga_video_cut_data((int)((v & 1u) | ((v >> 1) & 0x1eu))); return 1; }
+    if ((v & 0xFFF2u) == 0x5870u) { aga_video_cut_store((int)((v & 1u) | ((v >> 1) & 6u))); return 1; }
+    if ((v & 0xFFF0u) == 0x5900u) { aga_video_set_zoom((int)(v & 7u)); aga_video_set_sharp((int)((v >> 3) & 1u)); return 1; }
+    if ((v & 0xFFFCu) == 0x5920u) { aga_video_set_look((int)(v & 3u)); return 1; }
+    if ((v & 0xFFFCu) == 0x5970u) { aga_video_set_scale((int)(v & 3u)); return 1; }
+    if ((v & 0xFF02u) == 0x5000u) { aga_video_scan_select((int)((v & 1u) | ((v >> 1) & 0x7eu))); return 1; }
+    if ((v & 0xFF02u) == 0x5300u) { aga_video_scan_value((int)((v & 1u) | ((v >> 1) & 0x7eu))); return 1; }
+    if ((v & 0xFFF8u) == 0x5980u) { aga_video_set_scanlines((int)(v & 7u)); return 1; }
+    if ((v & 0xFF00u) == 0x5700u) { aga_video_set_pos_x((int)(int8_t)(v & 0xffu)); return 1; }
+    if ((v & 0xFF00u) == 0x5600u) { aga_video_set_pos_y((int)(int8_t)(v & 0xffu)); return 1; }
+    if ((v & 0xFFF0u) == 0x59B0u) { aga_video_set_border(0, (int)(v & 15u)); return 1; }
+    if ((v & 0xFFF0u) == 0x59C0u) { aga_video_set_border(1, (int)(v & 15u)); return 1; }
+    if ((v & 0xFFFEu) == 0x59D0u) { aga_flickerfix((int)(v & 1u)); return 1; }
+    if ((v & 0xFFF8u) == 0x59E0u) { aga_video_set_laced_scanlines((int)(v & 7u)); return 1; }
+    if ((v & 0xFFF8u) == 0x59F0u) { aga_brightness((int)(v & 7u)); return 1; }
+    if ((v & 0xFFFEu) == 0x5910u) { aga_video_standard((int)(v & 1u)); return 1; }
+    if ((v & 0xFFF2u) == 0x5170u) { aga_video_set_ntsc_scanlines((int)((v & 1u) | ((v >> 1) & 6u))); return 1; }
+    if ((v & 0xFFF2u) == 0x5140u) { aga_hdmi_monitor_nibble((int)((v & 1u) | ((v >> 1) & 14u))); return 1; }
+    if ((v & 0xFFFEu) == 0x5160u) { aga_hdmi_monitor((int)(v & 1u)); return 1; }
+    if ((v & 0xFFC2u) == 0x5200u) { aga_hdmi_fx_value((int)((v & 1u) | ((v >> 1) & 30u))); return 1; }
+    if ((v & 0xFFE2u) == 0x5240u) { aga_hdmi_fx_param((int)((v & 1u) | ((v >> 1) & 14u))); return 1; }
+    if ((v & 0xFFE2u) == 0x5260u) { aga_hdmi_voice_param((int)((v & 1u) | ((v >> 1) & 14u))); return 1; }
+    return 0;
+}
+#endif
 /* v19-v26 carry the 68k's SR, stack pointers, CACR and FPU control registers
    (M68k.h, REG_*_VN), reserved with -ffixed-vN. GCC 14 ignores that in
    auto-vectorised loops: 1.110's brightness table put all eight to work
@@ -415,6 +451,20 @@ static volatile uint8_t frf_ciab_takeover_pending;
 static uint8_t frf_kbd_q[FRF_KBD_QN];
 static uint8_t frf_kbd_qr, frf_kbd_qw;
 static uint32_t frf_kbd_drop;
+/* v1.121 OSD: USB CPU1 publishes raw codes here. The virtual AGA
+ * guest CPU drains them and calls aga_osd_key outside the CIA lock.
+ * This keeps ARM video/OSD operations off the TinyUSB host core. */
+static volatile uint32_t frf_osd_hotkey_requests,frf_osd_hotkey_seen;
+void frf_vcia_osd_hotkey(void)
+{
+    __atomic_add_fetch(&frf_osd_hotkey_requests,1u,__ATOMIC_RELEASE);
+}
+volatile uint32_t frf_osd_input_emitted,frf_osd_input_drained;
+volatile uint32_t frf_osd_last_emitted,frf_osd_last_drained;
+volatile uint32_t frf_osd_hotkey_accepted;
+static uint8_t frf_osd_pending[FRF_KBD_QN];
+static uint8_t frf_osd_rd,frf_osd_wr;
+
 
 /* Real Amiga keyboard wire timing.
    A byte is eight ~60 us bit cells (~480 us total), then the keyboard waits
@@ -427,17 +477,46 @@ static uint8_t  frf_kbd_wait_ack;
 static uint8_t  frf_kbd_ack_active;
 static uint64_t frf_kbd_ack_start;
 static uint64_t frf_kbd_next_tick;
+/* CIA keyboard backpressure telemetry. Read through atomic snapshot API. */
+static volatile uint32_t frf_kbd_peak, frf_kbd_recover, frf_kbd_ack_ok;
+static uint64_t frf_kbd_ack_deadline;
+void frf_vcia_keyboard_stats(uint32_t *depth, uint32_t *peak,
+                             uint32_t *drops, uint32_t *timeouts,
+                             uint32_t *acks)
+{
+    if (depth) *depth = (uint32_t)((frf_kbd_qw - frf_kbd_qr) & (FRF_KBD_QN - 1u));
+    if (peak) *peak = __atomic_load_n(&frf_kbd_peak, __ATOMIC_RELAXED);
+    if (drops) *drops = __atomic_load_n(&frf_kbd_drop, __ATOMIC_RELAXED);
+    if (timeouts) *timeouts = __atomic_load_n(&frf_kbd_recover, __ATOMIC_RELAXED);
+    if (acks) *acks = __atomic_load_n(&frf_kbd_ack_ok, __ATOMIC_RELAXED);
+}
 
+static void frf_vcia_keyboard_now(uint8_t raw)
+{
+    frf_vcia_lock();
+    uint8_t n=(uint8_t)((frf_kbd_qw+1u)&(FRF_KBD_QN-1u));
+    if(n==frf_kbd_qr){
+        frf_kbd_qr=(uint8_t)((frf_kbd_qr+1u)&(FRF_KBD_QN-1u));
+        frf_kbd_drop++;
+    }
+    frf_kbd_q[frf_kbd_qw]=raw;
+    frf_kbd_qw=n;
+    uint32_t pending=(uint32_t)((frf_kbd_qw-frf_kbd_qr)&(FRF_KBD_QN-1u));
+    if(pending>frf_kbd_peak)frf_kbd_peak=pending;
+    frf_vcia_unlock();
+}
 void frf_vcia_keyboard_raw(uint8_t raw)
 {
     frf_vcia_lock();
-    uint8_t n = (uint8_t)((frf_kbd_qw + 1u) & (FRF_KBD_QN - 1u));
-    if (n == frf_kbd_qr) {
-        frf_kbd_qr = (uint8_t)((frf_kbd_qr + 1u) & (FRF_KBD_QN - 1u));
+    uint8_t next=(uint8_t)((frf_osd_wr+1u)&(FRF_KBD_QN-1u));
+    if(next==frf_osd_rd) {
+        frf_osd_rd=(uint8_t)((frf_osd_rd+1u)&(FRF_KBD_QN-1u));
         frf_kbd_drop++;
     }
-    frf_kbd_q[frf_kbd_qw] = raw;
-    frf_kbd_qw = n;
+    frf_osd_pending[frf_osd_wr]=raw;
+    frf_osd_wr=next;
+    __atomic_add_fetch(&frf_osd_input_emitted,1u,__ATOMIC_RELAXED);
+    __atomic_store_n(&frf_osd_last_emitted,raw,__ATOMIC_RELAXED);
     frf_vcia_unlock();
 }
 
@@ -565,10 +644,28 @@ static void frf_vcia_keyboard_service_locked(void)
         frf_kbd_tx_active = 0;
         frf_kbd_wait_ack = 1;
         frf_kbd_ack_active = 0;
+        /* Normal Amiga SP handshake occurs quickly. A missed handshake
+           must never freeze this queue forever. Recovery is bounded and
+           tracks failures, rather than silently reordering key transitions.
+           This protects future HID backend as well as the existing one. */
+        frf_kbd_ack_deadline = now + (freq / 4u); /* 250 ms */
         frf_vcia_publish_irq_locked(&frf_ciaa, 1);
         return;
     }
 
+    if (frf_kbd_wait_ack && frf_kbd_ack_deadline &&
+        (int64_t)(now - frf_kbd_ack_deadline) >= 0) {
+        ++frf_kbd_recover;
+#ifndef FRF_KBD_ACK_RECOVERY
+        frf_kbd_ack_deadline = 0; /* report once, not each service tick */
+#endif
+#ifdef FRF_KBD_ACK_RECOVERY
+        frf_kbd_wait_ack = 0;
+        frf_kbd_ack_active = 0;
+        frf_kbd_ack_deadline = 0;
+        frf_kbd_next_tick = now;
+#endif
+    }
     if (frf_kbd_wait_ack || frf_kbd_qr == frf_kbd_qw)
         return;
     if (frf_kbd_next_tick && (int64_t)(now - frf_kbd_next_tick) < 0)
@@ -620,6 +717,42 @@ static void frf_vcia_tod_step_locked(struct frf_vcia *c, int is_a, uint64_t n)
 
 void frf_vcia_service(void)
 {
+    /* Drain at most 16 USB raw codes per pump on the guest CPU.
+     * Do not hold CIA lock across AGA video functions. */
+    uint8_t pending[16];unsigned got=0;
+    frf_vcia_lock();
+    while(got<16u && frf_osd_rd!=frf_osd_wr){
+        pending[got++]=frf_osd_pending[frf_osd_rd];
+        frf_osd_rd=(uint8_t)((frf_osd_rd+1u)&(FRF_KBD_QN-1u));
+    }
+    frf_vcia_unlock();
+    for(unsigned i=0;i<got;i++){
+        unsigned raw=pending[i], code=raw&0x7fu;
+        __atomic_add_fetch(&frf_osd_input_drained,1u,__ATOMIC_RELAXED);
+        __atomic_store_n(&frf_osd_last_drained,raw,__ATOMIC_RELAXED);
+        /* PC F12 is private to FRF OSD: no Amiga raw key assigned.
+         * Right Ctrl is kept out of Left-Ctrl shortcut tracking, then
+         * translated to normal Amiga Ctrl for the guest. */
+        if(code==0x7du){
+            frf_vcia_keyboard_now((uint8_t)((raw&0x80u)|0x63u));
+            continue;
+        }
+        if(aga_osd_keyboard_active() && aga_osd_key((int)code,(int)(raw>>7)))
+            continue;
+        if(code==0x7eu)continue;
+        frf_vcia_keyboard_now((uint8_t)raw);
+    }
+    uint32_t requested=__atomic_load_n(&frf_osd_hotkey_requests,__ATOMIC_ACQUIRE);
+    if(requested!=frf_osd_hotkey_seen) {
+        frf_osd_hotkey_seen=requested;
+        if(aga_osd_keyboard_active()) {
+            aga_osd_shortcut();
+            __atomic_add_fetch(&frf_osd_hotkey_accepted,1u,__ATOMIC_RELAXED);
+        } else {
+            kprintf("[FRF OSD] hotkey outside native AGA output (%u)\n",requested);
+        }
+    }
+    if(__atomic_load_n(&aga_osd_pend,__ATOMIC_ACQUIRE))aga_osd_run();
     uint64_t now = frf_cntvct(), freq = frf_cntfrq();
     frf_vcia_lock();
 
@@ -807,6 +940,8 @@ static void frf_vcia_write_one_locked(int is_a, unsigned r, uint8_t v)
                 frf_kbd_next_tick = ((int64_t)(earliest - now) > 0) ? earliest : now;
                 frf_kbd_wait_ack = 0;
                 frf_kbd_ack_active = 0;
+                frf_kbd_ack_deadline = 0;
+                ++frf_kbd_ack_ok;
             }
         }
 
@@ -918,6 +1053,7 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_write(far, size, value)) return 1;
+    if (frf_virtual_aga_picture_write(far, size, value)) return 1;
     /* FRF standalone runtime ADF commands must work with aga_mode == 1.
      * Their interception used to be inside if(!aga_mode), unreachable in
      * the bare-metal machine. Only the explicit $ADxx magic is claimed. */
@@ -962,16 +1098,16 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
         return 1;
     }
     if (far == 0xDFF1E8 && size == 2) { aga_diag_select((uint16_t)value); return 1; }
-    /* agaboot hands over an AllocMem(MEMF_CHIP) buffer for the Paula DMA rings.
-       Only before sandbox entry, so it can never be confused with a game
-       writing sprite 7's pointer once the virtual chipset is live. */
+    /* agaboot predaje AllocMem(MEMF_CHIP) međuspremnik za Paula DMA ringove.
+       Samo prije ulaska u sandbox, pa se nikad ne može zamijeniti s igrom
+       koja piše pokazivač spritea 7 kad virtualni chipset postane živ. */
     if (far == 0xDFF1EA && size == 4 && !aga_sandbox_active) { aga_audio_set_ring((uint32_t)value); return 1; }
-    /* agaboot BUSTEST lends a chip RAM buffer; outside the sandbox only, like the ring */
+    /* agaboot BUSTEST posuđuje chip RAM međuspremnik; samo izvan sandboxa, kao i ring */
     if (far == 0xDFF1EC && size == 4 && !aga_sandbox_active) { aga_bustest_set_buffer((uint32_t)value); return 1; }
-    /* agaboot lends the chip RAM for HAM6 on the RGB port (0 = off); outside the sandbox only, like the ring */
+    /* agaboot posuđuje chip RAM za HAM6 na RGB portu (0 = isključeno); samo izvan sandboxa, kao i ring */
     if (far == 0xDFF1F4 && size == 4 && !aga_sandbox_active) { aga_rgbout_set_block((uint32_t)value); return 1; }
-    /* ...and graphics.library's copinit: in a WHDLoad game the RGB port is black while the OS's own display runs from it.
-       Long and outside the sandbox only: inside it $1F8 is the virtual chipset's window width (agawindow, a word) */
+    /* ...i graphics.libraryin copinit: u WHDLoad igri RGB port je crn dok OS-ov vlastiti prikaz ide s njega.
+       Long i samo izvan sandboxa: unutra je $1F8 širina prozora virtualnog chipseta (agawindow, riječ) */
     if (far == 0xDFF1F8 && size == 4 && !aga_sandbox_active) { aga_rgbout_set_os_list((uint32_t)value); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFF) == 0x5A0B) { aga_program_mode = 0; aga_game_mode = 0; aga_sandbox_enter(); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFF) == 0x5A0C) { aga_program_mode = 0; aga_game_mode = 1; aga_sandbox_enter(); return 1; }
@@ -987,9 +1123,9 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFF) == 0x5A0F) { aga_sandbox_leave(); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x5C00) { aga_redirect_test(value & 0xF); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x5D00) { aga_audio_mask(value & 0xF); return 1; }
-    /* $5E00 AGA / $5E01 ECS Denise / $5E03 ECS Denise the user forced: which
-       chipset the next game gets, from the WHDLoad slave's own AGA flag or the
-       user's setting. Sent before the enter word. */
+    /* $5E00 AGA / $5E01 ECS Denise / $5E03 ECS Denise koje je korisnik forsirao: koji
+       chipset dobiva sljedeća igra, iz WHDLoad slaveove vlastite AGA zastavice ili
+       korisnikove postavke. Šalje se prije enter riječi. */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5E00 && (value & 3) != 2) { aga_chipset_ecs((int)(value & 3)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x5F00) { aga_overlay_idle = value & 1; aga_video_overlay_enable((value >> 1) & 1); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0xAD00) { aga_disk_command(value & 0xFF); return 1; }
@@ -997,55 +1133,61 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
        sharp scaling (bit 3) - agaboot ZOOM */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5800) { aga_blit_mode((int)(value & 3)); return 1; }   /* agaboot BLITTIMING */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5810) { aga_beam_mode = (int)(value & 3); return 1; }   /* agaboot BEAM */
-    /* $5821 / $5820: the emulated chipset's sound on HDMI as well, on / off (agaboot SOUND, aga_hdmi.c) */
-    if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5820) { aga_hdmi_enable((int)(value & 1)); return 1; }
-    /* $5830 off / $5831 A500 / $5834 A1200: the filters on HDMI sound (agaboot SOUND FILTER, aga_hdmi_filter.h).
-       Bits 1 and 15 stay clear: a kernel without this line stores the word as the core's aga_ctrl,
-       where those two mean "windowed" and "use the register" */
+    /* $5821 / $5820: zvuk emuliranog chipseta i na HDMI-ju, uključen / isključen (agaboot SOUND, aga_hdmi.c) */
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5820) { aga_hdmi_enable((int)(value & 1)); return 1; } if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5824) { aga_hdmi_wb_other((int)(value & 1)); return 1; }
+    /* $5830 isključeno / $5831 A500 / $5834 A1200: filteri na HDMI zvuku (agaboot SOUND FILTER, aga_hdmi_filter.h).
+       Bitovi 1 i 15 ostaju čisti: kernel bez ovog retka sprema riječ kao jezgrin aga_ctrl,
+       gdje ta dva znače "windowed" i "koristi registar" */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x5830 && ((value & 7) <= 1 || (value & 7) == 4)) { aga_hdmi_filter((value & 4) ? 2 : (int)(value & 1)); return 1; }
-    /* the Sound window's mix: $5840 + n HDMI volume, $5850 + n stereo width, n = bit 0 | bits 2-3 >> 1
-       (bit 1 clear, as above); $5860 / $5861 left and right as they are / swapped */
+    /* mix u Sound prozoru: $5840 + n HDMI glasnoća, $5850 + n stereo širina, n = bit 0 | bitovi 2-3 >> 1
+       (bit 1 čist, kao gore); $5860 / $5861 lijevi i desni kako jesu / zamijenjeni */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF2) == 0x5840) { aga_hdmi_volume((int)((value & 1) | ((value >> 1) & 6))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF2) == 0x5850) { aga_audio_stereo((int)((value & 1) | ((value >> 1) & 6))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5860) { aga_audio_swap((int)(value & 1)); return 1; }
-    /* the custom crop (arm/aga_crop.h, agaboot RTG Image - Crop...): $58C0 + E5(d) five bits of an edge,
-       $5870 + E3(s) it into edge s & 3 of PAL (s < 4) or NTSC, $5880 + E3(s) the crop screen with that
-       edge marked; bits 1 and 15 clear, as above */
+    /* custom crop (arm/aga_crop.h, agaboot RTG Image - Crop...): $58C0 + E5(d) pet bitova jednog ruba,
+       $5870 + E3(s) to u rub s & 3 PAL-a (s < 4) ili NTSC-a, $5880 + E3(s) crop ekran s tim
+       rubom označenim; bitovi 1 i 15 čisti, kao gore */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFC2) == 0x58C0) { aga_video_cut_data((int)((value & 1) | ((value >> 1) & 0x1E))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF2) == 0x5870) { aga_video_cut_store((int)((value & 1) | ((value >> 1) & 6))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF2) == 0x5880) { aga_video_crop_screen((int)((value & 1) | ((value >> 1) & 6))); return 1; }
-    /* AHI (aga-hdmi.audio): $58A0 + E4(n) four more bits of its ring's address, n = bit 0 | bits 2-4 >> 1
-       (bit 1 clear, as above); $5895 the ring from that address on, $5894 off */
+    /* AHI (aga-hdmi.audio): $58A0 + E4(n) još četiri bita adrese njegovog ringa, n = bit 0 | bitovi 2-4 >> 1
+       (bit 1 čist, kao gore); $5895 ring od te adrese nadalje, $5894 isključen */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFE2) == 0x58A0) { aga_hdmi_ahi_nibble((int)((value & 1) | ((value >> 1) & 0xE))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5894) { aga_hdmi_ahi((int)(value & 1)); return 1; }
     /* Paula on HDMI: $5899 band-limited, $5898 classic (agaboot SOUND PAULA) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5898) { aga_hdmi_paula((int)(value & 1)); return 1; }
-    /* HDMI sound rate: $5868 + E2(m) (agaboot SOUND RATE) */
+    /* HDMI brzina zvuka: $5868 + E2(m) (agaboot SOUND RATE) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFA) == 0x5868) { aga_hdmi_rate_mode((int)((value & 1) | ((value >> 1) & 2))); return 1; }
-    /* $5891 / $5890: HDMI sync on / off - the HDMI frame follows the emulated one (agaboot RTG Image) */
+    /* $5891 / $5890: HDMI sync uključen / isključen - HDMI slika slijedi emuliranu (agaboot RTG Image) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5890) { aga_video_hdmi_sync((int)(value & 1)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x5900) { aga_video_set_zoom((int)(value & 0x7)); aga_video_set_sharp((int)((value >> 3) & 1)); return 1; }
-    /* $592L: the look, after $590N - 0 sharp, 1 smooth, 2 TV (blends across).
-       $57nn / $56nn: the picture right / down by a signed byte of hires pixels
-       / lines. $5931 / $5930: the Position screen on / off (desktop only).
-       All agaboot RTG Image; an older kernel ignores them and keeps $590N's. */
+    /* $592L: izgled, nakon $590N - 0 sharp, 1 glatko, 2 TV (miješa preko ruba).
+       $57nn / $56nn: slika desno / dolje za predznačeni bajt hires piksela
+       / redaka. $5931 / $5930: Position ekran uključen / isključen (samo desktop).
+       Sve agaboot RTG Image; stariji kernel ih ignorira i zadržava vrijednost $590N. */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5920) { aga_video_set_look((int)(value & 3)); return 1; }
-    /* $597S: scale, 0 4:3 / 1 integer / 2 fill; $598L: scanlines, 0 off to 4 - agaboot RTG Image */
+    /* $597S: skaliranje, 0 4:3 / 1 cjelobrojno / 2 fill; $598L: scanlines, 0 isključeno do 4 - agaboot RTG Image */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5970) { aga_video_set_scale((int)(value & 3)); return 1; }
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFF02u) == 0x5000u) {
+        aga_video_scan_select((int)((value & 1u) | ((value >> 1) & 0x7eu))); return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFF02u) == 0x5300u) {
+        aga_video_scan_value((int)((value & 1u) | ((value >> 1) & 0x7eu))); return 1;
+    }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x5980) { aga_video_set_scanlines((int)(value & 7)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0x5700) { aga_video_set_pos_x((int8_t)(value & 0xFF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0x5600) { aga_video_set_pos_y((int8_t)(value & 0xFF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5930) { aga_video_calibrate((int)(value & 1)); return 1; }
-    /* $5941 / $5940: chip RAM code read past Emu68's software cache from the next game on / off (agaboot CODEDIRECT, A/B) */
+    /* $5941 / $5940: kod u chip RAM-u čitan mimo Emu68ovog softverskog cachea od sljedeće igre uključeno / isključeno (agaboot CODEDIRECT, A/B) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5940) { aga_set_code_direct((int)(value & 1)); return 1; }
-    /* $596N: one timed run of the real bus over that buffer (agaboot BUSTEST) */
+    /* $596N: jedan tempirani prolaz stvarne sabirnice preko tog međuspremnika (agaboot BUSTEST) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5960) { aga_bustest_run((int)(value & 3)); return 1; }
-    /* $5951 / $5950: the next game on the RGB port only, HDMI black / HDMI as usual (agaboot RGBPORT) */
+    /* $5951 / $5950: sljedeća igra samo na RGB portu, HDMI crn / HDMI kao obično (agaboot RGBPORT) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5950) { aga_rgbout_set_hdmi_off((int)(value & 1)); return 1; }
-    /* $5953 / $5952: agaboot's RGB port Position frame on / off; $54nn / $55nn: that picture right / down */
+    /* $5953 / $5952: agabootov RGB port Position frame uključen / isključen; $54nn / $55nn: ta slika desno / dolje */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5952) { aga_rgbout_calibrate((int)(value & 1)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFE00) == 0x5400) { aga_rgbout_set_offset((int)((value >> 8) & 1), (int8_t)(value & 0xFF)); return 1; }
-    /* $599S: the RGB port picture's size; $59A1 / $59A0: a steady 25 fps, or as many as get through */
+    /* $599S: veličina slike na RGB portu; $59A1 / $59A0: stabilnih 25 fps, ili koliko prođe */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5990) { aga_rgbout_set_size((int)(value & 3)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59A0) { aga_rgbout_set_fps25((int)(value & 1)); return 1; }
     /* FRF $59A3/$59A2: DOUBLE/SINGLE physical HAM buffer policy. */
@@ -1053,10 +1195,10 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     /* AGA 1.115: adaptive HAM frame rate; FRF renderer retains dynamic memory allocation. */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59A8) { aga_rgbout_set_auto((int)(value & 1)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59AC) { aga_rgbout_set_c32((int)(value & 1)); return 1; }
-    /* $59A5 / $59A4: the RGB port's colours dithered into 4 bits (smooth) or rounded (exact) */
+    /* $59A5 / $59A4: boje RGB porta ditherirane u 4 bita (glatko) ili zaokružene (točno) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59A4) { aga_rgbout_set_dither((int)(value & 1)); return 1; }
-    /* RTG Image, 1.110: $59Bn / $59Cn the TV border across / down (0-10%), $59Dn the flicker
-       fixer, $59En scanlines for interlaced screens, $59Fn brightness, $591n PAL / NTSC for the next game */
+    /* RTG Image, 1.110: $59Bn / $59Cn TV border vodoravno / okomito (0-10%), $59Dn flicker
+       fixer, $59En scanlines za interlaced ekrane, $59Fn svjetlina, $591n PAL / NTSC za sljedeću igru */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x59B0) { aga_video_set_border(0, (int)(value & 0xF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x59C0) { aga_video_set_border(1, (int)(value & 0xF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59D0) { aga_flickerfix((int)(value & 1)); return 1; }
@@ -1254,9 +1396,9 @@ int SYSReadValFromAddr(uint64_t *value, uint64_t *value2, int size, uint64_t far
     }
     if (aga_enabled) {
         if (far >= 0xDFF000 && far < 0xE00000) {
-            /* A real floppy transfer for the sandbox is over when the real
-               DSKBLK is up: the track comes in before the program looks at
-               INTREQR or DSKBYTR (aga_glue.c, real drives in System wide). */
+            /* Stvarni floppy prijenos za sandbox završen je kad je stvarni
+               DSKBLK aktivan: track stigne prije nego program pogleda
+               INTREQR ili DSKBYTR (aga_glue.c, stvarni pogoni u System wide). */
             if (aga_dskb_pending && ((far & ~1) == INTREQR || (far & ~1) == 0xDFF01A))
                 aga_disk_bridge_poll();
             int r = aga_trap_read(far, size, value, value2);
@@ -1512,6 +1654,7 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     {   AGA_TRAP_GUARD();               /* from here on the 68k's v19-v26 are safe (top of file) */
 #ifdef FRF_VIRTUAL_AGA
     if (frf_vcia_write(far, size, value)) return 1;
+    if (frf_virtual_aga_picture_write(far, size, value)) return 1;
     /* FRF standalone runtime ADF commands must work with aga_mode == 1.
      * Their interception used to be inside if(!aga_mode), unreachable in
      * the bare-metal machine. Only the explicit $ADxx magic is claimed. */
@@ -1556,16 +1699,16 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
         return 1;
     }
     if (far == 0xDFF1E8 && size == 2) { aga_diag_select((uint16_t)value); return 1; }
-    /* agaboot hands over an AllocMem(MEMF_CHIP) buffer for the Paula DMA rings.
-       Only before sandbox entry, so it can never be confused with a game
-       writing sprite 7's pointer once the virtual chipset is live. */
+    /* agaboot predaje AllocMem(MEMF_CHIP) međuspremnik za Paula DMA ringove.
+       Samo prije ulaska u sandbox, pa se nikad ne može zamijeniti s igrom
+       koja piše pokazivač spritea 7 kad virtualni chipset postane živ. */
     if (far == 0xDFF1EA && size == 4 && !aga_sandbox_active) { aga_audio_set_ring((uint32_t)value); return 1; }
-    /* agaboot BUSTEST lends a chip RAM buffer; outside the sandbox only, like the ring */
+    /* agaboot BUSTEST posuđuje chip RAM međuspremnik; samo izvan sandboxa, kao i ring */
     if (far == 0xDFF1EC && size == 4 && !aga_sandbox_active) { aga_bustest_set_buffer((uint32_t)value); return 1; }
-    /* agaboot lends the chip RAM for HAM6 on the RGB port (0 = off); outside the sandbox only, like the ring */
+    /* agaboot posuđuje chip RAM za HAM6 na RGB portu (0 = isključeno); samo izvan sandboxa, kao i ring */
     if (far == 0xDFF1F4 && size == 4 && !aga_sandbox_active) { aga_rgbout_set_block((uint32_t)value); return 1; }
-    /* ...and graphics.library's copinit: in a WHDLoad game the RGB port is black while the OS's own display runs from it.
-       Long and outside the sandbox only: inside it $1F8 is the virtual chipset's window width (agawindow, a word) */
+    /* ...i graphics.libraryin copinit: u WHDLoad igri RGB port je crn dok OS-ov vlastiti prikaz ide s njega.
+       Long i samo izvan sandboxa: unutra je $1F8 širina prozora virtualnog chipseta (agawindow, riječ) */
     if (far == 0xDFF1F8 && size == 4 && !aga_sandbox_active) { aga_rgbout_set_os_list((uint32_t)value); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFF) == 0x5A0B) { aga_program_mode = 0; aga_game_mode = 0; aga_sandbox_enter(); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFF) == 0x5A0C) { aga_program_mode = 0; aga_game_mode = 1; aga_sandbox_enter(); return 1; }
@@ -1581,9 +1724,9 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFF) == 0x5A0F) { aga_sandbox_leave(); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x5C00) { aga_redirect_test(value & 0xF); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x5D00) { aga_audio_mask(value & 0xF); return 1; }
-    /* $5E00 AGA / $5E01 ECS Denise / $5E03 ECS Denise the user forced: which
-       chipset the next game gets, from the WHDLoad slave's own AGA flag or the
-       user's setting. Sent before the enter word. */
+    /* $5E00 AGA / $5E01 ECS Denise / $5E03 ECS Denise koje je korisnik forsirao: koji
+       chipset dobiva sljedeća igra, iz WHDLoad slaveove vlastite AGA zastavice ili
+       korisnikove postavke. Šalje se prije enter riječi. */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5E00 && (value & 3) != 2) { aga_chipset_ecs((int)(value & 3)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x5F00) { aga_overlay_idle = value & 1; aga_video_overlay_enable((value >> 1) & 1); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0xAD00) { aga_disk_command(value & 0xFF); return 1; }
@@ -1591,55 +1734,61 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
        sharp scaling (bit 3) - agaboot ZOOM */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5800) { aga_blit_mode((int)(value & 3)); return 1; }   /* agaboot BLITTIMING */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5810) { aga_beam_mode = (int)(value & 3); return 1; }   /* agaboot BEAM */
-    /* $5821 / $5820: the emulated chipset's sound on HDMI as well, on / off (agaboot SOUND, aga_hdmi.c) */
-    if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5820) { aga_hdmi_enable((int)(value & 1)); return 1; }
-    /* $5830 off / $5831 A500 / $5834 A1200: the filters on HDMI sound (agaboot SOUND FILTER, aga_hdmi_filter.h).
-       Bits 1 and 15 stay clear: a kernel without this line stores the word as the core's aga_ctrl,
-       where those two mean "windowed" and "use the register" */
+    /* $5821 / $5820: zvuk emuliranog chipseta i na HDMI-ju, uključen / isključen (agaboot SOUND, aga_hdmi.c) */
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5820) { aga_hdmi_enable((int)(value & 1)); return 1; } if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5824) { aga_hdmi_wb_other((int)(value & 1)); return 1; }
+    /* $5830 isključeno / $5831 A500 / $5834 A1200: filteri na HDMI zvuku (agaboot SOUND FILTER, aga_hdmi_filter.h).
+       Bitovi 1 i 15 ostaju čisti: kernel bez ovog retka sprema riječ kao jezgrin aga_ctrl,
+       gdje ta dva znače "windowed" i "koristi registar" */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x5830 && ((value & 7) <= 1 || (value & 7) == 4)) { aga_hdmi_filter((value & 4) ? 2 : (int)(value & 1)); return 1; }
-    /* the Sound window's mix: $5840 + n HDMI volume, $5850 + n stereo width, n = bit 0 | bits 2-3 >> 1
-       (bit 1 clear, as above); $5860 / $5861 left and right as they are / swapped */
+    /* mix u Sound prozoru: $5840 + n HDMI glasnoća, $5850 + n stereo širina, n = bit 0 | bitovi 2-3 >> 1
+       (bit 1 čist, kao gore); $5860 / $5861 lijevi i desni kako jesu / zamijenjeni */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF2) == 0x5840) { aga_hdmi_volume((int)((value & 1) | ((value >> 1) & 6))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF2) == 0x5850) { aga_audio_stereo((int)((value & 1) | ((value >> 1) & 6))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5860) { aga_audio_swap((int)(value & 1)); return 1; }
-    /* the custom crop (arm/aga_crop.h, agaboot RTG Image - Crop...): $58C0 + E5(d) five bits of an edge,
-       $5870 + E3(s) it into edge s & 3 of PAL (s < 4) or NTSC, $5880 + E3(s) the crop screen with that
-       edge marked; bits 1 and 15 clear, as above */
+    /* custom crop (arm/aga_crop.h, agaboot RTG Image - Crop...): $58C0 + E5(d) pet bitova jednog ruba,
+       $5870 + E3(s) to u rub s & 3 PAL-a (s < 4) ili NTSC-a, $5880 + E3(s) crop ekran s tim
+       rubom označenim; bitovi 1 i 15 čisti, kao gore */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFC2) == 0x58C0) { aga_video_cut_data((int)((value & 1) | ((value >> 1) & 0x1E))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF2) == 0x5870) { aga_video_cut_store((int)((value & 1) | ((value >> 1) & 6))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF2) == 0x5880) { aga_video_crop_screen((int)((value & 1) | ((value >> 1) & 6))); return 1; }
-    /* AHI (aga-hdmi.audio): $58A0 + E4(n) four more bits of its ring's address, n = bit 0 | bits 2-4 >> 1
-       (bit 1 clear, as above); $5895 the ring from that address on, $5894 off */
+    /* AHI (aga-hdmi.audio): $58A0 + E4(n) još četiri bita adrese njegovog ringa, n = bit 0 | bitovi 2-4 >> 1
+       (bit 1 čist, kao gore); $5895 ring od te adrese nadalje, $5894 isključen */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFE2) == 0x58A0) { aga_hdmi_ahi_nibble((int)((value & 1) | ((value >> 1) & 0xE))); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5894) { aga_hdmi_ahi((int)(value & 1)); return 1; }
     /* Paula on HDMI: $5899 band-limited, $5898 classic (agaboot SOUND PAULA) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5898) { aga_hdmi_paula((int)(value & 1)); return 1; }
-    /* HDMI sound rate: $5868 + E2(m) (agaboot SOUND RATE) */
+    /* HDMI brzina zvuka: $5868 + E2(m) (agaboot SOUND RATE) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFA) == 0x5868) { aga_hdmi_rate_mode((int)((value & 1) | ((value >> 1) & 2))); return 1; }
-    /* $5891 / $5890: HDMI sync on / off - the HDMI frame follows the emulated one (agaboot RTG Image) */
+    /* $5891 / $5890: HDMI sync uključen / isključen - HDMI slika slijedi emuliranu (agaboot RTG Image) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5890) { aga_video_hdmi_sync((int)(value & 1)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x5900) { aga_video_set_zoom((int)(value & 0x7)); aga_video_set_sharp((int)((value >> 3) & 1)); return 1; }
-    /* $592L: the look, after $590N - 0 sharp, 1 smooth, 2 TV (blends across).
-       $57nn / $56nn: the picture right / down by a signed byte of hires pixels
-       / lines. $5931 / $5930: the Position screen on / off (desktop only).
-       All agaboot RTG Image; an older kernel ignores them and keeps $590N's. */
+    /* $592L: izgled, nakon $590N - 0 sharp, 1 glatko, 2 TV (miješa preko ruba).
+       $57nn / $56nn: slika desno / dolje za predznačeni bajt hires piksela
+       / redaka. $5931 / $5930: Position ekran uključen / isključen (samo desktop).
+       Sve agaboot RTG Image; stariji kernel ih ignorira i zadržava vrijednost $590N. */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5920) { aga_video_set_look((int)(value & 3)); return 1; }
-    /* $597S: scale, 0 4:3 / 1 integer / 2 fill; $598L: scanlines, 0 off to 4 - agaboot RTG Image */
+    /* $597S: skaliranje, 0 4:3 / 1 cjelobrojno / 2 fill; $598L: scanlines, 0 isključeno do 4 - agaboot RTG Image */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5970) { aga_video_set_scale((int)(value & 3)); return 1; }
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFF02u) == 0x5000u) {
+        aga_video_scan_select((int)((value & 1u) | ((value >> 1) & 0x7eu))); return 1;
+    }
+    if (far == 0xDFF1F2 && size == 2 && (value & 0xFF02u) == 0x5300u) {
+        aga_video_scan_value((int)((value & 1u) | ((value >> 1) & 0x7eu))); return 1;
+    }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF8) == 0x5980) { aga_video_set_scanlines((int)(value & 7)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0x5700) { aga_video_set_pos_x((int8_t)(value & 0xFF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFF00) == 0x5600) { aga_video_set_pos_y((int8_t)(value & 0xFF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5930) { aga_video_calibrate((int)(value & 1)); return 1; }
-    /* $5941 / $5940: chip RAM code read past Emu68's software cache from the next game on / off (agaboot CODEDIRECT, A/B) */
+    /* $5941 / $5940: kod u chip RAM-u čitan mimo Emu68ovog softverskog cachea od sljedeće igre uključeno / isključeno (agaboot CODEDIRECT, A/B) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5940) { aga_set_code_direct((int)(value & 1)); return 1; }
-    /* $596N: one timed run of the real bus over that buffer (agaboot BUSTEST) */
+    /* $596N: jedan tempirani prolaz stvarne sabirnice preko tog međuspremnika (agaboot BUSTEST) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5960) { aga_bustest_run((int)(value & 3)); return 1; }
-    /* $5951 / $5950: the next game on the RGB port only, HDMI black / HDMI as usual (agaboot RGBPORT) */
+    /* $5951 / $5950: sljedeća igra samo na RGB portu, HDMI crn / HDMI kao obično (agaboot RGBPORT) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5950) { aga_rgbout_set_hdmi_off((int)(value & 1)); return 1; }
-    /* $5953 / $5952: agaboot's RGB port Position frame on / off; $54nn / $55nn: that picture right / down */
+    /* $5953 / $5952: agabootov RGB port Position frame uključen / isključen; $54nn / $55nn: ta slika desno / dolje */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x5952) { aga_rgbout_calibrate((int)(value & 1)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFE00) == 0x5400) { aga_rgbout_set_offset((int)((value >> 8) & 1), (int8_t)(value & 0xFF)); return 1; }
-    /* $599S: the RGB port picture's size; $59A1 / $59A0: a steady 25 fps, or as many as get through */
+    /* $599S: veličina slike na RGB portu; $59A1 / $59A0: stabilnih 25 fps, ili koliko prođe */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFC) == 0x5990) { aga_rgbout_set_size((int)(value & 3)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59A0) { aga_rgbout_set_fps25((int)(value & 1)); return 1; }
     /* FRF $59A3/$59A2: DOUBLE/SINGLE physical HAM buffer policy. */
@@ -1647,10 +1796,10 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
     /* AGA 1.115: adaptive HAM frame rate; FRF renderer retains dynamic memory allocation. */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59A8) { aga_rgbout_set_auto((int)(value & 1)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59AC) { aga_rgbout_set_c32((int)(value & 1)); return 1; }
-    /* $59A5 / $59A4: the RGB port's colours dithered into 4 bits (smooth) or rounded (exact) */
+    /* $59A5 / $59A4: boje RGB porta ditherirane u 4 bita (glatko) ili zaokružene (točno) */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59A4) { aga_rgbout_set_dither((int)(value & 1)); return 1; }
-    /* RTG Image, 1.110: $59Bn / $59Cn the TV border across / down (0-10%), $59Dn the flicker
-       fixer, $59En scanlines for interlaced screens, $59Fn brightness, $591n PAL / NTSC for the next game */
+    /* RTG Image, 1.110: $59Bn / $59Cn TV border vodoravno / okomito (0-10%), $59Dn flicker
+       fixer, $59En scanlines za interlaced ekrane, $59Fn svjetlina, $591n PAL / NTSC za sljedeću igru */
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x59B0) { aga_video_set_border(0, (int)(value & 0xF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFF0) == 0x59C0) { aga_video_set_border(1, (int)(value & 0xF)); return 1; }
     if (far == 0xDFF1F2 && size == 2 && (value & 0xFFFE) == 0x59D0) { aga_flickerfix((int)(value & 1)); return 1; }

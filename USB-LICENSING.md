@@ -1,3 +1,25 @@
+# USB redistribution update — v1.121 RC8 (9 November 2026)
+
+**Current experimental RC8:** Built with
+`FRF_USB_HOST=ON`, `FRF_USB_NATIVE_DWC2=ON`,
+`FRF_USB_TINYUSB=ON` and `FRF_DISTRIBUTION_BUILD=ON`.
+This selects FRF's integrated TinyUSB (MIT) USB host and independent
+DWC2 implementation; **USPi object files are not linked**. The
+distribution configuration now rejects USB-disabled or USPi-backed
+profiles. TinyUSB's MIT licence and source are included in this repo.
+
+RC8 does not include PiStormAGA's separate `aga_usb.c` and
+`aga_pad.c` modules. This resolves the *specific historical
+GPL-2.0-only/GPL-3.0-or-later static-link conflict described below for
+the present build*. Other upstream source-file notices and obligations
+remain applicable. It is a pre-release and has not passed the OSD
+hardware acceptance test.
+
+The following text describes the **historical October 2026
+USPi builds**, not this RC8 binary.
+
+---
+
 # USB redistribution status (15 October 2026)
 
 The *local*, hardware-tested v0.10.25 kernel uses the original USPi-based

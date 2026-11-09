@@ -1,4 +1,4 @@
-/* AGA-PISTORM — loading externally captured chipset state (WinUAE profile snapshots).
+/* AGA-STORM — učitavanje izvana snimljenog stanja chipseta (snimke profila WinUAE).
  * SPDX-License-Identifier: GPL-2.0-only
  */
 #include "internal.h"
@@ -6,13 +6,13 @@
 void aga_set_color(aga_t *a, int index, uint32_t rgb)
 {
     a->color[index & 255] = rgb & 0xFFFFFF;
-    a->color_aga[index & 255] = rgb & 0xFFFFFF;   /* the ECS mode's AGA shadow too */
-    a->bright_dirty = 1;            /* the brightened palette, at the next line */
+    a->color_aga[index & 255] = rgb & 0xFFFFFF;   /* također AGA sjena ECS načina */
+    a->bright_dirty = 1;            /* posvijetljena paleta, na sljedećem retku */
 }
 
 static int is_strobe_or_readonly(uint32_t reg)
 {
-    if (reg < 0x020) return 1;                       /* read-only block */
+    if (reg < 0x020) return 1;                       /* blok samo za čitanje - tu se ne piše */
     switch (reg) {
     case COPJMP1: case COPJMP2: case COPINS: case BLTSIZE: case BLTSIZH:
     case STREQU: case STRVBL: case STRHOR: case STRLONG:
@@ -28,9 +28,11 @@ static int is_strobe_or_readonly(uint32_t reg)
 
 void aga_load_registers(aga_t *a, const uint16_t *regs)
 {
-    /* order matters: FMODE/BPLCON3 before colours and sprites; SET/CLR regs absolute */
+    /* redoslijed je važan: FMODE/BPLCON3 prije boja i spriteova; SET/CLR
+       registri apsolutni. Ne dirajte redoslijed. Stvarno, jebote. */
     a->hpos = 0; a->vpos = 0;
-    /* line 0 a short one, as after a reset (NTSC: the long/short phase) */
+    /* redak 0 kratak, kao nakon reset-a (NTSC: faza dugih/kratkih redaka,
+       dakako) */
     a->maxhpos = aga_short_line(a);
     a->lol = 0;
     /* BLTBDAT below is shifted into B's hold through the B shifter's previous
@@ -42,12 +44,12 @@ void aga_load_registers(aga_t *a, const uint16_t *regs)
     aga_custom_wput(a, BPLCON3, regs[BPLCON3 >> 1]);
     for (uint32_t reg = 0x020; reg < 0x200; reg += 2) {
         if (is_strobe_or_readonly(reg)) continue;
-        if (reg >= COLOR00 && reg < COLOR00 + 64) continue;     /* palette comes from agaColors */
+        if (reg >= COLOR00 && reg < COLOR00 + 64) continue;     /* paleta dolazi iz agaColors */
         if (reg == DMACON || reg == INTENA || reg == INTREQ || reg == ADKCON) continue;
-        if (reg >= SPR0POS && reg < SPR0POS + 64 && (reg & 6) == 4) continue; /* SPRxDATA: arms sprite; skip */
+        if (reg >= SPR0POS && reg < SPR0POS + 64 && (reg & 6) == 4) continue; /* SPRxDATA: aktivira sprite; preskoči */
         aga_custom_wput(a, reg, regs[reg >> 1]);
     }
-    /* sprite DATA/DATB written after CTL so they arm as in the snapshot */
+    /* sprite DATA/DATB upisani nakon CTL-a da bi se aktivirali kao u snimci */
     for (int n = 0; n < 8; n++) {
         aga_custom_wput(a, SPR0POS + n * 8 + 6, regs[(SPR0POS + n * 8 + 6) >> 1]);
         if (regs[(SPR0POS + n * 8 + 4) >> 1] || regs[(SPR0POS + n * 8 + 6) >> 1])
@@ -61,7 +63,7 @@ void aga_load_registers(aga_t *a, const uint16_t *regs)
     aga_update_ipl(a);
     a->cop.pc = a->cop.cop1lc;
     a->cop.state = COP_read1;
-    a->cop.delay = 2;            /* as after a vertical blank: first read at cycle 6 */
+    a->cop.delay = 2;            /* kao nakon vertikalnog blanka: prvo čitanje u ciklusu 6 */
     a->nchanges = 0;
     pf_start_line(a);
     cop_start_line(a);

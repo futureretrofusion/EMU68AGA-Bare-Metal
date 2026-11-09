@@ -54,7 +54,7 @@ extern uint16_t aga_glue_peek_reg(uint32_t reg);
 /* biggest picture the buffers and the lent block are sized for */
 #define MAX_WORDS   24                      /* 384 lores pixels a row */
 #define MAX_W       (MAX_WORDS * 16)
-#define MAX_H       AGA_OUT_H               /* 286: every line the frame has */
+#define MAX_H       AGA_OUT_H               /* 286: svaka linija koju frame ima */
 #define FRAME_WORDS (6 * MAX_WORDS * MAX_H) /* 41184 */
 #define FRAME_BYTES (FRAME_WORDS * 2)       /* 82368 */
 #define LIST_BYTES  256
@@ -76,7 +76,7 @@ static const struct { uint16_t w, h, h0, v0; } sizes[4] = {
     { 352, 272, 113, 36 },
     { 320, 256, 129, 44 },                  /* 3: standard screen */
 };
-static int g_w, g_h, g_words, g_h0, g_v0, g_plane_words, g_frame_words;   /* this session's */
+static int g_w, g_h, g_words, g_h0, g_v0, g_plane_words, g_frame_words;   /* ovog sessiona */
 
 static uint32_t rgb_block_bytes_for(int sz, int dbl)
 {
@@ -109,17 +109,17 @@ extern void ps_bus_release(void);
 #define WR32(a, v)    ps_write_32((a), (v))
 #endif
 
-/* ---- state shared with the other cores --------------------------------------- */
-static volatile uint32_t rgb_block;         /* the lent chip RAM, 0 = none (option off) */
-static volatile uint32_t rgb_gen;           /* bumped by every start and stop */
-static volatile int      rgb_run;           /* core 1 may drive the real display */
-static volatile int      rgb_busy;          /* core 1 is inside a session */
-static volatile int      rgb_core;          /* core 1 got here (it does not with async_log) */
-static volatile int      rgb_calib;         /* this session draws agaboot's Position frame */
-static volatile int      rgb_hdmi_req;      /* $5951: the next game on the RGB port only */
-static volatile int      rgb_hdmi_off;      /* ...in force for this one */
-static volatile int      rgb_off_x, rgb_off_y;   /* the picture right / down: lores pixels, lines */
-static volatile uint32_t rgb_off_seq;       /* bumped when they change */
+/* ---- state koji dijele druge jezgre ----------------------------------------- */
+static volatile uint32_t rgb_block;         /* posuđeni chip RAM, 0 = nijedan (opcija isključena) */
+static volatile uint32_t rgb_gen;           /* povećava se pri svakom startu i stopu */
+static volatile int      rgb_run;           /* jezgra 1 smije voziti pravi display */
+static volatile int      rgb_busy;          /* jezgra 1 je unutar sessiona */
+static volatile int      rgb_core;          /* jezgra 1 je stigla ovdje (ne stiže s async_log) */
+static volatile int      rgb_calib;         /* ovaj session crta agabootov Position frame */
+static volatile int      rgb_hdmi_req;      /* $5951: sljedeća igra samo na RGB portu */
+static volatile int      rgb_hdmi_off;      /* ...na snazi za ovu */
+static volatile int      rgb_off_x, rgb_off_y;   /* slika desno / dolje: lores pixeli, linije */
+static volatile uint32_t rgb_off_seq;       /* povećava se kad se promijene */
 static volatile int      rgb_size;          /* $599S: sizes[] */
 static volatile int      rgb_auto;         /* 1.115 adaptive 25/50 frame rate */
 static volatile int      rgb_fps25;         /* $59A1: a new picture every second vblank, steady as hell */
@@ -139,16 +139,16 @@ static inline int alive(uint32_t gen) { return rgb_run && rgb_gen == gen; }
 static uint16_t tgt[MAX_H][MAX_W];          /* the picture in 12-bit colour, lores, as the RGB port shows it */
 static uint64_t row_buf[MAX_W] __attribute__((aligned(64)));   /* one row of hires pairs, cached */
 static uint16_t planes_new[FRAME_WORDS] __attribute__((aligned(64)));
-static uint16_t shadow[2][FRAME_WORDS] __attribute__((aligned(64)));   /* what each real frame holds */
+static uint16_t shadow[2][FRAME_WORDS] __attribute__((aligned(64)));   /* što drži svaki pravi frame */
 static uint16_t list_new[LIST_BYTES / 2];
-static uint16_t list_img[2][LIST_BYTES / 2];                          /* what each real list holds */
+static uint16_t list_img[2][LIST_BYTES / 2];                          /* što drži svaka prava lista */
 static int      list_words;
 
-static uint32_t hist[4096];                 /* edge-weighted colour counts of the picture */
+static uint32_t hist[4096];                 /* edge-weighted brojevi boja slike */
 static uint16_t ucol[4096];
 static uint32_t uwt[4096];
 static uint32_t mind[4096];
-static uint8_t  bestpal[4096];              /* nearest base colour for each 12-bit colour, and its error */
+static uint8_t  bestpal[4096];              /* najbliža osnovna boja za svaku 12-bitnu boju, i njezina greška */
 static uint16_t besterr[4096];
 static uint8_t  pal_r[16], pal_g[16], pal_b[16];
 static uint16_t pal16[16];                  /* the same, $0RGB */
@@ -217,7 +217,7 @@ static inline int err12(int a, int b)
    the base colours should be damn well sitting there. */
 static inline void hist_row(const uint16_t *d)
 {
-    int pr = -99, pg = -99, pb = -99;               /* the line start counts as an edge */
+    int pr = -99, pg = -99, pb = -99;               /* početak linije računa se kao edge */
     for (int x = 0; x < g_w; x++) {
         int c = d[x], r = c >> 8, g = (c >> 4) & 15, b = c & 15;
         int jumps = ((unsigned)(r - pr + 1) > 2) + ((unsigned)(g - pg + 1) > 2) + ((unsigned)(b - pb + 1) > 2);
@@ -300,10 +300,10 @@ static void box(int x0, int y0, int w, int h, uint16_t c)
     }
 }
 
-static void seven(int x, int y, int v, uint16_t c)   /* one digit, 12 x 20 */
+static void seven(int x, int y, int v, uint16_t c)   /* jedna znamenka, 12 x 20 */
 {
     static const uint8_t seg[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
-    uint8_t s = v < 0 ? 0x40 : seg[v % 10];          /* v < 0: a minus sign */
+    uint8_t s = v < 0 ? 0x40 : seg[v % 10];          /* v < 0: znak minus */
     if (s & 0x01) box(x, y, 12, 2, c);
     if (s & 0x02) box(x + 10, y, 2, 10, c);
     if (s & 0x04) box(x + 10, y + 10, 2, 10, c);
@@ -313,7 +313,7 @@ static void seven(int x, int y, int v, uint16_t c)   /* one digit, 12 x 20 */
     if (s & 0x40) box(x, y + 9, 12, 2, c);
 }
 
-static void number(int x, int y, int v, uint16_t c)  /* sign and up to three digits */
+static void number(int x, int y, int v, uint16_t c)  /* znak i do tri znamenke */
 {
     int a = v < 0 ? -v : v;
     if (v < 0) seven(x, y, -1, c);
@@ -328,7 +328,7 @@ static void pattern(void)
     const uint16_t white = 0xFFF, grey = 0x666, dark = 0x333, red = 0xF00, green = 0x0F0;
     memset(tgt, 0, sizeof tgt);
     box(0, 0, g_w, 1, dark); box(0, g_h - 1, g_w, 1, dark); box(0, 0, 1, g_h, dark); box(g_w - 1, 0, 1, g_h, dark);
-    int sx = 0x81 - g_h0 + ox, sy = 0x2C - g_v0 + oy;              /* the standard screen's corner */
+    int sx = 0x81 - g_h0 + ox, sy = 0x2C - g_v0 + oy;              /* kut standardnog zaslona */
     for (int i = 32; i < 320; i += 32) box(sx + i, sy, 1, 256, grey);
     for (int i = 32; i < 256; i += 32) box(sx, sy + i, 320, 1, grey);
     box(sx, sy, 320, 2, white); box(sx, sy + 254, 320, 2, white);
@@ -416,7 +416,7 @@ static uint64_t pal_cost(int n, const uint16_t *pal)
     return sum;
 }
 
-/* the same for the palette in use, from its table */
+/* isto za paletu u upotrebi, iz njezine tablice */
 static uint64_t cur_cost(int n)
 {
     uint64_t sum = 0;
@@ -458,7 +458,7 @@ static void choose_palette(void)
     if (!total) total = 1;
     if (have_pal) {
         uint64_t fit = cur_cost(n) * 256 / total;
-        if (++since_kmeans < 50 && fit * 4 <= fit_at_choice * 5 + 256) return;   /* still fits: no k-means */
+        if (++since_kmeans < 50 && fit * 4 <= fit_at_choice * 5 + 256) return;   /* još pokriva: bez k-meansa */
     }
     since_kmeans = 0;
     aga_diag_inc(AGA_D_RGB_KMEANS);
@@ -500,9 +500,9 @@ static void choose_palette(void)
 static inline int look(int r, int g, int b, int ur, int ug, int ub, int be)
 {
     int dr = ER(r - ur), dg = EG(g - ug), db = EB(b - ub), m = be;
-    if (dg + db < m) m = dg + db;                     /* then set red */
-    if (dr + db < m) m = dr + db;                     /* then set green */
-    if (dr + dg < m) m = dr + dg;                     /* then set blue */
+    if (dg + db < m) m = dg + db;                     /* zatim postavi red */
+    if (dr + db < m) m = dr + db;                     /* zatim postavi green */
+    if (dr + dg < m) m = dr + dg;                     /* zatim postavi blue */
     return m;
 }
 
@@ -540,9 +540,9 @@ static int encode(uint32_t gen)
             int c = t[x], tr = c >> 8, tg = (c >> 4) & 15, tb = c & 15;
             int bp = bestpal[c];
             int e0 = besterr[c];
-            int e1 = EG(cg - tg) + EB(cb - tb);           /* set red */
-            int e2 = ER(cr - tr) + EB(cb - tb);           /* set green */
-            int e3 = ER(cr - tr) + EG(cg - tg);           /* set blue */
+            int e1 = EG(cg - tg) + EB(cb - tb);           /* postavi red */
+            int e2 = ER(cr - tr) + EB(cb - tb);           /* postavi green */
+            int e3 = ER(cr - tr) + EG(cg - tg);           /* postavi blue */
             if (x + 1 < g_w) {
                 int c2 = t[x + 1], ur = c2 >> 8, ug = (c2 >> 4) & 15, ub = c2 & 15, be = besterr[c2];
                 e0 = 10 * e0 + 7 * look(pal_r[bp], pal_g[bp], pal_b[bp], ur, ug, ub, be);
@@ -597,7 +597,7 @@ static inline void breathe(void)
     while (now() < t) __asm__ volatile("yield");
 }
 
-#define BATCH 16          /* longwords per hold of the lock, about 30 us */
+#define BATCH 16          /* longwordova po držanju locka, oko 30 us */
 
 /* Diff planes_new against what real frame b holds and write that into it.
    Returns the words written, or -1 when the session died meanwhile. */
@@ -664,7 +664,7 @@ static int put_list(uint32_t gen, uint32_t list, int b)
     return 1;
 }
 
-/* The real beam's line, 0-312: VPOSR's V8 read between two VHPOSRs that agree */
+/* Linija pravog beam-a, 0-312: VPOSR-ov V8 pročitan između dva VHPOSR-a koja se slažu */
 static int beam_line(void)
 {
     for (int tries = 0; tries < 4; tries++) {
@@ -674,11 +674,11 @@ static int beam_line(void)
     return 0;                                         /* reads failed: wait a frame */
 }
 
-/* ---- a session: a game, or agaboot's Position frame ------------------------------ */
+/* ---- session: igra, ili agabootov Position frame ------------------------------ */
 static void session(uint32_t gen, uint32_t block, int calib)
 {
     const uint64_t f = freq();
-    const uint64_t frame_ticks = f * (313u * 64u) / 1000000u;   /* one PAL frame */
+    const uint64_t frame_ticks = f * (313u * 64u) / 1000000u;   /* jedan PAL frame */
 
     /* this session's size, and its pace.
      * FRF_RUN_HIRES_FIT_V0_7: the framebuffer remains genuine HIRES. The
@@ -718,7 +718,7 @@ static void session(uint32_t gen, uint32_t block, int calib)
         build_list(list_new, frame_at[b]);
         if (!put_list(gen, list_at[b], b)) return;
     }
-    /* list 0 at once: frame 0, black until the first picture */
+    /* lista 0 odmah: frame 0, crn do prve slike */
     if (!put16(gen, 0xDFF080, (uint16_t)(lists >> 16)) || !put16(gen, 0xDFF082, (uint16_t)list_at[0])
         || !put16(gen, 0xDFF088, 0) || !put16(gen, 0xDFF096, 0x8380))   /* DMAEN | BPLEN | COPEN */
         return;
@@ -746,7 +746,7 @@ static void session(uint32_t gen, uint32_t block, int calib)
 #endif
             t1 = now();
         } else {
-            /* the newest presented frame */
+            /* najnoviji prezentirani frame */
             while (rgb_seq == last && alive(gen)) __asm__ volatile("wfe");
             if (!alive(gen)) break;
             uint32_t s = __atomic_load_n(&rgb_seq, __ATOMIC_ACQUIRE);
@@ -854,7 +854,7 @@ void aga_rgbout_main(void)
         rgb_busy = 1;
         __asm__ volatile("dmb ish" ::: "memory");
         if (alive(gen) && block) session(gen, block, calib);
-        while (alive(gen)) __asm__ volatile("wfe");     /* ended early: wait for the stop */
+        while (alive(gen)) __asm__ volatile("wfe");     /* završilo prerano: čekaj stop */
     }
 }
 
@@ -913,7 +913,7 @@ static void go(void)
     __asm__ volatile("dmb ish; sev" ::: "memory");
 }
 
-/* Sandbox entry, with the chipset loop confirmed running */
+/* Ulazak u sandbox, s potvrđenim chipset loopom koji radi */
 void aga_rgbout_start(uint32_t chip_real)
 {
 #ifdef FRF_VIRTUAL_AGA
@@ -923,7 +923,7 @@ void aga_rgbout_start(uint32_t chip_real)
 #endif
     uint32_t b = rgb_block;
     rgb_hdmi_off = 0;
-    if (rgb_run) aga_rgbout_stop();                   /* a Position frame left up */
+    if (rgb_run) aga_rgbout_stop();                   /* Position frame ostavljen gore */
     rgb_block = b;
     if (!b) { aga_diag_set(AGA_D_RGB_STATE, 0); return; }
     if (!rgb_core) {
@@ -983,7 +983,7 @@ void aga_rgbout_stop(void)
     rgb_gen++;
     __asm__ volatile("dmb ish; sev" ::: "memory");
     if (was) {
-        uint64_t deadline = now() + freq() / 20;      /* 50 ms; it answers within a batch */
+        uint64_t deadline = now() + freq() / 20;      /* 50 ms; odgovara unutar batcha */
         while (rgb_busy && now() < deadline) __asm__ volatile("sev; yield");
         if (rgb_busy) aga_diag_log("[AGA] RGB port: core 1 slow to stop");
         ps_write_16(0xDFF096, 0x0180);                /* real copper and planes off */
@@ -993,7 +993,7 @@ void aga_rgbout_stop(void)
     rgb_calib = 0;
     rgb_hdmi_off = 0;
     aga_diag_set(AGA_D_RGB_HDMI_OFF, 0);
-    rgb_block = 0;                                    /* agaboot frees it */
+    rgb_block = 0;                                    /* agaboot ga oslobađa */
 }
 
 /* Core 3, for every frame it presents. A woven frame's own field is every

@@ -1,4 +1,4 @@
-/* AGA-PISTORM - portable AGA chipset core, public API.
+/* AGA-STORM — prenosiva AGA chipset jezgra, javni API.
  * SPDX-License-Identifier: GPL-2.0-only
  *
  * The core is single-threaded by design: all entry points must be called with
@@ -33,9 +33,9 @@ extern "C" {
 #define AGA_OUT_H          286             /* lines 0x1A..0x137                 */
 #define AGA_MAX_HPOS       228
 #define AGA_MAX_VPOS       314
-#define AGA_LINE_CHANGES   512             /* max recorded register changes per line */
-#define AGA_PLANE_WORDS    40              /* uint64 words of planar data per plane per line (2560 bits) */
-#define AGA_MAX_BLOCKS     128             /* max fetch blocks per line (fetchstart 2 cck) */
+#define AGA_LINE_CHANGES   512             /* najviše zabilježenih promjena registara po retku */
+#define AGA_PLANE_WORDS    40              /* uint64 riječi planar podataka po ravnini po retku (2560 bitova) */
+#define AGA_MAX_BLOCKS     128             /* najviše fetch blokova po retku (fetchstart 2 cck) */
 
 typedef struct aga aga_t;
 
@@ -67,7 +67,7 @@ typedef struct aga_config {
     int gamma;              /* the picture's gamma: 0 Exact (the palette's own), 1 CRT, 2 Lighter */
 } aga_config_t;
 
-/* ---- lifecycle ------------------------------------------------------------ */
+/* ---- životni ciklus ------------------------------------------------------- */
 aga_t   *aga_create(uint8_t *chipram, uint32_t chipram_size, const aga_config_t *cfg);
 void     aga_destroy(aga_t *a);
 void     aga_set_hooks(aga_t *a, const aga_hooks_t *hooks);
@@ -87,10 +87,10 @@ void     aga_reset(aga_t *a);
 void     aga_set_ecs(aga_t *a, int on);
 void     aga_set_ecs_forced(aga_t *a, int on);   /* the user's "always ECS": never given up */
 int      aga_get_ecs(const aga_t *a);
-/* What an ECS Denise has seen of AGA this session, for the kernel log:
-   bit 0 an AGA fetch (FMODE, eight planes), bit 1 an AGA colour (LOCT, a
-   bank, BPLCON4), bit 2 24-bit colour pairs in two banks, bit 3 24-bit
-   pairs in bank 0 taken the AGA way; bit 7 the user's "always ECS". */
+/* Što je ECS Denise vidjela od AGA u ovoj sesiji, za kernel log:
+   bit 0 AGA dohvaćanje (FMODE, osam ravnina), bit 1 AGA boja (LOCT,
+   banka, BPLCON4), bit 2 24-bitni parovi boja u dvije banke, bit 3 24-bitni
+   parovi u banci 0 uzeti na AGA način; bit 7 korisnikov "always ECS". */
 unsigned aga_ecs_signs(const aga_t *a);
 /* Forget those signs: what the OS drew before a game took the machine -
    WHDLoad's splash, by an AA graphics.library - says nothing about the game.
@@ -154,14 +154,26 @@ void     aga_run_frame(aga_t *a);              /* advance to the start of the ne
    bit 15 = 1 use the register instead of the automatic detection. */
 int      aga_native_active(const aga_t *a);
 int      aga_last_frame_display_lines(const aga_t *a);
-int      aga_last_frame_had_data(const aga_t *a);   /* any non-zero bitplane fetch in the last frame */
-/* the display window on the last frame's lines with a picture: hires pixels
-   [x0, x1) and lines y0..y1 of the AGA_OUT_W x AGA_OUT_H frame (x may lie
-   outside it); 0 when no line had one */
+int      aga_last_frame_had_data(const aga_t *a);   /* bilo koje bitplane dohvaćanje različito od nule u posljednjem frameu */
+/* prikazno okno na retcima posljednjeg framea sa slikom: hires pikseli
+   [x0, x1) i retci y0..y1 framea AGA_OUT_W x AGA_OUT_H (x može ležati
+   izvan njega); 0 kad nijedan redak nije imao okno */
 int      aga_last_frame_window(const aga_t *a, int *x0, int *x1, int *y0, int *y1);
 uint32_t aga_blit_count(const aga_t *a);            /* blits started since reset */
 void     aga_audio_stats(const aga_t *a, uint32_t *on, uint32_t *words, uint32_t *nz);  /* 4 each */
 void     aga_audio_set_mask(aga_t *a, int mask);    /* bit n: mix channel n */
+void aga_audio_set_voices(aga_t *a, int on, const int32_t gl[4], const int32_t gr[4]);
+typedef struct aga_voice {
+    uint32_t lc;                   /* AUDxLC */
+    uint16_t len, per;             /* AUDxLEN, AUDxPER */
+    uint8_t  vol;                  /* AUDxVOL, 0-64 */
+    uint8_t  flags;                /* AGA_VOICE_* */
+} aga_voice_t;
+#define AGA_VOICE_DMA   1          /* njegov DMA je uključen */
+#define AGA_VOICE_PLAYS 2          /* Paulin state machine ga vrti */
+#define AGA_VOICE_HEARD 4          /* ne modulira drugi glas */
+#define AGA_VOICE_MIXED 8          /* nije maskiran (aga_audio_set_mask) */
+int      aga_audio_voices(aga_t *a, uint32_t *out, int max, aga_voice_t info[4]);
 void     aga_audio_triggers(const aga_t *a, uint32_t *out, int *count);  /* 32 x 6 */
 void     aga_audio_volstats(const aga_t *a, uint32_t *wr, uint32_t *nz, uint32_t *dmaoff);
 void     aga_audio_wrapstats(const aga_t *a, uint32_t *wrap, uint32_t *irq);
@@ -179,6 +191,7 @@ int      aga_get_ipl(const aga_t *a);
 int      aga_get_vpos(const aga_t *a);
 int      aga_get_hpos(const aga_t *a);
 int      aga_frame_count(const aga_t *a);
+uint32_t aga_last_frame_cck(const aga_t *a);
 int      aga_lines_per_frame(const aga_t *a);
 int      aga_cycles_per_line(const aga_t *a);     /* this line's: NTSC lines alternate 227 and 228 */
 /* Last completed frame, AGA_OUT_W x AGA_OUT_H, 0x00RRGGBB. */
@@ -214,7 +227,7 @@ const uint8_t *aga_disk_image(const aga_t *a, int drive, uint32_t *size, int *di
 /* drive control lines: mirror CIA-B PRB writes; substitute CIA-A PRA bits 2-5 when it returns 1 */
 void     aga_disk_cia_prb(aga_t *a, uint8_t prb);
 int      aga_disk_cia_pra(aga_t *a, uint8_t *bits);
-uint8_t  aga_disk_cia_prb_mask(const aga_t *a);   /* SELx bits to keep high on the real CIA */
+uint8_t  aga_disk_cia_prb_mask(const aga_t *a);   /* SELx bitovi koje treba držati visoko na pravoj CIA */
 
 /* ---- state injection (snapshots) ----------------------------------------- */
 void     aga_set_color(aga_t *a, int index, uint32_t rgb);          /* palette entry 0..255 */
@@ -240,8 +253,8 @@ void     aga_load_registers(aga_t *a, const uint16_t *regs);
 
 typedef struct aga_slot {
     uint8_t  type;
-    uint16_t reg;      /* the register the access belongs to */
-    uint32_t addr;     /* chip address read or written */
+    uint16_t reg;      /* registar kojem pristup pripada */
+    uint32_t addr;     /* chip adresa čitana ili pisana */
 } aga_slot_t;
 
 /* NULL unless the core was built with AGA_TRACE. Valid until the next frame. */
@@ -268,8 +281,8 @@ uint32_t aga_peek_fetch_stat(const aga_t *a, int i);  /* 0 lines, 1 no window, 2
                                                          3 no planes, 4 too many, 5 fetched */
 void     aga_set_frame_skip(aga_t *a, int on);   /* skip drawing whole frames while the host is behind */
 uint32_t aga_frames_skipped(const aga_t *a);
-void     aga_set_render(aga_t *a, int on);   /* 0 = timing only, no pixels: for a board with no video output */   /* last value written to a register */
-uint32_t aga_peek_color(const aga_t *a, int index);     /* 24-bit palette entry 0..255 */
+void     aga_set_render(aga_t *a, int on);   /* 0 = samo vrijeme, bez piksela: za ploču bez video izlaza */   /* zadnja vrijednost upisana u registar */
+uint32_t aga_peek_color(const aga_t *a, int index);     /* 24-bitni unos palete 0..255 */
 uint32_t aga_peek_bplpt(const aga_t *a, int plane);
 uint32_t aga_peek_copper_pc(const aga_t *a);
 void     aga_set_log(aga_t *a, void (*log)(void *user, const char *msg), void *user);

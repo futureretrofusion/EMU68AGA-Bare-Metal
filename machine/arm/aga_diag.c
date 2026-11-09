@@ -11,14 +11,14 @@
  * per-trap and per-DMA counters - is compiled out unless AGA_DIAG is defined,
  * because the trap path runs millions of times a second.
  *
- * Interface (Pi-side registers, not Amiga ones; handled in vectors.c so they
- * work in machine mode and sandbox mode alike):
+ * Interface (Pi-side registri, ne Amiga; obrađeni u vectors.c pa rade i u
+ * machine mode i u sandbox mode):
  *
- *   write $DFF1E8 = selector     select a counter (0..) or the log ($100)
- *   read  $DFF1EA                next 16-bit word of the selection, auto-advancing
+ *   write $DFF1E8 = selector     odaberi counter (0..) ili log ($100)
+ *   read  $DFF1EA                sljedeći 16-bitni word selekcije, auto-advance
  *
- * A counter reads back as two words, high then low. The log reads back as a
- * stream of characters, two per word, ending at a zero byte.
+ * Counter se čita kao dva worda, high pa low. Log se čita kao struja
+ * znakova, dva po wordu, završava na nula bajtu.
  */
 #include <stdint.h>
 #include "aga_glue.h"
@@ -146,8 +146,15 @@ void aga_diag_wedge(int where, unsigned core, unsigned owner, uintptr_t ra, uint
     aga_diag_log(line);
 }
 
-/* ---- trap ring (AGA_DIAG only) ---------------------------------------------
-   The last TRAP_RING custom-register accesses the 68k made, oldest first.
+/* ---- trap ring (samo AGA_DIAG) ---------------------------------------------
+   Zadnjih TRAP_RING pristupa custom registrima koje je 68k napravio,
+   najstariji prvi.
+
+   Counteri kažu KOLIKO je registara dotaknuto; kad igra stane mrtva, ne mogu
+   reći KOJI, a to je jedino pitanje koje ostaje. Mirnih 32 trapa po frameu je
+   AmigaOS koji idla; igra koja postavlja display piše BPLCON0, bitplane
+   pointere, DDF/DIW i copper listu, i ring pokazuje to kako se događa - ili
+   pokazuje zadnju stvar prije nego je stala.
 
    Counters tell you HOW MANY registers were touched; when a game stops dead
    they cannot tell you WHICH, and that is the only question left. A steady 32
@@ -267,11 +274,11 @@ void aga_diag_fetch(uint32_t addr)
     pch_addr[cold] = addr; pch_hits[cold] = 1;
 }
 
-/* Everything WHDLoad sends down the serial line, in order.
+/* Sve što WHDLoad pošalje niz serial liniju, po redu.
  *
- * WHDLoad sets SERPER and raises DTR/RTS at startup, and its exception handler
- * formats a register dump - the binary carries "Access Fault", "Address Error",
- * "Illegal Instruction", a register-name table and
+ * WHDLoad postavi SERPER i digne DTR/RTS pri startu, a njegov exception
+ * handler formatira register dump - binary nosi "Access Fault", "Address
+ * Error", "Illegal Instruction", tablicu imena registara i
  *   "19.2.%ld eaf=%x waf=%x vbr=%lx cacr=%lx tc=%lx pcr=%lx bplcon0=%x chiprev=%x"
  * - then pages it, waiting for a keypress that can never arrive because no
  * terminal is attached. That is why the machine sits there toggling handshake
@@ -463,9 +470,9 @@ struct persist {
     uint32_t ctr[AGA_DIAG_COUNT];
     char     log[LOG_SIZE];
     uint32_t ta[TRACE_LEN], tb[TRACE_LEN], tc[TRACE_LEN], td[TRACE_LEN];
-    /* the chipset as the reset found it: with the chip RAM, which the next
-       boot leaves alone when this block is valid, it is a snapshot agahost
-       replays on the PC (agastat PREVSNAP) */
+    /* chipset kako ga je reset našao: s chip RAM-om, koji sljedeći boot
+       ostavlja na miru kad je ovaj blok valjan, to je snapshot koji agahost
+       replaya na PC-u (agastat PREVSNAP) */
     uint16_t regs[256];
     uint32_t colors[256];
     uint32_t prof_head;
@@ -476,10 +483,10 @@ struct persist {
     uint8_t  code[PROF_CODE][PROF_CODE_BYTES];
 };
 static volatile struct persist *persist_area;
-/* the virtual chip RAM, for SEL_PCHIP and the reset-time cache clean */
+/* virtualni chip RAM, za SEL_PCHIP i reset-time cache clean */
 static const uint8_t *diag_chip;
 static uint32_t diag_chip_size;
-static struct persist prev;          /* the session before the last reset */
+static struct persist prev;          /* sesija prije zadnjeg reseta */
 static int have_prev, view_prev;
 
 static uint32_t persist_sum(const struct persist *p)
@@ -490,8 +497,8 @@ static uint32_t persist_sum(const struct persist *p)
     return s;
 }
 
-/* The block is reached through the kernel's cached 1:1 map of RAM: push every
-   line of it out to the RAM itself, which is what survives the watchdog. */
+/* Blok se doseže kroz kernelov cached 1:1 map RAM-a: isteraj svaki njegov
+   line u sam RAM, što je ono što preživi watchdog. */
 static void persist_clean(void)
 {
     uintptr_t a = (uintptr_t)persist_area & ~(uintptr_t)63;
@@ -502,7 +509,7 @@ static void persist_clean(void)
     __asm__ volatile("dsb sy" ::: "memory");
 }
 
-/* start.c, before anything logs: take over whatever the last session left */
+/* start.c, prije nego išta loga: preuzmi što je zadnja sesija ostavila */
 void aga_diag_persist_setup(void *area)
 {
     persist_area = (volatile struct persist *)area;
@@ -511,7 +518,7 @@ void aga_diag_persist_setup(void *area)
         for (uint32_t i = 0; i < sizeof prev; i++) ((char *)&prev)[i] = ((const char *)area)[i];
         have_prev = 1;
     }
-    persist_area->magic = 0;           /* used once: a later reset saves afresh */
+    persist_area->magic = 0;           /* iskorišteno jednom: kasniji reset snima iznova */
     persist_clean();
 }
 
@@ -519,7 +526,8 @@ int aga_diag_have_prev(void) { return have_prev; }
 
 void aga_diag_set_chip(const uint8_t *va, uint32_t size) { diag_chip = va; diag_chip_size = size; }
 
-/* the housekeeper, the moment it sees the Amiga's reset line, before it reboots the Pi */
+/* housekeeper, u trenutku kad vidi Amiginu reset liniju, prije nego
+   reboota Pi */
 void aga_diag_persist(void)
 {
     volatile struct persist *q = persist_area;
@@ -537,14 +545,14 @@ void aga_diag_persist(void)
     aga_glue_snapshot_regs((uint16_t *)q->regs, (uint32_t *)q->colors);
     q->prof_head = prof_head;
     for (int i = 0; i < PROF_LEN; i++) { q->prof_pc[i] = prof_pc[i]; q->prof_sr[i] = prof_sr[i]; q->prof_cw[i] = prof_cw[i]; q->prof_lag[i] = prof_lag[i]; }
-    /* the code around the most frequent PCs, straight out of the 68k's RAM
-       (fast RAM is physical RAM 1:1, chip RAM is mine); O(n*k), once */
+    /* code oko najčešćih PC-eva, ravno iz 68k RAM-a (fast RAM je fizički RAM
+       1:1, chip RAM je moj); O(n*k), jednom */
     {
         uint32_t n = prof_head < PROF_LEN ? prof_head : PROF_LEN;
         uint32_t taken[PROF_CODE]; int nt = 0;
         for (int k = 0; k < PROF_CODE; k++) {
             uint32_t best = 0, bestc = 0;
-            for (uint32_t i = 0; i < n; i += 16) {     /* candidates: every 16th sample */
+            for (uint32_t i = 0; i < n; i += 16) {     /* kandidati: svaki 16. sample */
                 uint32_t pc = prof_pc[i], c = 0, dup = 0;
                 for (int t = 0; t < nt; t++) if (pc >= taken[t] && pc < taken[t] + PROF_CODE_BYTES) dup = 1;
                 if (dup || !pc) continue;
@@ -629,9 +637,9 @@ void aga_diag_capture_code2(uint32_t pc)
 }
 void aga_diag_capture_code(uint32_t pc)
 {
-    if (pc < 0x00200000 || (pc & 1)) return;    /* chip RAM is not mapped, and a bad PC is not code */
-    /* the whole 256-byte bucket, from its base: a window centred on the bucket
-       address cut the second half off, and that is where the loop turned back */
+    if (pc < 0x00200000 || (pc & 1)) return;    /* chip RAM nije mapiran, a loš PC nije code */
+    /* cijeli 256-byte bucket, od njegove baze: window centriran na adresu
+       bucketa odrezao je drugu polovicu, a tu se loop vraćao */
     uint32_t base = pc & ~255u;
     const uint16_t *p = (const uint16_t *)(uintptr_t)base;
     for (uint32_t i = 0; i < CODE_WORDS; i++) code_buf[i] = p[i];
@@ -670,7 +678,7 @@ void aga_diag_reg_reset(void)
     for (int i = 0; i < 64; i++) beam_val[i] = 0;
 }
 static uint32_t trap_buf[TRAP_RING];   /* write<<31 | reg<<16 | value */
-static uint32_t trap_pc[TRAP_RING];    /* 68k PC at the access */
+static uint32_t trap_pc[TRAP_RING];    /* 68k PC pri pristupu */
 static uint32_t trap_head;
 static int      trap_wrapped;
 
@@ -702,8 +710,8 @@ static const uint16_t regs_of_interest[] = {
 };
 #define REGS_OF_INTEREST (sizeof regs_of_interest / sizeof regs_of_interest[0])
 
-/* High-water snapshot: the display state the last time anything actually had
-   bitplanes enabled.
+/* High-water snapshot: display state kad je zadnji put nešto stvarno imalo
+   bitplanove uključene.
 
    A game that wedges has to be reset, and a reset runs aga_reset(), which
    wipes the whole chipset struct - so by the time the machine is reachable
@@ -744,7 +752,7 @@ void aga_diag_snapshot(int had_data)
             aga_diag_beam_reset();   /* coverage from here on describes the hang */
             aga_diag_log("[AGA] display up but empty: counters zeroed, watching");
         }
-        if (blank_streak >= 400) {         /* 8 s in: the steady state */
+        if (blank_streak >= 400) {         /* 8 s unutra: steady state */
             diag_frozen = 1;
             aga_diag_capture_code(aga_diag_hot_pc());
             aga_diag_log("[AGA] FROZEN: one second of display with no data in it");
@@ -803,7 +811,7 @@ void aga_diag_wrapinfo(const uint32_t *v, int n)
     for (int i = 0; i < n * 4; i++) wrapi_buf[i] = v[i];
 }
 
-/* WHICH channel is making a sound, WHEN.
+/* KOJI kanal proizvodi zvuk, KADA.
  *
  * Cumulative energy says all four channels are comparably busy over a whole
  * run, while the recording shows one side silent for seconds at a time. Both
@@ -812,7 +820,7 @@ void aga_diag_wrapinfo(const uint32_t *v, int n)
  * seconds of per-channel loudness at frame rate, so a channel that goes quiet
  * right when a sound effect should have played is visible at a glance.
  *
- * 750 frames x 4 channels x one byte = 3 KB. */
+ * 750 frameova x 4 kanala x jedan bajt = 3 KB. */
 #define ENV_FRAMES 750
 static uint8_t env_buf[ENV_FRAMES][4];
 static uint32_t env_head, env_wrapped;
@@ -821,7 +829,7 @@ void aga_diag_env(const uint32_t *nrg_delta)
 {
     if (env_frozen) return;
     for (int n = 0; n < 4; n++) {
-        uint32_t v = nrg_delta[n] >> 6;     /* frame energy -> 0..255ish */
+        uint32_t v = nrg_delta[n] >> 6;     /* frame energy -> 0..255 otprilike */
         env_buf[env_head][n] = v > 255 ? 255 : (uint8_t)v;
     }
     if (++env_head >= ENV_FRAMES) { env_head = 0; env_wrapped = 1; }
@@ -832,7 +840,7 @@ void aga_diag_env_freeze(int on)
     if (!on) { env_head = 0; env_wrapped = 0; }
 }
 
-/* Filled once a frame by the glue from the core's trigger ring. */
+/* Glue ga puni jednom po frameu iz coreovog trigger ringa. */
 static uint32_t trig_buf[32 * 6];
 static int      trig_count;
 void aga_diag_triggers(const uint32_t *v, int n)
@@ -841,7 +849,7 @@ void aga_diag_triggers(const uint32_t *v, int n)
     for (int i = 0; i < n * 6; i++) trig_buf[i] = v[i];
 }
 
-/* Every write the game makes to the sound registers, in order.
+/* Svaki write koji igra napravi u sound registre, po redu.
  *
  * The A1200 recording settled WHAT is wrong: real hardware plays about four
  * effects a second in Banshee's gameplay, a stream of shots plus explosions,
@@ -869,7 +877,7 @@ void aga_diag_audw(uint32_t reg, int size, uint32_t value, uint32_t vpos, uint32
     if (++audw_head >= AUDW_RING) { audw_head = 0; audw_wrapped = 1; }
 }
 
-/* The exact bytes handed to Paula.
+/* Točni bajtovi, jebemu, predani Pauli.
  *
  * Every counter in this file says the audio pipeline is clean - the clock is
  * PAL to 0.06%, there are no loop resyncs, no ring restarts, and 38 sample
@@ -915,16 +923,16 @@ void aga_diag_wave(uint8_t l, uint8_t r)
 void aga_diag_wave_freeze(int on)
 {
     wave_frozen = on;
-    audw_frozen = on;          /* the register writes behind that same audio */
+    audw_frozen = on;          /* writeovi registara iza tog istog audija */
     if (!on) { wave_head = 0; wave_wrapped = 0; audw_head = 0; audw_wrapped = 0; }
     else aga_diag_log("[AGA] audio: the last fifteen seconds of the game captured");
 }
-#define SEL_PROF  0xA00      /* PCS_SLOTS pairs: bucket address, sample count */
-#define SEL_CODE  0x900      /* base address, then CODE_WORDS words of 68k code at the stuck PC */
-#define SEL_SER   0x800      /* count, then that many characters WHDLoad transmitted */      /* the deepest display seen: planes, nr, regs, 3 state, 8 bpl ptrs */
+#define SEL_PROF  0xA00      /* PCS_SLOTS parova: adresa bucketa, broj sampleova */
+#define SEL_CODE  0x900      /* base adresa, pa CODE_WORDS wordova 68k codea na zaglavljenom PC-u */
+#define SEL_SER   0x800      /* count, pa toliko znakova koje je WHDLoad prenio */      /* najdublji viđeni display: planeovi, nr, regs, 3 state, 8 bpl ptr */
 
-static uint32_t sel;                 /* current selection */
-static uint32_t pos;                 /* words already read from it */
+static uint32_t sel;                 /* trenutna selekcija */
+static uint32_t pos;                 /* wordovi već pročitani iz nje */
 
 void aga_diag_select(uint16_t v)
 {
@@ -938,9 +946,9 @@ void aga_diag_select(uint16_t v)
 uint16_t aga_diag_read_word(void)
 {
     if (sel == SEL_PCHIP) {
-        /* after a soft reset this is still the chip RAM the program left:
-           start.c does not clear it when the kept session is valid, and the
-           OS never touches it until the next sandbox entry copies over it */
+        /* nakon soft reseta ovo je još chip RAM koji je program ostavio: start.c
+           ga ne čisti kad je sačuvana sesija valjana, a OS ga nikad ne dira dok
+           ga sljedeći ulazak u sandbox ne prekrije */
         uint32_t a = pos * 2;
         pos++;
         if (!diag_chip || a + 2 > diag_chip_size) return 0;
@@ -957,7 +965,7 @@ uint16_t aga_diag_read_word(void)
         }
         i -= PROF_LEN * 4;
         uint32_t per = 2 + PROF_CODE_BYTES / 2, k = i / per, w = i % per;
-        if (k >= PROF_CODE) {                /* then the lateness of each frame, ms */
+        if (k >= PROF_CODE) {                /* pa zakašnjenje svakog framea, ms */
             uint32_t j = i - PROF_CODE * per;
             return j < PROF_LEN ? prev.prof_lag[j] : 0;
         }
@@ -975,7 +983,7 @@ uint16_t aga_diag_read_word(void)
         return 0;
     }
     if (sel == SEL_LOG) {
-        /* oldest first: start at the head when the ring has wrapped */
+        /* najstariji prvi: počni na headu kad se ring wrapao */
         const char *lb = view_prev ? prev.log : log_buf;
         uint32_t lh = view_prev ? prev.log_head : log_head;
         int lw = view_prev ? (int)prev.log_wrapped : log_wrapped;
@@ -991,8 +999,8 @@ uint16_t aga_diag_read_word(void)
         return w;
     }
     if (sel == SEL_TRAPS) {
-        /* word 0 is the entry count, then 4 words per entry, oldest first:
-           meta high, meta low, PC high, PC low */
+        /* word 0 je broj entryja, pa 4 worda po entryju, najstariji prvi: meta
+           high, meta low, PC high, PC low */
         uint32_t start = trap_wrapped ? trap_head : 0;
         uint32_t len   = trap_wrapped ? TRAP_RING : trap_head;
         if (pos == 0) { pos++; return (uint16_t)len; }
@@ -1021,7 +1029,7 @@ uint16_t aga_diag_read_word(void)
         return (uint16_t)(w ? ((e[2] << 8) | e[3]) : ((e[0] << 8) | e[1]));
     }
     if (sel == SEL_AUDW) {
-        /* count, then 3 longs per entry, high word first, oldest entry first */
+        /* count, pa 3 longa po entryju, high word prvi, najstariji entry prvi */
         uint32_t n = audw_wrapped ? AUDW_RING : audw_head;
         if (pos == 0) { pos++; return (uint16_t)n; }
         uint32_t i = (pos - 1) >> 1, w = (pos - 1) & 1;
@@ -1033,7 +1041,7 @@ uint16_t aga_diag_read_word(void)
         return (uint16_t)(w ? (v & 0xFFFF) : (v >> 16));
     }
     if (sel == SEL_TRIG) {
-        /* count, then 6 longs per entry, high word first */
+        /* count, pa 6 longova po entryju, high word prvi */
         if (pos == 0) { pos++; return (uint16_t)trig_count; }
         uint32_t i = (pos - 1) >> 1, w = (pos - 1) & 1;
         pos++;
@@ -1041,7 +1049,7 @@ uint16_t aga_diag_read_word(void)
         return (uint16_t)(w ? (trig_buf[i] & 0xFFFF) : (trig_buf[i] >> 16));
     }
     if (sel == SEL_WAVE) {
-        /* count, then one word per frame: left in the high byte, right in the low */
+        /* count, pa jedan word po frameu: left u high bajtu, right u low */
         uint32_t n = wave_wrapped ? WAVE_LEN : wave_head;
         if (pos == 0) { pos++; return (uint16_t)(n >> 16); }
         if (pos == 1) { pos++; return (uint16_t)(n & 0xFFFF); }
@@ -1053,7 +1061,7 @@ uint16_t aga_diag_read_word(void)
         return (uint16_t)(((uint16_t)wave_l[k] << 8) | wave_r[k]);
     }
     if (sel == SEL_PROF) {
-        /* four words per slot: addr high, addr low, hits high, hits low */
+        /* četiri worda po slotu: addr high, addr low, hits high, hits low */
         uint32_t i = pos >> 2, w = pos & 3;
         pos++;
         if (i >= PCS_SLOTS) return 0;
@@ -1064,7 +1072,7 @@ uint16_t aga_diag_read_word(void)
         uint32_t i = pos >> 1, w = pos & 1;
         pos++;
         if (i >= BEAMSEQ_RING + 33) return 0;
-        if (i >= BEAMSEQ_RING) {          /* then the coverage map, then the bits seen */
+        if (i >= BEAMSEQ_RING) {          /* pa coverage mapa, pa viđeni bitovi */
             uint32_t j = i - BEAMSEQ_RING;
             if (j < 32) return (uint16_t)(w ? (beam_cov[j] & 0xFFFF) : (beam_cov[j] >> 16));
             return w ? beam_and : beam_or;
@@ -1101,7 +1109,7 @@ uint16_t aga_diag_read_word(void)
         return (i < CODE_WORDS) ? code2_buf[i] : 0;
     }
     if (sel == SEL_CODE) {
-        /* address first (high word, low word), then the words themselves */
+        /* prvo adresa (high word, low word), pa sami wordovi */
         if (pos == 0) { pos++; return (uint16_t)(code_base >> 16); }
         if (pos == 1) { pos++; return (uint16_t)(code_base & 0xFFFF); }
         uint32_t i = pos - 2;
@@ -1118,7 +1126,8 @@ uint16_t aga_diag_read_word(void)
         return (uint16_t)(uint8_t)ser_buf[(start + i) % SER_RING];
     }
     if (sel == SEL_HIST) {
-        /* 32 bits per entry, high word first: 256 reads, 256 writes, 64 values */
+        /* 32 bita po entryju, high word prvi: 256 readova, 256 writeova, 64
+   vrijednosti */
         uint32_t i = pos >> 1, w = pos & 1;
         pos++;
         uint32_t v = (i < 256) ? reg_reads[i]
@@ -1134,7 +1143,7 @@ uint16_t aga_diag_read_word(void)
             return (uint16_t)(w ? (v & 0xFFFF) : (v >> 16));
         }
         if (i >= 1120 && i < 1120 + CIA_RING) {
-            /* the ring, oldest first; one word per entry so only the low half */
+            /* ring, najstariji prvi; jedan word po entryju pa samo donja polovica */
             uint32_t n = cia_wrapped ? CIA_RING : cia_head;
             uint32_t e = i - 1120;
             if (e >= n) return 0;
@@ -1166,10 +1175,10 @@ uint16_t aga_diag_read_word(void)
         return 0;
     }
     if (sel == SEL_REGS) {
-        /* word 0: how many register words follow. Then that many values, in the
-           order of regs_of_interest; then 3 state words (DMACON, INTENA,
-           INTREQ - the accumulated state, not the last write); then 8 bitplane
-           pointers as 2 words each, high first. */
+        /* word 0: koliko register wordova slijedi. Pa toliko vrijednosti, u redu
+           regs_of_interest; pa 3 state worda (DMACON, INTENA, INTREQ -
+           akumulirano stanje, ne zadnji write); pa 8 bitplane pointera kao 2
+           worda svaki, high prvi. */
         uint32_t nr = REGS_OF_INTEREST;
         if (pos == 0) { pos++; return (uint16_t)nr; }
         uint32_t i = pos - 1;
@@ -1183,8 +1192,8 @@ uint16_t aga_diag_read_word(void)
             return (uint16_t)((i & 1) ? (p & 0xFFFF) : (p >> 16));
         }
         i -= 16;
-        /* then the same layout again from the high-water snapshot, which
-           survives the reset a wedged game forces */
+        /* pa opet isti layout iz high-water snapshota, koji preživi reset koji
+           zaglavljena igra iznuđuje */
         if (i < nr) return peak_regs[i];
         i -= nr;
         if (i < 3) return peak_state[i];
@@ -1197,7 +1206,7 @@ uint16_t aga_diag_read_word(void)
            that reads the counters gets the pointer as it is on screen at that
            moment, not as it was when a game last exited. */
         if (pos == 0) aga_video_probe_pointer();
-        /* "AGAD" split in two, then the counter count so a tool knows how far to read */
+        /* "AGAD" razdvojen na dvoje, pa broj countera da tool zna dokle čitati */
         uint16_t w = (pos == 0) ? 0xA6A1 : (pos == 1) ? 0xD1A6 : (uint16_t)AGA_DIAG_COUNT;
         pos++;
         return w;
@@ -1217,7 +1226,7 @@ uint16_t aga_diag_read_word(void)
     return 0;
 }
 
-/* Called once at startup so a log dump always identifies the build. */
+/* Zove se jednom pri startupu da log dump uvijek identificira build. */
 void aga_diag_init(void)
 {
     aga_diag_log("[AGA] diagnostics ready, " __DATE__ " " __TIME__

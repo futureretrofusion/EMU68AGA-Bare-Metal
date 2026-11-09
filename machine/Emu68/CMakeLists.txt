@@ -18,6 +18,32 @@ option(FRF_NET_Z2_BRIDGE "Expose virtual FRF Ethernet shared-memory board (no ra
 option(FRF_WIFI_SD1_ENUM "Allow runtime opt-in ARM SD1 Arasan SDIO identification (no firmware/WPA)" OFF)
 option(FRF_WIFI_HW_PROBE "Pi3A+ SDIO register audit (read only)" OFF)
 option(FRF_USB_HOST "FRF standalone Pi3 DWC2 USB host/hub/HID on CPU1" OFF)
+option(FRF_USB_NATIVE_DWC2 "EXPERIMENTAL Pi3 native DWC2 root-port diagnostics; no HID/storage yet" OFF)
+option(FRF_USB_TINYUSB "Experimental Pi3 TinyUSB host integration (no public release)" OFF)
+option(FRF_USB_DIAG_HOLD "USB-only live DWC2 test POST; do not start Amiga guest" OFF)
+option(FRF_TINYUSB_MSC_WRITE "Permit guest USB MSC sector writes" ON)
+option(FRF_USB_PASSIVE_TEST "Preserve USPi input and show native DWC2 passive probe on HDMI POST" OFF)
+option(FRF_KBD_ACK_RECOVERY "Recover virtual CIA keyboard if guest SP handshake stalls over 250ms" OFF)
+if(FRF_KBD_ACK_RECOVERY)
+    add_compile_definitions(FRF_KBD_ACK_RECOVERY=1)
+endif()
+if(FRF_USB_DIAG_HOLD)
+    if(NOT FRF_USB_HOST OR NOT FRF_USB_NATIVE_DWC2 OR NOT FRF_USB_TINYUSB)
+        message(FATAL_ERROR "USB diagnostic hold requires TinyUSB Pi3 native host")
+    endif()
+    add_compile_definitions(FRF_USB_DIAG_HOLD=1)
+endif()
+option(FRF_DISTRIBUTION_BUILD "Require independent, distribution-auditable USB backend" OFF)
+if(FRF_DISTRIBUTION_BUILD)
+    if(NOT FRF_USB_HOST OR NOT FRF_USB_NATIVE_DWC2 OR NOT FRF_USB_TINYUSB)
+        message(FATAL_ERROR "FRF distribution build requires independently integrated TinyUSB/DWC2; USPi and USB-disabled builds are rejected")
+    endif()
+    message(STATUS "FRF distribution profile: TinyUSB/DWC2 selected; USPi backend is excluded")
+endif()
+
+if(FRF_USB_NATIVE_DWC2 AND NOT FRF_USB_HOST)
+    message(FATAL_ERROR "FRF_USB_NATIVE_DWC2 requires FRF_USB_HOST=ON")
+endif()
 option(FRF_RTG_HANDOFF "Respect external Picasso96 HVS display list in standalone AGA" OFF)
 
 if(NOT EMU68_SKIP_PPC_ROM)
@@ -173,6 +199,7 @@ set(OVERLAY_FILES
     src/overlays/pal.dts
     src/overlays/ntsc.dts
     src/overlays/noscsi.dts
+    src/overlays/cma.dts
 )
 
 build_devicetree(OVERLAY_FILES)
@@ -344,8 +371,8 @@ if(NOT EMU68_SKIP_PPC_ROM)
     add_dependencies(Emu68.elf ppc_rom)
 endif()
 
-# FRF standalone USB: USPi DWC2 host adapted to Emu68's big-endian AArch64
-# kernel, high virtual addresses, interrupt routing and TLSF allocator.
+# FRF standalone USB: TinyUSB/DWC2 is the distribution-supported host
+# (Pi3 CPU1). USPi is legacy only and must not be used for release builds.
 if(FRF_VIRTUAL_AGA)
     target_sources(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/boards/frf_z3ram.c)
 endif()
@@ -378,6 +405,82 @@ if(FRF_USB_HOST)
     if(NOT "${TARGET}" STREQUAL "raspi64")
         message(FATAL_ERROR "FRF_USB_HOST currently supports Raspberry Pi only")
     endif()
+    if(FRF_USB_NATIVE_DWC2)
+        if(FRF_USB_TINYUSB AND NOT AGA_PI3)
+            message(FATAL_ERROR "TinyUSB backend requires Pi 3")
+        endif()
+        if(NOT AGA_PI3)
+            message(FATAL_ERROR "Native DWC2 phase 1 is only for Pi3 AGA builds (set AGA_PI3=ON)")
+        endif()
+        if(FRF_USB_TINYUSB)
+            set(FRF_TUSB ${CMAKE_SOURCE_DIR}/third_party/tinyusb/src)
+            target_sources(Emu68.elf PRIVATE
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_native_keyboard.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_host.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_ua700.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_usb_packet_capture.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_msc_bridge.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_pad.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_joymap.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_r19_hid_descriptor.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_r20_hardware_profile.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb/frf_tinyusb_xpad_vendor.c
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_usb_mass_board.c
+                ${FRF_TUSB}/tusb.c
+                ${FRF_TUSB}/common/tusb_fifo.c
+                ${FRF_TUSB}/host/usbh.c
+                ${FRF_TUSB}/host/hub.c
+                ${FRF_TUSB}/class/hid/hid_host.c
+                ${FRF_TUSB}/class/msc/msc_host.c
+                ${FRF_TUSB}/class/midi/midi_host.c
+                ${FRF_TUSB}/portable/synopsys/dwc2/hcd_dwc2.c
+                ${FRF_TUSB}/portable/synopsys/dwc2/dwc2_common.c)
+            target_include_directories(Emu68.elf PRIVATE
+                ${FRF_TUSB} ${CMAKE_SOURCE_DIR}/src/frf_usb/tinyusb
+                ${CMAKE_SOURCE_DIR}/src/frf_usb/native ${CMAKE_SOURCE_DIR}/src/frf_usb)
+            target_compile_definitions(Emu68.elf PRIVATE
+                FRF_USB_HOST=1 FRF_USB_NATIVE_DWC2=1 FRF_USB_TINYUSB=1)
+            if(FRF_TINYUSB_MSC_WRITE)
+                target_compile_definitions(Emu68.elf PRIVATE FRF_TINYUSB_MSC_WRITE=1)
+            endif()
+            foreach(FRF_TINYUSB_SRC tusb.c common/tusb_fifo.c host/usbh.c
+                    host/hub.c class/hid/hid_host.c class/msc/msc_host.c
+                    class/midi/midi_host.c
+                    portable/synopsys/dwc2/hcd_dwc2.c
+                    portable/synopsys/dwc2/dwc2_common.c)
+                set_property(SOURCE ${FRF_TUSB}/${FRF_TINYUSB_SRC} APPEND PROPERTY
+                    COMPILE_OPTIONS -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+            endforeach()
+            set_source_files_properties(
+                ${FRF_TUSB}/portable/synopsys/dwc2/hcd_dwc2.c
+                ${FRF_TUSB}/portable/synopsys/dwc2/dwc2_common.c
+                PROPERTIES COMPILE_OPTIONS "-Wno-error=scalar-storage-order")
+            # Only hardware register unions/structs in dwc2_type.h use LE
+            # scalar-storage-order. Host stack and controller descriptors
+            # remain normal big-endian, including pointers passed by TinyUSB.
+            message(STATUS "Experimental TinyUSB host compiled directly into EMU68AGA")
+        else()
+        target_sources(Emu68.elf PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2_pio.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native_hid.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_native_keyboard.c
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_usb_native.c)
+        target_include_directories(Emu68.elf PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/frf_usb
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native ${CMAKE_SOURCE_DIR}/src/frf_usb)
+        target_compile_definitions(Emu68.elf PRIVATE
+            FRF_USB_HOST=1 FRF_USB_NATIVE_DWC2=1)
+        message(STATUS "FRF native DWC2: NO USPi sources linked; diagnostic ONLY")
+        endif()
+    else()
+    if(FRF_USB_PASSIVE_TEST)
+        target_sources(Emu68.elf PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/frf_usb/native/frf_dwc2.c)
+        target_include_directories(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/src/frf_usb/native ${CMAKE_SOURCE_DIR}/src/frf_usb)
+        target_compile_definitions(Emu68.elf PRIVATE FRF_USB_PASSIVE_TEST=1)
+    endif()
     file(GLOB FRF_USPI_SRC ${CMAKE_SOURCE_DIR}/third_party/uspi/lib/*.c)
     set(FRF_USB_ENV
         ${CMAKE_SOURCE_DIR}/src/frf_usb/frf_uspi_env.c
@@ -399,6 +502,7 @@ if(FRF_USB_HOST)
     )
     set_source_files_properties(${CMAKE_SOURCE_DIR}/src/frf_usb/frf_usb.c
         PROPERTIES COMPILE_FLAGS "-Wno-error")
+    endif()
 endif()
 
 # AGA-PISTORM: virtual AGA chipset core + glue
@@ -447,7 +551,7 @@ if(AGA_PISTORM)
     # it always was. On an older GCC the Pi 3 kernel builds without the
     # vectoriser - picture right, just slower.
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_LESS 15.0)
-        message(WARNING "AGA-PISTORM: GCC ${CMAKE_C_COMPILER_VERSION} miscompiles big-endian vector code - use the Arm GNU Toolchain 15.3")
+        message(WARNING "AGA-STORM: GCC ${CMAKE_C_COMPILER_VERSION} miscompiles big-endian vector code - use the Arm GNU Toolchain 15.3")
         if(AGA_PI3)
             target_compile_options(Emu68.elf PRIVATE -fno-tree-vectorize)
         endif()

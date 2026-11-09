@@ -415,7 +415,7 @@ void MainLoop()
             }
 
 #ifdef AGA_PISTORM
-            /* Virtual Paula (AGA-PISTORM) */
+            /* Virtualna Paula (AGA-STORM) */
             int aga_from_virtual = 0;
             if (ctx->INTF.AGA > level) {
                 level = ctx->INTF.AGA;
@@ -620,7 +620,7 @@ void M68kReportInterrupt(int irq)
 
 
 #ifdef AGA_PISTORM
-/* AGA-PISTORM glue helpers */
+/* AGA-STORM glue pomoćnici */
 extern struct M68KState *__m68k_state;
 void emu68_set_aga_ipl(int ipl)
 {

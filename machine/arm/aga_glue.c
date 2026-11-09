@@ -1,35 +1,39 @@
-/* AGA-PISTORM - Emu68 glue: runs the AGA core on a spare ARM core and serves
- * the emulated 68k's chip RAM / custom register accesses.
+/* AGA-STORM — Emu68 glue: vrti AGA core na rezervnom ARM coreu i poslužuje
+ * emulirani 68k-ov chip RAM / pristupe custom registrima.
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * This file is compiled inside the Emu68 tree (see docs/EMU68-PATCH.md). It
- * relies on the following Emu68 internals:
- *   - __m68k_state (struct M68KState *), INTF.AGA byte added to the INTF union
+ * Ova se datoteka kompajlira unutar Emu68 stabla (vidi docs/EMU68-PATCH.md).
+ * Oslanja se na sljedeće Emu68 interne dijelove:
+ *   - __m68k_state (struct M68KState *), INTF.AGA bajt dodan u INTF union
  *   - ps_read_16 / ps_write_16 (PiStorm bus)
- *   - mmu_map(), tlsf/allocators for the virtual chip RAM block
+ *   - mmu_map(), tlsf/allocatori za virtualni chip RAM blok
  *   - kprintf()
- *   - the trap path: SYSWriteValToAddr / SYSReadValFromAddr in vectors.c call
- *     aga_trap_write / aga_trap_read first when aga_enabled.
+ *   - trap put: SYSWriteValToAddr / SYSReadValFromAddr u vectors.c prvo
+ *     zovu aga_trap_write / aga_trap_read kad je aga_enabled.
  *
- * Threading: core 0 (JIT) enters aga_trap_* from the data abort handler; core 3
- * runs aga_chipset_main(). Both take `aga_lock` around any core call.
+ * Threading: core 0 (JIT) ulazi u aga_trap_* iz data abort handlera; core 3
+ * vrti aga_chipset_main(). Oba uzimaju `aga_lock` oko svakog core poziva.
  */
 #include <stdint.h>
 #include <string.h>
 #include "aga/chipset.h"
 #include "aga_glue.h"
+#include "frf_potgor_model.h"
+void aga_hdmi_voice_gains(int *on, int32_t gl[4], int32_t gr[4]);
+void aga_hdmi_voices(const uint32_t *v, int n, const aga_voice_t info[4], uint32_t rate);
+
 #include "mmu.h"
 #include "A64.h"          /* MMU_* page attributes */
 #include "cache.h"        /* Emu68's software I/D caches: flushed/invalidated around redirection */
 #include "devicetree.h"  /* v0.8.5 HUD boot-config gate */
 
-/* ---- Emu68 externs ------------------------------------------------------- */
+/* ---- Emu68 externi -------------------------------------------------------- */
 struct M68KState;
 extern struct M68KState *__m68k_state;
 extern void kprintf(const char *fmt, ...);
-/* The bus API is declared differently per board: plain functions for the
-   classic CPLD PiStorm, function pointers for PiStorm16/32. Include the header
-   rather than re-declaring it, so I cannot drift from whichever is built. */
+/* Bus API se deklarira različito po boardu: obične funkcije za klasični
+   CPLD PiStorm, function pointeri za PiStorm16/32. Uključi header umjesto da
+   ga ponovno deklariraš, da ne mogu odlutati od onoga što je buildano. */
 #include "ps_protocol.h"
 #ifdef FRF_VIRTUAL_AGA
 #define ps_read_8(a)       ((unsigned)0xffu)
@@ -41,7 +45,7 @@ extern void kprintf(const char *fmt, ...);
 #endif
 extern void mmu_map(uintptr_t phys, uintptr_t virt, uintptr_t length, uint32_t attr_low, uint32_t attr_high);
 extern void mmu_unmap(uintptr_t virt, uintptr_t length);
-/* provided by the patched Emu68: set/get the AGA IPL byte in INTF */
+/* osigurava patchani Emu68: set/get AGA IPL bajta u INTF */
 extern void emu68_set_aga_ipl(int ipl);
 extern uint32_t emu68_get_sr(void);
 extern uint32_t emu68_get_intf(void);
@@ -50,7 +54,7 @@ extern uint32_t emu68_get_loop_ticks(void);
 extern uint32_t emu68_get_irq_check(void);
 extern void emu68_raise_nmi(void);
 extern int  emu68_get_real_ipl(void);
-extern uint32_t emu68_get_pc(void);   /* 68k PC, for the trap ring */
+extern uint32_t emu68_get_pc(void);   /* 68k PC, za trap ring */
 
 /* Guest Exec memory probes were removed from the normal chipset
  * loop: they are not virtual chipset emulation. */
@@ -64,17 +68,18 @@ extern uint32_t emu68_get_pc(void);   /* 68k PC, for the trap ring */
    and freezes. Every other cross-core flag here was already volatile; these
    two, which gate everything, were not. */
 volatile int aga_enabled = 0;
-int aga_enter_stop = 0;      /* aga.enter_stop=N on the cmdline */
-int aga_loop_stop  = 0;      /* aga.loop_stop=N  on the cmdline */
-int aga_leave_stop = 0;      /* aga.leave_stop=N on the cmdline */
-int aga_use_mmu    = 0;      /* aga.mmu: the old MMU-remap path, kept for A/B */
-int aga_sleep      = 0;      /* aga.sleep: timed waits sleep (aga_glue.h); off by default */
-uint32_t aga_nap_min = 0xFFFFFFFFu;   /* ticks left below which a timed wait spins (aga_evstream_on) */
-static volatile uint32_t last_chip_wr;   /* overlay: last chip RAM address the 68k wrote */
-volatile int aga_chip_redirect = 0;   /* no-MMU: serve redirect_lo..redirect_hi from chip_va in the abort handler */
-static uint32_t redirect_lo, redirect_hi;   /* the window; the sandbox uses all of chip RAM */
+int aga_enter_stop = 0;      /* aga.enter_stop=N na cmdlineu */
+int aga_loop_stop  = 0;      /* aga.loop_stop=N  na cmdlineu */
+int aga_leave_stop = 0;      /* aga.leave_stop=N na cmdlineu */
+int aga_use_mmu    = 0;      /* aga.mmu: stari MMU-remap put, ostavljen za A/B */
+int aga_sleep      = 0;      /* aga.sleep: timed waits spavaju (aga_glue.h); off po defaultu */
+uint32_t aga_nap_min = 0xFFFFFFFFu;   /* preostali ticks ispod kojih timed wait spinna (aga_evstream_on) */
+static volatile uint32_t last_chip_wr;   /* overlay: zadnja chip RAM adresa koju je 68k pisao */
+volatile int aga_chip_redirect = 0;   /* no-MMU: poslužuj redirect_lo..redirect_hi iz chip_va u abort handleru */
+static uint32_t redirect_lo, redirect_hi;   /* prozor; sandbox koristi cijeli chip RAM */
 volatile int aga_sandbox_active = 0;
-static volatile int core_idle = 1;    /* chipset loop parked (aga_enabled == 0) */
+static void aga_sel_sandbox(int entered);   /* RGB2HDMI-SEL, ispod aga_cia_write */
+static volatile int core_idle = 1;    /* chipset loop parkiran (aga_enabled == 0) */
 static aga_t *aga;
 static uint8_t *chip_va;              /* ARM virtual address of the virtual chip RAM */
 static uint32_t chip_size;   /* the virtual chip RAM: what the game gets, 2 MB */
@@ -88,8 +93,8 @@ static uint32_t chip_size;   /* the virtual chip RAM: what the game gets, 2 MB *
    With this set, chip addresses are read where they live. */
 uint8_t * volatile aga_code_chip;
 volatile uint32_t aga_code_chip_size;
-/* $5941 on (the default) / $5940 off, from the next sandbox entry: the A/B
-   switch for the above (agaboot CODEDIRECT). */
+/* $5941 on (default) / $5940 off, od sljedećeg sandbox entryja: A/B
+   prekidač za gornje (agaboot CODEDIRECT). */
 static volatile int aga_code_direct = 1;
 void aga_set_code_direct(int on) { aga_code_direct = on; }
 
@@ -116,26 +121,27 @@ static volatile char aga_lock_v __attribute__((aligned(64)));
 static volatile int frames_done;
 static volatile int real_ipl_seen;
 
-/* WFE spinlocks need a matching SEV. Without one, a core that has already
-   executed WFE sleeps until some other event happens to arrive: releasing the
-   lock with a plain store-release signals nothing, and __atomic_test_and_set
-   completes its exclusive sequence before the WFE, so there is no outstanding
-   exclusive monitor to wake it either.
+/* WFE spinlockovi trebaju odgovarajući SEV. Bez njega core koji je već
+   izvršio WFE spava dok ne stigne neki drugi event: otpuštanje locka običnim
+   store-releaseom ne signalizira ništa, a __atomic_test_and_set završi svoju
+   exclusive sekvencu prije WFE, pa nema ni outstanding exclusive monitora da
+   ga probudi.
 
-   That hung the machine the moment core 0 and core 3 first contended - which
-   is exactly when the chipset goes live, in sandbox and machine mode alike.
-   The abort handler on core 0 runs with interrupts masked, so nothing arrived
-   to wake it.
+   To je, jebote, objesilo mašinu čim su se core 0 i core 3 prvi put
+   posvađali - a to je točno trenutak kad chipset oživi, u sandbox i machine
+   modeu jednako.
+   Abort handler na coreu 0 radi s maskiranim interruptima, pa ništa nije
+   stiglo da ga probudi.
 
-   ps_bus_lock in ps_classic_protocol.c spins on YIELD, which has no event
-   dependency at all. This now pairs SEV with the WFE properly; SEV sets the
-   event register on every core, so an unlock racing a WFE cannot be missed. */
-/* How long core 3 waits for this lock, per frame and at worst. Core 0 holds
-   it inside the abort handler, and some of what it does there is PiStorm
-   bus traffic (INTREQR reads fold in the real chip, the mirrored input
-   registers are real reads) - on a Pi 3 the bus stalled audio pushes for
-   5 ms (2026-09-14), so the same stalls can arrive through the lock. The
-   fast path is untouched: the clock is only read once the first try fails. */
+   ps_bus_lock u ps_classic_protocol.c spinna na YIELD, koji uopće nema event
+   dependency. Ovo sada ispravno spaja SEV s WFE; SEV postavlja event registar
+   na svakom coreu, pa unlock koji se utrkuje s WFE ne može biti promašen. */
+/* Koliko core 3 čeka ovaj lock, po frameu i najgore. Core 0 ga drži unutar
+   abort handlera, a dio onoga što tamo radi je PiStorm bus promet (INTREQR
+   readovi foldaju pravi chip, mirrorani input registri su pravi readovi) - na
+   Pi 3 je bus zaglavio audio pusheve na 5 ms (2026-09-14), pa isti zastoji
+   mogu stići kroz lock. Fast path je netaknut: clock se čita tek kad prvi
+   pokušaj padne. */
 static inline uint64_t cntvct(void);
 static volatile uint64_t lock_acc3, lock_max3;
 static inline void lock(void)
@@ -156,7 +162,7 @@ static inline void lock(void)
 static inline void unlock(void)
 {
     __atomic_clear(&aga_lock_v, __ATOMIC_RELEASE);
-    __asm__ volatile("sev");        /* wake anyone parked in the WFE above */
+    __asm__ volatile("sev");        /* probudi svakoga parkiranog u gornjem WFE */
 }
 
 /* ---- hooks ---------------------------------------------------------------- */
@@ -165,24 +171,58 @@ static volatile uint16_t frf_joydat[2];
 static volatile uint8_t frf_fire_bits;
 static volatile uint8_t frf_mouse_buttons;
 static volatile uint8_t frf_mouse_x, frf_mouse_y;
+/* Host input -> emulated Amiga readback telemetry. Atomic because Pi3
+   TinyUSB lives on CPU1 and 68k custom register emulation on CPU0. */
+static volatile uint32_t frf_guest_joy1_reads, frf_guest_ciaa_reads;
+static volatile uint32_t frf_host_joy1_writes;
+void aga_virtual_joy_link_stats(uint32_t out[4])
+{
+    out[0] = __atomic_load_n(&frf_joydat[1],__ATOMIC_ACQUIRE) |
+      ((__atomic_load_n(&frf_fire_bits,__ATOMIC_ACQUIRE)&2u)?0x10000u:0u);
+    out[1] = __atomic_load_n(&frf_host_joy1_writes,__ATOMIC_ACQUIRE);
+    out[2] = __atomic_load_n(&frf_guest_joy1_reads,__ATOMIC_ACQUIRE);
+    out[3] = __atomic_load_n(&frf_guest_ciaa_reads,__ATOMIC_ACQUIRE);
+}
+
 /* Paula POTGO high-byte state. OUT/DAT pairs are:
    15/14 RY, 13/12 RX, 11/10 LY (port-1 right mouse), 9/8 LX. */
 static volatile uint16_t frf_potgo;
+static volatile uint16_t frf_pad_potgor[2];
+static volatile uint32_t frf_pad_fullbuttons[2];
 
-uint8_t aga_virtual_ciaa_buttons(void)
+static uint8_t frf_virtual_ciaa_buttons_value(void)
 {
     uint8_t v = 0xC0u;
     if (frf_fire_bits & 1u) v &= (uint8_t)~0x40u;
     if (frf_fire_bits & 2u) v &= (uint8_t)~0x80u;
     return v;
 }
+uint8_t aga_virtual_ciaa_buttons(void)
+{
+    __atomic_fetch_add(&frf_guest_ciaa_reads,1u,__ATOMIC_RELAXED);
+    return frf_virtual_ciaa_buttons_value();
+}
 void aga_virtual_joy_set(int port, uint16_t joydat, int fire)
 {
     if ((unsigned)port > 1u) return;
     __atomic_store_n(&frf_joydat[port], joydat, __ATOMIC_RELEASE);
+    if(port==1)
+        __atomic_fetch_add(&frf_host_joy1_writes,1u,__ATOMIC_RELAXED);
     uint8_t bit = (uint8_t)(1u << port);
     if (fire) __atomic_fetch_or(&frf_fire_bits, bit, __ATOMIC_ACQ_REL);
     else      __atomic_fetch_and(&frf_fire_bits, (uint8_t)~bit, __ATOMIC_ACQ_REL);
+}
+void aga_virtual_pad_buttons(int port,uint32_t buttons)
+{
+ if((unsigned)port>1u)return;
+ __atomic_store_n(&frf_pad_fullbuttons[port],buttons,__ATOMIC_RELEASE);
+ uint16_t mask=0;
+ /* Independent Amiga port-2 buttons. Button 1 is handled by CIA-A fire.
+    Button 2 -> RY/pin 9 (POTGOR bit 14), button 3 -> RX/pin 5 (bit 12).
+    Button 4 is deliberately unmapped. Never drive port-1 POTGOR bits. */
+ if(port==1 && (buttons&2u))mask|=0x4000u;
+ if(port==1 && (buttons&4u))mask|=0x1000u;
+ __atomic_store_n(&frf_pad_potgor[port],mask,__ATOMIC_RELEASE);
 }
 void aga_virtual_mouse_update(int dx, int dy, unsigned buttons)
 {
@@ -195,6 +235,23 @@ void aga_virtual_mouse_update(int dx, int dy, unsigned buttons)
     if (buttons & 1u) __atomic_fetch_or(&frf_fire_bits, 1u, __ATOMIC_ACQ_REL);
     else              __atomic_fetch_and(&frf_fire_bits, (uint8_t)~1u, __ATOMIC_ACQ_REL);
 }
+static uint16_t frf_virtual_potgor_value(void)
+{
+    uint16_t pg = __atomic_load_n(&frf_potgo, __ATOMIC_ACQUIRE);
+    uint8_t mb = __atomic_load_n(&frf_mouse_buttons, __ATOMIC_ACQUIRE);
+    extern int frf_usb_early_startup_active(void);
+    if (frf_usb_early_startup_active()) mb |= 3u;
+    uint16_t pad = __atomic_load_n(&frf_pad_potgor[0],__ATOMIC_ACQUIRE) |
+                   __atomic_load_n(&frf_pad_potgor[1],__ATOMIC_ACQUIRE);
+    return frf_potgor_model(pg,mb,pad);
+}
+
+void aga_virtual_pad_line_snapshot(uint8_t *pra, uint16_t *potgor)
+{
+    if (pra) *pra = frf_virtual_ciaa_buttons_value();
+    if (potgor) *potgor = frf_virtual_potgor_value();
+}
+
 #endif
 
 static uint16_t hook_ext_read(void *u, uint32_t reg)
@@ -205,19 +262,11 @@ static uint16_t hook_ext_read(void *u, uint32_t reg)
        ext_read is now a host-input/default provider only.  No register read
        may escape to ps_read_* or to a donor Amiga chipset. */
     if (reg == JOY0DAT) return __atomic_load_n(&frf_joydat[0], __ATOMIC_ACQUIRE);
-    if (reg == JOY1DAT) return __atomic_load_n(&frf_joydat[1], __ATOMIC_ACQUIRE);
-    if (reg == POTGOR) {
-        uint16_t pg = __atomic_load_n(&frf_potgo, __ATOMIC_ACQUIRE);
-        uint16_t v = (uint16_t)((pg & 0xAA00u) | 0x5500u);
-        uint8_t mb = __atomic_load_n(&frf_mouse_buttons, __ATOMIC_ACQUIRE);
-        if ((pg & 0x0800u) && !(pg & 0x0400u)) v &= (uint16_t)~0x0400u;
-        if ((pg & 0x0200u) && !(pg & 0x0100u)) v &= (uint16_t)~0x0100u;
-        extern int frf_usb_early_startup_active(void);
-        if (frf_usb_early_startup_active()) mb |= 3u;
-        if (mb & 2u) v &= (uint16_t)~0x0400u;
-        if (mb & 4u) v &= (uint16_t)~0x0100u;
-        return v;
+    if (reg == JOY1DAT) {
+        __atomic_fetch_add(&frf_guest_joy1_reads,1u,__ATOMIC_RELAXED);
+        return __atomic_load_n(&frf_joydat[1], __ATOMIC_ACQUIRE);
     }
+    if (reg == POTGOR) return frf_virtual_potgor_value();
     /* No receive-side serial device is attached. Real Paula reports the
        transmitter empty/shift-register empty bits; returning $FFFF here was
        a hybrid stub leak and is not a valid virtual-Paula state. */
@@ -232,22 +281,22 @@ static uint16_t hook_ext_read(void *u, uint32_t reg)
 #endif
 }
 
-/* Is a WHDLoad game running, rather than the Workbench?
+/* Je li pokrenuta WHDLoad igra, a ne Workbench?
  *
- * It decides one thing: what happens to the real Paula's EXTER (level 6).
+ * To odlučuje jednu stvar: što se događa s EXTER-om prave Paule (level 6).
  *
- * With the OS up, EXTER must stay enabled or the CIAs go silent - timer.device
- * stops, the network dies, tasks that wait are never woken. So sandbox entry
- * deliberately keeps it on and INTREQR reads fold the real bit back in, which
- * is what makes the desktop survive the sandbox at all.
+ * Kad je OS gore, EXTER mora ostati enabled ili CIA-e zanijeme - timer.device
+ * stane, mreža umre, taskovi koji čekaju nikad se ne probude. Zato sandbox
+ * entry namjerno drži ga uključenim i INTREQR readovi vraćaju pravi bit
+ * unutra, što je ono što uopće omogućuje desktopu da preživi sandbox.
  *
- * A WHDLoad game is the opposite case. WHDLoad takes the machine away from the
- * OS and installs the GAME's vector table, and a game only fills in the levels
- * it actually uses. ClockwiserAGA installs level 3 and nothing else - its
- * autovector at BaseMem $78 is zero. The real CIA-B keeps counting throughout
- * (its TOD alarm was pending in the crash dump), so the EXTER I had forced on
- * eventually fired, WHDLoad dispatched level 6 through that zero vector, and
- * the CPU jumped to address 0:
+ * WHDLoad igra je obrnut slučaj. WHDLoad preuzme mašinu od OS-a i instalira
+ * GAME-ov vector table, a igra popuni samo levelove koje stvarno koristi.
+ * ClockwiserAGA instalira level 3 i ništa drugo - njegov autovector na BaseMem
+ * $78 je nula. Pravi CIA-B nastavlja brojati cijelo vrijeme (njegov TOD alarm
+ * je bio na čekanju u crash dumpu), pa je EXTER koji sam bio forsirao na
+ * kraju opalio, WHDLoad je dispatchao level 6 kroz taj nulti vektor, i CPU je
+ * skočio na adresu 0:
  *
  *   Exception "Line 1111 Emulator" ($2C) at $4 occurred.
  *   SR=%0010011000000000            <- interrupt mask 6
@@ -258,32 +307,32 @@ static uint16_t hook_ext_read(void *u, uint32_t reg)
  * stays, since WHDLoad handles the keyboard itself and the quit key depends
  * on it.
  *
- * WHEN it engages matters as much as what it does. `agaboot SANDBOX AUTO` runs
- * from WHDLoad's startup script, so the sandbox opens while AmigaOS is still
- * up - and WHDLoad then loads the slave, the game and (for a KickEmu title) a
- * whole Kickstart image through the OS filesystem. Taking EXTER away at entry
- * takes the CIAs away from the OS during exactly that window: timer.device
- * stops and the load never completes. Banshee froze on startup that way, where
- * the far smaller ClockwiserAGA happened to get through.
+ * KADA se uključi jednako je važno kao i što radi. `agaboot SANDBOX AUTO` se
+ * vrti iz WHDLoad-ove startup skripte, pa se sandbox otvori dok je AmigaOS još
+ * gore - i WHDLoad zatim učita slave, igru i (za KickEmu naslov) cijelu
+ * Kickstart sliku kroz OS filesystem. Ako se EXTER uzme pri entryju, CIA-e se
+ * uzmu OS-u točno u tom prozoru: timer.device stane i load se nikad ne
+ * završi. Banshee se tako smrznuo na startu, gdje je mnogo manji ClockwiserAGA
+ * slučajno prošao.
  *
- * So game mode is only ARMED at entry. It engages at the one unambiguous sign
- * that WHDLoad has taken the machine away from the OS: an INTENA write that
- * CLEARS EXTER (bit 15 low with bit 13 set) - WHDLoad's "all interrupts off"
- * as it shuts the OS down. From then on EXTER is never put back. Before it,
- * everything behaves exactly as it did for the desktop. */
-/* Which audio channels reach the mix. Set with $5D0N at $DFF1F2, so a channel
-   can be isolated on a RUNNING game without a rebuild - the only way left to
-   tell "the effects are not in the output" from "the effects are in the output
-   and something is masking them", now that the counters show channel 2 makes as
-   much sound as the music channels do. */
+ * Zato je game mode pri entryju samo ARMED. Uključi se na jedini nedvosmisleni
+ * znak da je WHDLoad preuzeo mašinu od OS-a: INTENA write koji CLEARA EXTER
+ * (bit 15 nizak uz bit 13 set) - WHDLoad-ov "svi interrupti off" kad gasi OS.
+ * Od tog trenutka EXTER se više nikad ne vraća. Prije toga sve se ponaša točno
+ * kao za desktop. */
+/* Koji audio kanali stižu u mix. Postavlja se s $5D0N na $DFF1F2, pa se kanal
+   može izolirati na igri koja se vrti, bez rebuilda - jedini preostali način
+   da razlikuješ "efekti nisu u outputu" od "efekti jesu u outputu i nešto ih
+   maskira", sad kad counters pokazuju da kanal 2 proizvodi jednako zvuka kao
+   glazbeni kanali. */
 static volatile int aud_mask_want = 15;
 void aga_audio_mask(unsigned m)
 {
-    /* Kept HERE and re-applied every frame, not written once into the core.
-       aga_reset() puts the core's mask back to "all four", and the sandbox
-       resets on leave - so a mask set from Workbench before launching a game
-       would be gone by the time the game made a sound, which is precisely when
-       it is needed. There is no shell during a WHDLoad game to set it again. */
+    /* Držano OVDJE i ponovno primijenjeno svaki frame, ne upisano jednom u core.
+     * aga_reset() vraća coreov mask na "sva četiri", a sandbox se resetira pri
+     * leaveu - pa bi mask postavljen s Workbencha prije pokretanja igre nestao
+     * dok igra proizvede zvuk, što je upravo kad treba. Tijekom WHDLoad igre
+     * nema shella da ga ponovno postavi. */
     aud_mask_want = (int)(m & 15);
     aga_diag_log("[AGA] audio channel mask changed");
 }
@@ -352,47 +401,47 @@ int aga_keep_ciab = 0;    /* see aga.keepciab */
 static volatile uint64_t aga_quit_until;
 /* 1: blits report finished after the fixed 9 us of 1.101, 0: after their real duration */
 volatile int aga_blit_fast = 0;
-/* $580N bit 1: completions raised at once even with BLIT still pending */
+/* $580N bit 1: completioni se dignu odmah iako je BLIT još pending */
 void aga_blit_mode(int v)
 {
     aga_blit_fast = v & 1;
     if (aga) aga_blit_set_nohold(aga, (v >> 1) & 1);
 }
-/* How far the beam a program reads may run ahead of the chipset core:
-   0 one pacing step (default), 1 not at all (EXACT), 2 up to a frame (1.102) */
+/* Koliko beam koji program čita smije odletjeti ispred chipset corea:
+   0 jedan pacing step (default), 1 nikako (EXACT), 2 do framea (1.102) */
 volatile int aga_beam_mode = 0;
-#define BEAM_LEAD_CCK 8   /* = CHUNK_CCK, the chipset loop's pacing step */
-/* the mouse quit's state, kept here so leaving the sandbox can reset it */
+#define BEAM_LEAD_CCK 8   /* = CHUNK_CCK, pacing step chipset loopa */
+/* stanje mouse quita, držano ovdje da ga leave sandboxa može resetirati */
 static uint32_t mq_held2, mq_held1, mq_stage;
 static uint64_t mq_stage_at;
 int aga_exter_locked = 0;
-/* For the stall check in the chipset loop: every chip RAM access and every
-   custom register access the 68k makes, counted in shipped builds too - the
-   diag counters it used to read (CHIP_W, TRAPS_W) exist only in probe builds,
-   so a shipped kernel saw chip RAM READS alone, and a game that spent ten
-   seconds writing chip RAM or polling registers was taken for dead. Written
-   on core 0 only, read on core 3; a stale read just delays the check. */
+/* Za stall check u chipset loopu: svaki chip RAM pristup i svaki custom
+   register pristup koji 68k napravi, brojan i u shipped buildovima - diag
+   counters koje je prije čitao (CHIP_W, TRAPS_W) postoje samo u probe
+   buildovima, pa je shipped kernel vidio samo chip RAM READOVE, i igra koja
+   je provela deset sekundi pišući chip RAM ili pollajući registre bila
+   proglašena mrtvom. Piše se samo na coreu 0, čita na coreu 3; stale read
+   samo odgodi check. */
 static volatile uint32_t cpu_activity;
-/* WHDLoad has switched every interrupt off: the machine is the game's. Set
-   whatever aga.keepciab says, unlike aga_exter_locked; cleared at entry. */
+/* WHDLoad je ugasio svaki interrupt: mašina je igrina. Postavlja se kako god
+   aga.keepciab kaže, za razliku od aga_exter_locked; čisti se pri entryju. */
 static volatile int game_taken;
 /* core 0's time inside chip RAM data aborts, accumulated in vectors.c;
    published per frame below as abort_us_frame / aborts_frame */
 volatile uint64_t aga_abort_ticks, aga_abort_count;
-/* Set at the takeover, acted on by the chipset loop once the copper is off:
-   WHDLoad's splash screen was drawn by graphics.library believing the
-   machine is AGA (my ChipRevBits0 poke), and an AGA copper list writes the
-   palette in two passes, BPLCON3 $0C40 then $0E40 - LOCT set for the low
-   nibbles. The last write leaves LOCT on. An ECS game never touches
-   BPLCON3, so every COLORxx it writes lands in the low nibbles: the
-   "veiled and dark" ECS games of 2026-09-12, which the manual ECS toggle
-   has been papering over. Clearing LOCT once, after the OS list has
-   stopped and before the game's first palette, costs an AGA game nothing:
-   it sets BPLCON3 itself before it writes a colour. */
+/* Postavlja se pri takeoveru, chipset loop reagira kad je copper off:
+   WHDLoad-ov splash screen nacrtala je graphics.library vjerujući da je
+   mašina AGA (moj ChipRevBits0 poke), a AGA copper lista piše paletu u dva
+   prolaza, BPLCON3 $0C40 pa $0E40 - LOCT set za donje nibble. Zadnji write
+   ostavi LOCT uključen. ECS igra nikad ne dira BPLCON3, pa svaki COLORxx
+   koji upiše sleti u donje nibble: "zastrte i tamne" ECS igre od 2026-09-12 -
+   sranje koje je ručni ECS toggle papirnato pokrivao. Clearati LOCT jednom, nakon
+   što OS lista stane i prije igrine prve palete, AGA igru ništa ne košta:
+   ona sama postavi BPLCON3 prije nego upiše boju. */
 static volatile int aga_loct_fix_pending;
-/* Set at the takeover too, but whatever aga.keepciab says: the AGA signs an
-   ECS Denise saw until then were the OS's (WHDLoad's splash), not the game's
-   (see the chipset loop) */
+/* Postavlja se također pri takeoveru, ali kako god aga.keepciab kaže: AGA
+   znakovi koje je ECS Denise vidjela do tada bili su OS-ovi (WHDLoad-ov
+   splash), ne igrini (vidi chipset loop) */
 static volatile int aga_ecs_forget_pending;
 
 /* Which chipset the next game gets. Set at $DFF1F2 before the sandbox is
@@ -420,26 +469,27 @@ void aga_chipset_ecs(int mode)
     aga_diag_log(forced ? "[AGA] chipset: ECS Denise (always ECS)" : on ? "[AGA] chipset: ECS Denise" : "[AGA] chipset: AGA");
 }
 
-/* agaboot RTG Image, into the core the same way, and kept across the entry's
-   reset the same way:
-     $59Dn  the flicker fixer - interlaced frames woven (aga_set_weave)
-     $59Fn  brightness 0-4 (for scanlines, which darken the picture); the RGB
-            port takes it back out, it has no scanlines
-     $591n  PAL (0) or NTSC (1) for the next game - agaboot sends it before
-            every entry; sandbox leave puts back the machine's own */
+/* agaboot RTG Image, u core na isti način, i sačuvan kroz entryjev reset na
+   isti način:
+     $59Dn  flicker fixer - interlaced frameovi tkaju se (aga_set_weave)
+     $59Fn  brightness 0-4 (za scanlines, koje zatamnjuju sliku); RGB port
+            ga vadi van, on nema scanlines
+     $591n  PAL (0) ili NTSC (1) za sljedeću igru - agaboot ga pošalje prije
+            svakog entryja; sandbox leave vraća mašinin vlastiti */
+static int weave_set = 1;      /* flicker fixer kako je zadnje postavljen ($59Dn), za OSD */
 void aga_flickerfix(int on)
 {
+    weave_set = on ? 1 : 0;
     if (!aga) return;
     lock();
     aga_set_weave(aga, on);
     unlock();
 }
-/* Brightness ($59Fn) and Gamma ($512n): the core puts every shown colour
-   through their one curve (aga_tone_build); the RGB port, which takes the
-   core's frames to the Amiga's own RGB port and wants the real colours,
-   gets the curve's inverse - nearest input for each output, the curve
-   rising all the way. Up to 1.115 the brightness was a straight gain and the
-   RGB port divided it back out. */
+/* Brightness ($59Fn) i Gamma ($512n): core provlači svaku prikazanu boju
+   kroz njihovu jednu krivulju (aga_tone_build); RGB port, koji nosi coreove
+   frameove na Amigina vlastita RGB port i želi prave boje, dobije inverz
+   krivulje - najbliži input za svaki output, krivulja raste do kraja. Do
+   1.115 brightness je bio obični gain i RGB port ga je dijelio natrag van. */
 static int tone_pct = 100, tone_gamma_sel;
 static void tone_apply(void)
 {
@@ -468,6 +518,17 @@ void aga_brightness(int level)
     tone_pct = pct[(level >= 0 && level <= 4) ? level : 0];
     tone_apply();
 }
+/* OSD (aga_hvs.c): brightness 0-4, gamma 0-2 i flicker fixer kako je
+ * postavljen */
+void aga_tone_get(int *bright, int *gamma, int *weave)
+{
+    static const int pct[5] = { 100, 110, 120, 135, 150 };
+    int b = 0;
+    for (int i = 0; i < 5; i++) if (tone_pct == pct[i]) b = i;
+    *bright = b;
+    *gamma = tone_gamma_sel;
+    *weave = weave_set;
+}
 void aga_gamma(int gamma)
 {
     tone_gamma_sel = (gamma >= 0 && gamma <= 2) ? gamma : 0;
@@ -482,15 +543,14 @@ void aga_video_standard(int ntsc)
     aga_diag_log(ntsc ? "[AGA] next entry: NTSC" : "[AGA] next entry: PAL");
 }
 
-/* The 68k's trap path reaches the real bus from inside the chipset lock (a
-   write to INTENA, INTREQ, ADKCON, the serial port...). While it is on the
-   bus the chipset core waits for the lock, so its bus time is frame time:
-   counted here, per frame and worst single write. On a PiStorm16 the bus
-   goes through the FPGA protocol and its own mutex, which the housekeeper
-   holds for its audio-ring writes - the suspect for that board's lock
-   waits being four times the classic board's. */
+/* 68k-ov trap put stiže na pravi bus unutar chipset locka (write u INTENA,
+   INTREQ, ADKCON, serial port...). Dok je na busu chipset core čeka lock, pa
+   je njegovo bus vrijeme frame vrijeme: broji se ovdje, po frameu i najgori
+   pojedinačni write. Na PiStorm16 bus ide kroz FPGA protokol i vlastiti
+   mutex, koji housekeeper drži za svoje audio-ring writeove - osumnjičeni za
+   to da su lock čekanja te ploče četiri puta veća od klasične. */
 static volatile uint64_t trapbus_ticks, trapbus_max;
-static volatile uint64_t traphold_ticks, traphold_max;   /* the lock held by a register write */
+static volatile uint64_t traphold_ticks, traphold_max;   /* lock koji drži register write */
 static volatile uint32_t trapbus_n;
 static void hook_ext_write_body(void *u, uint32_t reg, uint16_t v);
 
@@ -504,10 +564,10 @@ static uint16_t fwd_intena_known, fwd_intena_val;   /* INTEN | PORTS | EXTER */
 static uint16_t fwd_adkcon_known, fwd_adkcon_val;
 static int      fwd_potgo_known;
 static uint16_t fwd_potgo_val;
-/* A real floppy transfer running for the sandbox (dskb_len_write, below the
-   chip RAM copy helpers): the OS's buffer as DSKPT was last written, its
-   size, the direction, and the last DSKLEN write - the second one in a row
-   with DMAEN starts the transfer, as on Paula. */
+/* Pravi floppy transfer koji radi za sandbox (dskb_len_write, ispod chip RAM
+   copy helpera): OS-ov buffer kako je DSKPT zadnje pisan, njegova veličina,
+   smjer, i zadnji DSKLEN write - drugi uzastopni s DMAEN pokreće transfer,
+   kao na Pauli. */
 volatile int aga_dskb_pending;
 static uint32_t dskb_pt, dskb_bytes;
 static uint16_t dskb_last_len;
@@ -517,10 +577,10 @@ static void dskb_len_write(uint16_t v);
 static void fwd_forget(void)
 {
     fwd_intena_known = fwd_adkcon_known = 0; fwd_potgo_known = 0;
-    aga_dskb_pending = 0; dskb_last_len = 0; dskb_said = 0;     /* no transfer outlives a reset */
+    aga_dskb_pending = 0; dskb_last_len = 0; dskb_said = 0;     /* nijedan transfer ne nadživi reset */
 }
 
-/* a SET/CLR register write: does it only repeat what is known? then note it */
+/* SET/CLR register write: ponavlja li samo poznato? onda zabilježi */
 static int fwd_setclr_nop(uint16_t *known, uint16_t *val, uint16_t v, uint16_t mask)
 {
     uint16_t bits = v & mask;
@@ -546,7 +606,7 @@ static void __attribute__((unused)) fwd_count(uint32_t reg, uint16_t v)
         break;
     case POTGO:
         aga_diag_inc(AGA_D_FWD_POTGO);
-        /* bit 0 is START, a strobe: never a repeat */
+        /* bit 0 je START, strobe: nikad repeat */
         if (fwd_potgo_known && fwd_potgo_val == v && !(v & 1)) aga_diag_inc(AGA_D_FWD_POTGO_NOP);
         fwd_potgo_known = 1; fwd_potgo_val = v;
         break;
@@ -559,8 +619,8 @@ static void __attribute__((unused)) fwd_count(uint32_t reg, uint16_t v)
 
 static void hook_ext_write(void *u, uint32_t reg, uint16_t v)
 {
-#ifdef AGA_PROBES    /* test kernels: what reaches the real bus, and how long it takes */
-    if (!aga_audio_reg_write(reg, v)) fwd_count(reg, v);   /* audio stays virtual: not a bus write */
+#ifdef AGA_PROBES    /* test kerneli: što stiže na pravi bus, i koliko traje */
+    if (!aga_audio_reg_write(reg, v)) fwd_count(reg, v);   /* audio ostaje virtualan: nije bus write */
     uint64_t t0;
     __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(t0));
     hook_ext_write_body(u, reg, v);
@@ -575,28 +635,27 @@ static void hook_ext_write(void *u, uint32_t reg, uint16_t v)
 #endif
 }
 
-/* A level-6 handler that acknowledges EXTER in Paula but never reads the
-   CIA-B ICR leaves the CIA's /INT line asserted, and Paula latches EXTER
-   again the moment it is cleared: the 68k never leaves the handler.
-   Shadow Fighter AGA's slave replaces the game's level-6 handler with
-   exactly such a stub (move.w #$2000,$dff09c / tst.w $dff002 / rte), and
-   on the A500 2,050,218 level-6 interrupts went by in 841 frames while the
-   game stood still after its title, right after a WHDLoad load. WinUAE, like
-   a real machine, only storms there if CIA-B is asserting, and there it is
-   not; here a CIA-B source was left pending. No program acknowledges EXTER
-   a thousand times in one frame on purpose - a CIA sample player at 22 kHz
-   does 440 - so past that the ICR is read on the program's behalf, which
-   releases the line, and the sources it reported are switched off: the
-   program was not servicing them. exter_storm_icr keeps what the read saw. */
+/* Level-6 handler koji acknowledga EXTER u Pauli ali nikad ne pročita CIA-B
+   ICR ostavi CIA-in /INT line assertiran, a Paula ponovno latcha EXTER čim se
+   clearne: 68k nikad ne izađe iz handlera. Shadow Fighter AGA slave zamijeni
+   igrin level-6 handler točno takvim stubom (move.w #$2000,$dff09c / tst.w
+   $dff002 / rte), i na A500 je 2,050,218 level-6 interrupta prošlo u 841
+   frameu dok je igra stajala nakon title screena, odmah nakon WHDLoad loada.
+   WinUAE, kao i prava mašina, storma tamo samo ako CIA-B assertira, a tamo ne
+   assertira; ovdje je CIA-B izvor ostavljen pending. Koji kurac, nijedan program ne
+   acknowledga EXTER tisuću puta u jednom frameu namjerno - CIA sample player
+   na 22 kHz radi 440 - pa se nakon toga ICR čita u programovo ime, što
+   otpusti line, a izvori koje je prijavio se isključe: program ih nije
+   servisirao. exter_storm_icr čuva što je read vidio. */
 static void exter_storm_check(void)
 {
     static uint32_t frame, n;
     uint32_t f = aga_diag_ctr[AGA_D_FRAMES];
     if (f != frame) { frame = f; n = 0; }
     if (++n != 1000) return;
-    uint8_t icr = (uint8_t)ps_read_8(0xBFDD00);     /* the read clears it and lets go of /INT */
-    ps_write_8(0xBFDD00, icr & 0x1F);               /* bit 7 clear: those sources off */
-    ps_write_16(0xDFF09C, INTF_EXTER);              /* and the latch Paula took meanwhile */
+    uint8_t icr = (uint8_t)ps_read_8(0xBFDD00);     /* read ga clearne i otpusti /INT */
+    ps_write_8(0xBFDD00, icr & 0x1F);               /* bit 7 clear: ti izvori off */
+    ps_write_16(0xDFF09C, INTF_EXTER);              /* i latch koji je Paula uzeo u međuvremenu */
     aga_diag_inc(AGA_D_EXTER_STORMS);
     aga_diag_set(AGA_D_EXTER_STORM_ICR, icr);
     if (aga_diag_ctr[AGA_D_EXTER_STORMS] <= 4)
@@ -626,7 +685,7 @@ static void hook_ext_write_body(void *u, uint32_t reg, uint16_t v)
 #else
 
     (void)u;
-    if (aga_audio_reg_write(reg, v)) return;     /* AUDx*, DMACON audio bits -> real Paula */
+    if (aga_audio_reg_write(reg, v)) return;     /* AUDx*, DMACON audio bitovi -> prava Paula */
     switch (reg) {
     case INTREQ:
         /* clearing PORTS/EXTER in the virtual INTREQ: also drop the real line */
@@ -677,14 +736,14 @@ static void hook_ext_write_body(void *u, uint32_t reg, uint16_t v)
         break;
     }
     case ADKCON:
-        /* The UART and disk bits are real; the audio ones (0-7, which
-           channel modulates which) are the emulated Paula's. Forwarded as
-           well, a game that set one made the REAL channels - my sound's
-           output rings - modulate each other until the next restart
-           (found by RGB2RTG). */
+        /* UART i disk bitovi su pravi; audio (0-7, koji kanal
+           modulira koji) su emulirane Paule. Forwardani također, igra koja
+           je postavila jedan pustila je PRAVE kanale - output ringove mog
+           zvuka - da moduliraju jedan drugog do sljedećeg restarta
+           (našao RGB2RTG). */
         if (v & 0x7F00) ps_write_16(0xDFF09E, v & 0xFF00);
         break;
-    case DSKPTH:                       /* a real drive's transfer: see dskb_len_write */
+    case DSKPTH:                       /* transfer prave drive: vidi dskb_len_write */
         dskb_pt = ((uint32_t)(v & 0x1F) << 16) | (dskb_pt & 0xFFFF);
         ps_write_16(0xDFF020, v);
         break;
@@ -725,17 +784,16 @@ static void hook_ipl(void *u, int ipl)
     emu68_set_aga_ipl(ipl);
 }
 
-/* Beam interpolation base, published by the chipset thread after every step so
-   the trap path can work out where the beam is NOW without taking the lock. */
-static volatile uint64_t beam_tick;          /* cntvct() at the last step */
-static volatile uint64_t ticks_per_cck;      /* whole ticks; 0 until the loop runs */
+/* Baza beam interpolacije, koju chipset thread objavi nakon svakog stepa da
+   trap put može izračunati gdje je beam SADA bez uzimanja locka. */
+static volatile uint64_t beam_tick;          /* cntvct() na zadnjem stepu */
+static volatile uint64_t ticks_per_cck;      /* cijeli ticks; 0 dok loop ne krene */
 
-static volatile uint32_t last_trap_pc;   /* 68k PC at the last register write */
-/* The PC is stable and the write count climbs steadily, so the 68k is looping
-   over the chipset - but BPLCON0 and DMACON never change, so it is hitting
-   something else. These say which. */
-static volatile uint32_t last_wr;        /* reg << 16 | value, last write */
-static volatile uint32_t last_rd;        /* reg << 16 | value, last read  */
+static volatile uint32_t last_trap_pc;   /* 68k PC na zadnjem register writeu */
+/* Broj writeova raste postojano, pa 68k loopa preko chipseta - ali BPLCON0
+   i DMACON se nikad ne mijenjaju, pa udara u nešto drugo. Ovi kažu u što. */
+static volatile uint32_t last_wr;        /* reg << 16 | value, zadnji write */
+static volatile uint32_t last_rd;        /* reg << 16 | value, zadnji read  */
 
 /* FRF v0.10.15 NEXT32 — diagnostics only.
    v0.10.15 proved the first 16 accesses are WHDLoad's normal state save:
@@ -782,7 +840,7 @@ static void hook_frame(void *u)
 {
     (void)u;
     frames_done++;
-    frame_pending = 1;          /* presented outside the lock by the chipset loop */
+    frame_pending = 1;          /* prezentira chipset loop izvan locka */
 }
 
 /* each drawn line, from the core's cache: the RGB port keeps its own copy
@@ -793,11 +851,11 @@ static void hook_line(void *u, int y, int page, const uint32_t *line)
     aga_rgbout_line(y, page, line);
 }
 
-/* The chipset for a snapshot, in agahost's regs.bin/colors.bin terms: the last
-   value written to each register - which for BPLxPT and COPxLC is the frame's
-   start value, the program writes them once a frame - except the set/clear
-   registers, whose state is what their R registers read. Called by the
-   housekeeper at a soft reset, without the lock: a torn value costs a pixel. */
+/* Chipset za snapshot, u agahostovim regs.bin/colors.bin terminima: zadnja
+   vrijednost upisana u svaki registar - što je za BPLxPT i COPxLC frameova
+   početna vrijednost, program ih piše jednom po frameu - osim set/clear
+   registara, čije je stanje ono što njihovi R registri čitaju. Zove
+   housekeeper pri soft resetu, bez locka: poderana vrijednost košta pixel. */
 void aga_glue_snapshot_regs(uint16_t *regs, uint32_t *colors)
 {
     if (!aga) return;
@@ -815,7 +873,7 @@ static int aga_start_ntsc;   /* what this kernel was BUILT for; regs[] does not 
 int aga_glue_init(uint8_t *chipram_va, uint32_t size, uint8_t *fb_va, uintptr_t fb_phys, int ntsc, int enable)
 {
     aga_start_ntsc = ntsc;
-    aga_config_t cfg = { .ntsc = ntsc, .blit_immediate = 0,   /* a blit must not finish inside its own BLTSIZE write */ .collisions = 0, .render = 1 };
+    aga_config_t cfg = { .ntsc = ntsc, .blit_immediate = 0,   /* blit se ne smije završiti unutar svog BLTSIZE writea */ .collisions = 0, .render = 1 };
     chip_va = chipram_va;
     chip_size = size;
     aga_diag_set_chip(chip_va, size);
@@ -844,13 +902,13 @@ int aga_glue_init(uint8_t *chipram_va, uint32_t size, uint8_t *fb_va, uintptr_t 
     aga_set_hooks(aga, &h);
     aga_lock_v = 0;
     aga_audio_init(chip_va, size);
-    /* framebuffer is allocated and mapped here on core 0, before the 68k starts */
+    /* framebuffer se alocira i mapa ovdje na coreu 0, prije nego 68k krene */
     if (aga_video_init_at(fb_va, fb_phys) != 0) {
-        /* No display on this board (a Pi 3): then do not render either. The
-           renderer streams a 900 KB frame through the shared L2 fifty times a
-           second for nobody, and on the A53 cluster that is the working set
-           the game's own chip RAM traffic evicts: the PMU counted 108k L2
-           refills in one frame against 2k in a quiet one (2026-09-14). */
+        /* Nema displaya na ovoj ploči (Pi 3): onda ni ne renderiraj. Renderer
+           streama 900 KB frame kroz shared L2 pedeset puta u sekundi nikome, a
+           na A53 clusteru to je working set koji igrin vlastiti chip RAM
+           promet evicta: PMU je izbrojao 108k L2 refillova u jednom frameu
+           naspram 2k u mirnom (2026-09-14). */
         aga_set_render(aga, 0);
         kprintf("[AGA] continuing without video output, renderer off\n");
     } else {
@@ -864,7 +922,7 @@ int aga_glue_init(uint8_t *chipram_va, uint32_t size, uint8_t *fb_va, uintptr_t 
                                   (uint32_t *)(fb_va + 2 * frb));
         }
     }
-    /* the mix on HDMI too, playing silence from now on (aga_hdmi.c) */
+    /* mix i na HDMI-u, od sad svira tišinu (aga_hdmi.c) */
     aga_hdmi_boot(fb_va, fb_phys);
 #ifdef FRF_VIRTUAL_AGA
     /* Standalone machine has no agaboot Sound window to send $5821.
@@ -907,24 +965,24 @@ int aga_glue_init(uint8_t *chipram_va, uint32_t size, uint8_t *fb_va, uintptr_t 
     return 0;
 }
 
-/* ---- diagnostics: let aga_diag.c see the virtual chipset ------------------
-   Read without the lock. These are single words the chipset thread writes; a
-   torn value would at worst mislead one dump, and taking the mutex from the
-   diag read path would serialise against the chipset for no benefit. */
+/* ---- diagnostics: neka aga_diag.c vidi virtualni chipset ------------------
+   Čita se bez locka. To su pojedinačne riječi koje chipset thread piše;
+   poderana vrijednost bi u najgorem slučaju zavarala jedan dump, a uzimanje
+   mutexa iz diag read puta serijaliziralo bi protiv chipseta bez koristi. */
 uint16_t aga_glue_peek_reg(uint32_t reg)   { return aga ? aga_peek_reg(aga, reg) : 0; }
 uint32_t aga_glue_peek_bplpt(int plane)    { return aga ? aga_peek_bplpt(aga, plane) : 0; }
 uint16_t aga_glue_peek_state(int which)
 {
     if (!aga) return 0;
-    /* the accumulated state, not the last value written - see the note in
-       aga_sandbox_leave about why those differ for the set/clear registers */
+    /* akumulirano stanje, ne zadnja upisana vrijednost - vidi bilješku u
+       aga_sandbox_leave o tome zašto se to razlikuje za set/clear registre */
     return aga_custom_rget(aga, which == 0 ? DMACONR : (which == 1 ? INTENAR : INTREQR));
 }
 
-/* For the RGB port (core 1), read the same way: the list the copper starts
-   every frame from, as COP1LC was last written - 0 while copper DMA is off,
-   when no list runs at all - and whether WHDLoad has taken the machine. A
-   COP1LC caught between its two word writes is one frame's wrong answer. */
+/* Za RGB port (core 1), čita se na isti način: lista od koje copper počinje
+   svaki frame, kako je COP1LC zadnje pisan - 0 dok je copper DMA off, kad
+   nikakva lista ne radi - i je li WHDLoad preuzeo mašinu. COP1LC uhvaćen
+   između svoja dva word writea je jedan frame pogrešnog odgovora. */
 uint32_t aga_glue_copper_list(void)
 {
     if (!aga || (aga_peek_dmacon(aga) & (DMAF_DMAEN | DMAF_COPEN)) != (DMAF_DMAEN | DMAF_COPEN)) return 0;
@@ -953,8 +1011,8 @@ uint16_t aga_glue_chip_word(uint32_t addr)
 }
 
 /* ---- sandbox mode --------------------------------------------------------- */
-/* Registers replayed to the real (ECS) chips when leaving the sandbox: the
-   last values written to the virtual chipset (copper included). */
+/* Registri koji se replayaju pravim (ECS) chipovima pri leaveu sandboxa:
+   zadnje vrijednosti upisane u virtualni chipset (copper uključen). */
 static const uint16_t replay_regs[] = {
     0x100, 0x102, 0x104, 0x106,                 /* BPLCON0-3 */
     0x08E, 0x090, 0x1E4, 0x092, 0x094,          /* DIWSTRT/STOP, DIWHIGH, DDFSTRT/STOP */
@@ -1015,7 +1073,7 @@ static void chip_to_bus(uint32_t addr, uint32_t bytes)
     if (addr < end) ps_write_16(addr, ((unsigned)chip_va[addr] << 8) | chip_va[addr + 1]);
 }
 
-/* The real DSKBLK is up: the transfer is over. A read's track comes in. */
+/* Pravi DSKBLK je dignut: transfer je gotov. Readov track ulazi. */
 static int dskb_done(void)
 {
     if (!aga_dskb_pending) return 0;
@@ -1026,17 +1084,17 @@ static int dskb_done(void)
     return 1;
 }
 
-/* Under the chipset lock, from hook_ext_write_body. */
+/* Pod chipset lockom, iz hook_ext_write_body. */
 static void dskb_len_write(uint16_t v)
 {
     if (!(v & 0x8000)) {
-        /* DMA off. A program that polled DSKBYTR may switch it off before it
-           looks at the buffer: finish a transfer that is over first. */
+        /* DMA off. Program koji je pollao DSKBYTR može ga ugasiti prije nego
+           pogleda buffer: dovrši transfer koji je gotov prije toga. */
         if (aga_dskb_pending && dskb_done())
             aga_custom_wput(aga, INTREQ, 0x8000 | INTF_DSKBLK);
         aga_dskb_pending = 0;
     } else if (dskb_last_len & 0x8000) {
-        /* the second write with DMAEN: the real transfer starts with it */
+        /* drugi write s DMAEN: pravi transfer počinje s njim */
         uint32_t bytes = (uint32_t)(v & 0x3FFF) * 2;
         if (dskb_pt + bytes > chip_real) {
             if (!(dskb_said & 2)) {
@@ -1049,8 +1107,8 @@ static void dskb_len_write(uint16_t v)
         }
         dskb_write = (v & 0x4000) != 0;
         if (dskb_write) chip_to_bus(dskb_pt, bytes);
-        ps_write_16(0xDFF09C, INTF_DSKBLK);                       /* nothing stale */
-        ps_write_16(0xDFF096, 0x8000 | DMAF_DMAEN | DMAF_DSKEN);  /* off since entry */
+        ps_write_16(0xDFF09C, INTF_DSKBLK);                       /* ništa stale */
+        ps_write_16(0xDFF096, 0x8000 | DMAF_DMAEN | DMAF_DSKEN);  /* off od entryja */
         dskb_bytes = bytes;
         aga_dskb_pending = 1;
         if (!(dskb_said & 1)) {
@@ -1062,8 +1120,8 @@ static void dskb_len_write(uint16_t v)
     ps_write_16(0xDFF024, v);
 }
 
-/* The 68k trap path, outside the chipset lock: an INTREQR or DSKBYTR read
-   while a transfer runs. */
+/* 68k trap put, izvan chipset locka: INTREQR ili DSKBYTR read dok
+   transfer radi. */
 void aga_disk_bridge_poll(void)
 {
     if (!dskb_done()) return;
@@ -1072,30 +1130,28 @@ void aga_disk_bridge_poll(void)
     unlock();
 }
 
-/* Give the real chipset its DMA and interrupts back. Used only by the
-   aga.enter_stop bring-up path, so a partial entry leaves a working machine
-   instead of a deaf one. */
-/* defined below, used by the entry handshake above them */
+/* Vrati pravom chipsetu DMA i interrupte. Koristi samo aga.enter_stop
+   bring-up put, da djelomični entry ostavi radnu mašinu umjesto gluhe. */
+/* definirano ispod, koristi entry handshake iznad njih */
 static inline uint64_t cntvct(void);
 static inline uint64_t cntfrq(void);
 
-/* The real ADKCON's audio bits (0-7, which channel modulates which) as the
-   OS had them at entry. The leave after a WHDLoad game gives the real
-   Paula these back, not the game's: replayed from the emulated chipset, a
-   modulation bit a game left set went to the real chip and was seeded into
-   the next game's chipset at its entry, where it now mutes channels (found
-   by review, 2026-10-05). */
+/* Pravi ADKCON audio bitovi (0-7, koji kanal modulira koji) kako ih je OS
+   imao pri entryju. Leave nakon WHDLoad igre vraća pravoj Pauli ove, ne
+   igrine: replayan iz emuliranog chipseta, modulacijski bit koji je igra
+   ostavila set otišao je na pravi chip i bio zaseedan u chipset sljedeće igre
+   pri njezinu entryju, gdje sad muta kanale (našao review, 2026-10-05). */
 static uint16_t entry_adk_audio;
 
-/* The ECS/AGA choice as the chipset loop last saw it, for its "AGA after
-   all" log line. Set at every entry to the mode this session was given -
-   the loop parks before the leave puts the core back to AGA, so a value
-   kept from the last session logged a flip at the next AGA session's first
-   frame, and missed one that came before this session's first frame (found
-   by review). */
+/* ECS/AGA izbor kako ga je chipset loop zadnje vidio, za svoju "AGA after
+   all" log liniju. Postavlja se pri svakom entryju na mode koji je ova
+   sesija dobila - loop se parkira prije nego leave vrati core na AGA, pa je
+   vrijednost zadržana iz prošle sesije logala flip na prvom frameu sljedeće
+   AGA sesije, i promašila onaj koji je došao prije ovosezonskog prvog framea
+   (našao review). */
 static int ecs_seen = -1;
-static int ecs_entry;              /* the chipset this session was entered with: 1 ECS Denise */
-static unsigned ecs_signs_logged;  /* aga_ecs_signs bits already in the log this session */
+static int ecs_entry;              /* chipset s kojim je ova sesija ušla: 1 ECS Denise */
+static unsigned ecs_signs_logged;  /* aga_ecs_signs bitovi koji su već u logu ove sesije */
 
 static void restore_real(uint16_t dmacon, uint16_t intena, uint16_t adkcon)
 {
@@ -1105,16 +1161,15 @@ static void restore_real(uint16_t dmacon, uint16_t intena, uint16_t adkcon)
     aga_diag_log("[AGA] enter: stopped early, real chipset restored");
 }
 
-/* How much real chip RAM the machine has, probed on the bus with the 68k
-   stalled and the real chipset quiet. The virtual chip RAM is always 2 MB -
-   the game never runs in the real one - so this only decides how much is
-   copied in at entry and back out at leave. Copying 2 MB out of a 1 MB
-   machine reads the Agnus mirror, and copying it back would put the upper
-   half over the OS. Two things distinguish real RAM from the alternatives:
-   a pattern written at the top must survive a read of another address
-   (an open bus hands back whatever was on it last), and must not appear at
-   the same offset half a megabyte down (a mirror). Everything written is
-   put back. */
+/* Koliko pravog chip RAMa mašina ima, probano na busu sa zaustavljenim 68k
+   i tihim pravim chipsetom. Virtualni chip RAM je uvijek 2 MB - igra nikad
+   ne radi u pravom - pa ovo samo odlučuje koliko se kopira unutra pri entryju
+   i van pri leaveu. Kopiranje 2 MB s 1 MB mašine čita Agnus mirror, a
+   kopiranje natrag stavilo bi gornju polovicu preko OS-a. Dvije stvari
+   razlikuju pravi RAM od alternativa: pattern upisan na vrhu mora preživjeti
+   read druge adrese (open bus vraća što je zadnje bilo na njemu), i ne smije
+   se pojaviti na istom offsetu pola megabajta niže (mirror). Sve upisano se
+   vraća. */
 static uint32_t probe_real_chip(void)
 {
     static const uint32_t sizes[] = { 2u << 20, 1u << 20 };
@@ -1123,7 +1178,7 @@ static uint32_t probe_real_chip(void)
         uint32_t save_hi = ps_read_32(hi), save_lo = ps_read_32(lo);
         uint32_t pat = save_hi ^ 0x5A5AA5A5u;
         ps_write_32(hi, pat);
-        (void)ps_read_32(lo);                    /* disturb the bus before reading back */
+        (void)ps_read_32(lo);                    /* uzburkaj bus prije nego čitaš natrag */
         int held = ps_read_32(hi) == pat;
         int mirror = ps_read_32(lo) == pat;
         ps_write_32(hi, save_hi);
@@ -1152,13 +1207,15 @@ int aga_sandbox_enter(void)
        line of my chipset logic even gets to run. */
     if (aga_enter_stop && aga_enter_stop < 2) return 0;
     kprintf("[AGA] sandbox: entering\n");
-    /* HDMI's sound back at 48 kHz, should an AHI program have left it at
-       another rate: a game's Paula needs no more, and on a Pi 3 a higher
-       rate costs core 3 time in every frame */
+    /* HDMI-jev zvuk natrag na 48 kHz, ako ga je AHI program ostavio na
+       drugoj rati: igrina Paula ne treba više, a na Pi 3 viša frekvencija košta
+       core 3 vrijeme u svakom frameu */
     aga_hdmi_rate_default();
-    /* 1. readable register state of the real chips, BEFORE anything is changed */
+    aga_hdmi_sandbox(1);       /* Workbenchov HDMI zvuk drugog drivera: moj ga preuzima za igru */
+    /* 1. čitljivo register stanje pravih chipova, PRIJE nego se bilo što
+       promijeni */
     uint16_t dmacon = ps_read_16(0xDFF002), adkcon = ps_read_16(0xDFF010);
-    entry_adk_audio = adkcon & 0x00FF;     /* the OS's own, put back at the leave */
+    entry_adk_audio = adkcon & 0x00FF;     /* OS-ov vlastiti, vraća se pri leaveu */
     uint16_t intena = ps_read_16(0xDFF01C), intreq = ps_read_16(0xDFF01E);
     aga_diag_log("[AGA] enter 2: read real registers");
     if (aga_enter_stop && aga_enter_stop <= 2) return 0;
@@ -1215,60 +1272,59 @@ int aga_sandbox_enter(void)
     kprintf("[AGA] sandbox: %d KB real chip RAM, %d KB virtual\n", chip_real >> 10, chip_size >> 10);
     for (uint32_t a = 0; a < chip_real; a += 4)
         wr_be32(chip_va + a, ps_read_32(a));
-    for (uint32_t a = chip_real; a < chip_size; a += 4)   /* the part the machine lacks: lent to the OS by agaboot, empty */
+    for (uint32_t a = chip_real; a < chip_size; a += 4)   /* dio koji mašini nedostaje: agaboot ga posuđuje OS-u, prazan */
         wr_be32(chip_va + a, 0);
     aga_diag_log("[AGA] enter 4: 2MB chip RAM copied");
     if (aga_enter_stop && aga_enter_stop <= 4) { restore_real(dmacon, intena, adkcon); return 0; }
-    /* 4. seed the virtual chipset with that state.
+    /* 4. zaseedaj virtualni chipset tim stanjem.
      *
-     * DMACON is copied MINUS the channels whose source registers cannot be
-     * recovered. COP1LC, the bitplane pointers, the sprite pointers, BPLCON0
-     * and DIWSTRT are all WRITE-ONLY on the real chipset: step 1 can read
-     * DMACON, ADKCON, INTENA and INTREQ and nothing else. So a faithful copy of
-     * DMACON says "copper, bitplane and sprite DMA are all running" while every
-     * pointer those need is zero.
+     * DMACON se kopira MINUS kanala čiji se izvorni registri ne mogu
+     * povratiti. COP1LC, bitplane pointeri, sprite pointeri, BPLCON0 i
+     * DIWSTRT su svi WRITE-ONLY na pravom chipsetu: step 1 može pročitati
+     * DMACON, ADKCON, INTENA i INTREQ i ništa drugo. Pa vjerna kopija DMACONa
+     * kaže "copper, bitplane i sprite DMA sve rade" dok je svaki pointer koji
+     * im treba nula.
      *
-     * The copper is the one that does damage. Enabled with COP1LC = 0, it
-     * fetches chip RAM address 0 - the 68k exception vectors - and executes it
-     * as a copper list: arbitrary MOVEs to arbitrary registers, fifty times a
-     * second. It flattens BPLCON0 and the bitplane pointers as fast as a game
-     * can set them, which is why EVERY WHDLoad game showed a grey screen under
-     * the sandbox, ECS and AGA alike, while `agastat REGS` reported BPLCON0
-     * $0000 and all eight BPLxPT $00000000.
+     * Copper je onaj koji radi štetu. Enabled s COP1LC = 0, fetcha chip RAM
+     * adresu 0 - 68k exception vektore - i izvršava ih kao copper listu:
+     * proizvoljni MOVEOVI u proizvoljne registre, pedeset puta u sekundi.
+     * Spljošti BPLCON0 i bitplane pointere brzinom kojom ih igra može
+     * postaviti, zato je SVAKA WHDLoad igra pokazivala sivi ekran pod
+     * sandboxom, ECS i AGA jednako, dok je `agastat REGS` prijavljivao BPLCON0
+     * $0000 i svih osam BPLxPT $00000000.
      *
-     * Nothing is lost by starting them off. AmigaOS is on the RTG screen here
-     * and is not using the native display, and a WHDLoad game programs its own
-     * copper list, bitplane pointers and DMACON before it draws anything.
+     * Ništa se ne gubi ako ih ne pokrenem. AmigaOS je ovdje na RTG ekranu i
+     * ne koristi native display, a WHDLoad igra programira svoju copper listu,
+     * bitplane pointere i DMACON prije nego išta nacrta.
      */
 #define DMAF_UNRECOVERABLE (DMAF_AUDEN | DMAF_SPREN | DMAF_COPEN | DMAF_BPLEN)
     lock();
     aga_reset(aga);
-    ecs_seen = aga_get_ecs(aga);   /* this session's chipset, for the AGA-after-all log */
+    ecs_seen = aga_get_ecs(aga);   /* chipset ove sesije, za AGA-after-all log */
     ecs_entry = ecs_seen;
     ecs_signs_logged = 0;
     aga_ecs_forget_pending = 0;
     fwd_forget();
     aga_custom_wput(aga, 0x09E, 0x8000 | (adkcon & 0x7FFF));
     aga_custom_wput(aga, 0x096, 0x8000 | (dmacon & 0x03FF & ~DMAF_UNRECOVERABLE));
-    /* INTREQ: seed NOTHING pending.
+    /* INTREQ: ne seedaj NIŠTA pending.
      *
-     * The same reasoning as DMAF_UNRECOVERABLE above. The real INTREQ's bits
-     * belong to the OS's drivers - audio.device, the serial and disk handlers -
-     * which are about to be replaced by a game that knows nothing about them.
-     * Copying them in leaves flags set that nothing will ever clear: measured
-     * on hardware, INTREQ read $0780 (AUD0-3 pending) for the entire life of a
-     * sandboxed game, because the game clears only VERTB. WinUAE at the same
-     * point in the same game reads $0040. A game that polls INTREQR - Banshee
-     * reads it five times a frame - is being shown bits that could not be set
-     * on a real machine. */
-    aga_custom_wput(aga, 0x09C, 0x7FFF);            /* clear every pending bit */
+     * Isto razmišljanje kao DMAF_UNRECOVERABLE gore. Bitovi pravog INTREQa
+     * pripadaju OS-ovim driverima - audio.device, serial i disk handlerima -
+     * koje će upravo zamijeniti igra koja o njima ne zna ništa. Kopiranje
+     * ostavlja flagove postavljene koje ništa nikad neće clearati: mjereno na
+     * hardveru, INTREQ je čitao $0780 (AUD0-3 pending) cijeli život sandboxane
+     * igre, jer igra clearne samo VERTB. WinUAE na istoj točki iste igre čita
+     * $0040. Igra koja polla INTREQR - Banshee ga čita pet puta po frameu -
+     * dobiva bitove koji se na pravoj mašini ne bi mogli postaviti. */
+    aga_custom_wput(aga, 0x09C, 0x7FFF);            /* clearaj svaki pending bit */
     aga_custom_wput(aga, 0x09A, 0x8000 | (intena & 0x7FFF));
     unlock();
     aga_diag_log("[AGA] enter 5: virtual chipset seeded");
     if (aga_enter_stop && aga_enter_stop <= 5) { restore_real(dmacon, intena, adkcon); return 0; }
-    /* 5. 68k address 0 now reads the virtual chip RAM. Default: NO MMU - the
-          abort handler serves it (aga_chip_read/write). aga.mmu keeps the old
-          page-table remap for A/B. */
+    /* 5. 68k adresa 0 sad čita virtualni chip RAM. Default: BEZ MMU - abort
+          handler ga poslužuje (aga_chip_read/write). aga.mmu drži stari
+          page-table remap za A/B. */
     if (aga_use_mmu) {
         mmu_map((uintptr_t)chip_va, 0x000000, chip_size, MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_ATTR_CACHED, 0);
         __asm__ volatile("dsb ish; isb" ::: "memory");
@@ -1281,36 +1337,35 @@ int aga_sandbox_enter(void)
         aga_diag_log("[AGA] enter 6: chip RAM redirected in the abort handler (no MMU)");
     }
     if (aga_enter_stop && aga_enter_stop <= 6) {
-        /* Undo the map before handing the chipset back. Leaving it in place
-           would point the 68k at virtual chip RAM while Agnus still DMAs from
-           the real thing - the machine would break for a reason that has
-           nothing to do with whether mmu_map itself is safe. */
+        /* Poništi map prije nego vratiš chipset. Ostaviti ga na mjestu pokazalo
+           bi 68k na virtualni chip RAM dok Agnus još DMA-a s pravog - mašina
+           bi se pokvarila iz razloga koji nema veze s tim je li mmu_map sam
+           po sebi siguran. */
         if (aga_use_mmu) { mmu_unmap(0x000000, chip_size); __asm__ volatile("dsb ish; isb" ::: "memory"); }
         else             { aga_chip_redirect = 0; __asm__ volatile("dmb ish" ::: "memory"); }
         aga_diag_log("[AGA] enter 6b: chip RAM redirect undone again");
         restore_real(dmacon, intena, adkcon);
         return 0;
     }
-    /* 6. go */
+    /* 6. kreni */
     if (aga_code_direct) {
         aga_code_chip_size = chip_size;
-        aga_code_chip = chip_va;   /* code reads skip the software cache from here (cache.c) */
+        aga_code_chip = chip_va;   /* code readovi odavde preskaču softverski cache (cache.c) */
     }
     aga_diag_set(AGA_D_CODE_DIRECT, (uint32_t)aga_code_direct);
     aga_sandbox_active = 1;
     aga_enabled = 1;
-    __asm__ volatile("sev");   /* wake core 3 */
+    __asm__ volatile("sev");   /* probudi core 3 */
 
-    /* Do not commit until core 3 confirms it is running. From here the OS
-       has no interrupts of its own - step 3 took them away - so if the
-       chipset loop never starts, nothing delivers VERTB and the machine
-       freezes with no way to report why. That is what made this fault so
-       expensive to chase: it destroys the evidence and needs a power cut,
-       which wipes the log.
+    /* Ne commitaj dok core 3 ne potvrdi da radi. Odavde OS nema vlastitih
+       interrupta - step 3 ih je oduzeo - pa ako se chipset loop nikad ne
+       pokrene, ništa ne dostavlja VERTB i mašina se smrzne bez načina da
+       prijavi zašto. Zato je ovu grešku bilo tako skupo loviti: uništi
+       dokaze i traži power cut, koji briše log.
 
-       core_idle goes to 0 only when core 3 leaves its WFE park, so poll it
-       briefly. If it never clears, the SEV/WFE handshake failed: roll
-       everything back and return an error the caller can actually read. */
+       core_idle ide na 0 samo kad core 3 napusti svoj WFE park, pa ga kratko
+       pollaj. Ako se nikad ne clearne, SEV/WFE handshake je pao: rollaj sve
+       natrag i vrati error koji caller stvarno može pročitati. */
     {
         uint64_t f = cntfrq(), deadline = cntvct() + f / 5;   /* 200 ms */
         while (core_idle && (int64_t)(cntvct() - deadline) < 0)
@@ -1340,8 +1395,8 @@ int aga_sandbox_enter(void)
     else
         aga_diag_log("[AGA] PROGRAM RUN: RGB/HAM6 armed; waiting for child Copper");
     aga_diag_inc(AGA_D_SANDBOX_IN);
-    aga_diag_beam_reset();   /* the raster values from here on are the game's */
-    {   /* the SoC at the start of the game, to compare with the leave sample */
+    aga_diag_beam_reset();   /* raster vrijednosti odavde su igrine */
+    {   /* SoC na startu igre, za usporedbu s leave sampleom */
         uint32_t tmc = 0, thr = 0;
         extern int aga_soc_status(uint32_t *temp_mc, uint32_t *throttled);
         if (aga_soc_status(&tmc, &thr) == 0) {
@@ -1371,13 +1426,13 @@ static void sandbox_restore(void)
 {
     emu68_set_aga_ipl(0);
     aga_audio_stop();
-    aga_rgbout_stop();         /* before step 3 copies chip RAM back over the HAM6 copper lists */
+    aga_rgbout_stop();         /* prije nego step 3 kopira chip RAM natrag preko HAM6 copper listi */
     if (aga_leave_stop == 1) { aga_diag_log("[AGA] leave 1: chipset parked"); return; }
-    /* code reads go through the software cache again, before chip RAM stops
-       being chip_va; it holds no chip line from the sandbox, none went in */
+    /* code readovi opet idu kroz softverski cache, prije nego chip RAM prestane
+       biti chip_va; nema nijednu chip liniju iz sandboxa, nijedna nije ušla */
     aga_code_chip = NULL;
     __asm__ volatile("dmb ish" ::: "memory");
-    /* 2. 68k address 0 is the real chip RAM again.
+    /* 2. 68k adresa 0 je opet pravi chip RAM.
 
        The barrier is not optional. Every other mmu_map/mmu_unmap in this file
        is followed by `dsb ish; isb` - entry's map, and both of entry's rollback
@@ -1388,19 +1443,19 @@ static void sandbox_restore(void)
         mmu_unmap(0x000000, chip_size);
         __asm__ volatile("dsb ish; isb" ::: "memory");
     } else {
-        /* Drop both software caches - they hold virtual-era lines - then stop
-           redirecting. No flush from in here (nested-abort hazard, see entry);
-           agaboot CacheClearU()s before sending MAGIC_SANDBOX_OFF, so dirty
-           lines already landed in chip_va through the redirect. */
+        /* Spusti oba softverska cachea - drže virtual-era linije - pa prestani
+           redirectati. Nema flusha odavde (nested-abort hazard, vidi entry);
+           agaboot CacheClearU()a prije nego pošalje MAGIC_SANDBOX_OFF, pa su
+           dirty linije već sletjele u chip_va kroz redirect. */
         cache_invalidate_all(DCACHE);
         cache_invalidate_all(ICACHE);
         aga_chip_redirect = 0;
         __asm__ volatile("dmb ish" ::: "memory");
     }
     if (aga_leave_stop == 2) { aga_diag_log("[AGA] leave 2: chip RAM redirect undone"); return; }
-    /* A real floppy transfer still running would go on writing the real chip
-       RAM after the copy below: stop it. trackdisk, on the real chipset from
-       here, times out and tries again. */
+    /* Pravi floppy transfer koji još radi nastavio bi pisati pravi chip RAM
+       nakon copyja ispod: zaustavi ga. trackdisk, odavde na pravom chipsetu,
+       timeouta i pokuša ponovno. */
     if (aga_dskb_pending) {
         ps_write_16(0xDFF024, 0x4000);
         ps_write_16(0xDFF09C, INTF_DSKBLK);
@@ -1410,8 +1465,8 @@ static void sandbox_restore(void)
     for (uint32_t a = 0; a < chip_real; a += 4)          /* only what the machine really has */
         ps_write_32(a, rd_be32(chip_va + a));
     if (aga_leave_stop == 3) { aga_diag_log("[AGA] leave 3: chip RAM copied back"); return; }
-    /* 4. replay the register state to the real chips */
-    ps_write_16(0xDFF096, 0x03FF);                       /* all DMA off while programming */
+    /* 4. replayaj register stanje pravim chipovima */
+    ps_write_16(0xDFF096, 0x03FF);                       /* sav DMA off dok se programira */
     ps_write_16(0xDFF09A, 0x7FFF);
     for (unsigned i = 0; i < sizeof replay_regs / sizeof replay_regs[0]; i++)
         ps_write_16(0xDFF000 + replay_regs[i], aga_peek_reg(aga, replay_regs[i]));
@@ -1420,35 +1475,35 @@ static void sandbox_restore(void)
         ps_write_16(0xDFF180 + 2 * c, ((rgb >> 12) & 0xF00) | ((rgb >> 8) & 0x0F0) | ((rgb >> 4) & 0x00F));
     }
     if (aga_leave_stop == 4) { aga_diag_log("[AGA] leave 4: registers replayed"); return; }
-    ps_write_16(0xDFF088, 0);                            /* COPJMP1: copper restarts from COP1LC */
-    /* ADKCON, INTENA and DMACON are set/clear registers: bit 15 says whether the
-       other bits are set or cleared, so the STATE is an accumulation, not the
-       last value written.
+    ps_write_16(0xDFF088, 0);                            /* COPJMP1: copper restartuje od COP1LC */
+    /* ADKCON, INTENA i DMACON su set/clear registri: bit 15 kaže jesu li
+       ostali bitovi set ili clear, pa je STATE akumulacija, ne zadnja upisana
+       vrijednost.
 
-       aga_peek_reg returns the last value WRITTEN - chipset.h says so plainly.
-       Using it here meant that if the OS's last INTENA write had been a clear of
-       one source (bit 15 low, say $0010), leave first cleared everything with
-       $7FFF and then wrote $8010, re-enabling exactly one interrupt and leaving
-       every other one off. The machine came back with no timer and no CIA
-       interrupts: network dead, tasks that wait never woken, a pulled-down menu
-       stuck on screen - while the Pi carried on drawing the RTG desktop, so it
-       looked alive. Same for DMACON and ADKCON.
+       aga_peek_reg vraća zadnju WRITTEN vrijednost - chipset.h to jasno kaže.
+       Korištenje ovdje značilo je da ako je OS-ov zadnji INTENA write bio
+       clear jednog izvora (bit 15 nizak, recimo $0010), leave je prvo clearao
+       sve s $7FFF i onda upisao $8010, re-enableajući točno jedan interrupt
+       i ostavljajući svaki drugi off. Mašina se vratila bez timera i bez CIA
+       interrupta: mreža mrtva, taskovi koji čekaju nikad probuđeni, spušteni
+       menu zaglavljen na ekranu - dok je Pi nastavio crtati RTG desktop, pa
+       je izgledalo živo. Isto za DMACON i ADKCON.
 
-       The accumulated state is what the R registers return, so read those. */
+       Akumulirano stanje je ono što R registri vraćaju, pa čitaj njih. */
     uint16_t adk_now  = aga_custom_rget(aga, ADKCONR);
     uint16_t inte_now = aga_custom_rget(aga, INTENAR);
     uint16_t dmac_now = aga_custom_rget(aga, DMACONR);
-    /* The audio bits: the OS's. After a WHDLoad game, the ones read at
-       entry - WHDLoad itself puts the OS's custom registers back when a game
-       quits. Without one (System wide, a manual SANDBOX ON) the OS ran in
-       here and the emulated ADKCON is its own, so a program that set or
-       cleared a modulation bit meanwhile keeps it, as on the real machine
-       (found by review). */
+    /* Audio bitovi: OS-ovi. Nakon WHDLoad igre, oni pročitani pri entryju -
+       WHDLoad sam vraća OS-ove custom registre kad igra izađe. Bez igre
+       (System wide, ručni SANDBOX ON) OS je radio ovdje i emulirani ADKCON
+       je njegov vlastiti, pa program koji je u međuvremenu postavio ili
+       clearao modulacijski bit zadrži ga, kao na pravoj mašini (našao
+       review). */
     uint16_t adk_audio = aga_game_mode ? entry_adk_audio : (uint16_t)(adk_now & 0x00FF);
     ps_write_16(0xDFF09E, 0x7FFF);
     ps_write_16(0xDFF09E, 0x8000 | (adk_now & 0x7F00) | adk_audio);
     ps_write_16(0xDFF09A, 0x8000 | (inte_now & 0x7FFF));
-    ps_write_16(0xDFF096, 0x8000 | (dmac_now & 0x07FF));   /* incl. DMAEN and BLTPRI */
+    ps_write_16(0xDFF096, 0x8000 | (dmac_now & 0x07FF));   /* uključujući DMAEN i BLTPRI */
     aga_sandbox_active = 0;
     aga_game_mode = 0;
     aga_program_mode = 0;
@@ -1462,7 +1517,7 @@ static void sandbox_restore(void)
     aga_diag_wave_freeze(1);   /* keep the game's last fifteen seconds of audio */
     aga_diag_env_freeze(1);
 
-    /* Hand the NEXT game a clean chipset, not this one's leftovers.
+    /* Daj SLJEDEĆOJ igri čist chipset, ne ostatke ove.
      *
      * The virtual chipset is created once and lives for as long as the Pi is
      * powered, so without this everything a quitting game leaves behind is
@@ -1474,27 +1529,27 @@ static void sandbox_restore(void)
      * that reads back a register it has not set yet gets an answer from the
      * previous game.
      *
-     * Chip RAM itself is re-copied from the real machine on the next entry, so
-     * only the register state needs clearing. aga_reset() zeroes the lot and
-     * recomputes the IPL; emu68_set_aga_ipl(0) after it makes sure the virtual
-     * Paula is not still asserting an interrupt level it can no longer justify,
-     * since aga_update_ipl only calls the hook when the level CHANGES and the
-     * reset makes it 0 by memset without ever passing through the hook. */
+     * Sam chip RAM se ponovno kopira s prave mašine pri sljedećem entryju, pa
+     * samo register state treba clearati. aga_reset() zeroira sve i
+     * preračuna IPL; emu68_set_aga_ipl(0) nakon toga osigura da virtualna
+     * Paula ne assertira još interrupt level koji više ne može opravdati, jer
+     * aga_update_ipl zove hook samo kad se level MIJENJA, a reset ga postavi
+     * na 0 memsetom bez da ikad prođe kroz hook. */
     lock();
-    /* the standard first: aga_reset takes the line count and VPOSR's chip ID
-       from it, so set after the reset the desktop kept an NTSC game's */
-    aga_set_ntsc(aga, aga_start_ntsc);   /* the desktop is the machine's own */
+    /* standard prvo: aga_reset uzima broj linija i VPOSR-ov chip ID iz njega,
+       pa postavljen nakon reseta desktop bi zadržao NTSC igrin */
+    aga_set_ntsc(aga, aga_start_ntsc);   /* desktop je mašinin vlastiti */
     aga_reset(aga);
     fwd_forget();
-    aga_set_ecs(aga, 0);     /* next game chooses again; the desktop is AGA */
+    aga_set_ecs(aga, 0);     /* sljedeća igra bira opet; desktop je AGA */
     unlock();
     emu68_set_aga_ipl(0);
 
-    aga_video_hide();          /* or the last presented frame stays on top of the desktop */
-    {   /* the SoC's own account of the game: temperature now, and the sticky
-           "throttled / frequency capped / under-voltage since boot" bits.
-           One mailbox call, here, where the 68k is stalled in agaboot's trap
-           and the RTG driver cannot be mid-call. */
+    aga_video_hide();          /* ili zadnji prezentirani frame ostane iznad desktopa */
+    {   /* SoC-ov vlastiti izvještaj o igri: temperatura sad, i sticky
+           "throttled / frequency capped / under-voltage since boot" bitovi.
+           Jedan mailbox call, ovdje, gdje je 68k zaustavljen u agabootovom
+           trapu i RTG driver ne može biti usred calla. */
         uint32_t tmc = 0, thr = 0;
         extern int aga_soc_status(uint32_t *temp_mc, uint32_t *throttled);
         if (aga_soc_status(&tmc, &thr) == 0) {
@@ -1503,6 +1558,7 @@ static void sandbox_restore(void)
         }
     }
     aga_diag_inc(AGA_D_SANDBOX_OUT);
+    aga_hdmi_sandbox(0);       /* ...i vraća ga natrag */
     aga_diag_log("[AGA] sandbox left");
     kprintf("[AGA] sandbox: left (DMACON %04x INTENA %04x)\n", dmac_now, inte_now);
     return;
@@ -1516,7 +1572,7 @@ int aga_sandbox_leave(void)
 #else
     if (!aga || !aga_sandbox_active) return 0;
     kprintf("[AGA] sandbox: leaving\n");
-    /* 1. park the chipset loop and the virtual interrupt line.
+    /* 1. parkiraj chipset loop i virtualni interrupt line.
 
        This used to be `aga_enabled = 0; sev; while (!core_idle) yield;` - one
        SEV, then an unbounded spin. Entry deliberately does not do that: it
@@ -1535,7 +1591,7 @@ int aga_sandbox_leave(void)
         while (!core_idle && (int64_t)(cntvct() - deadline) < 0)
             __asm__ volatile("sev; yield");
         if (!core_idle) {
-            aga_enabled = 1;                 /* it never parked: put it back */
+            aga_enabled = 1;                 /* nikad se nije parkirao: vrati ga */
             aga_diag_log("[AGA] ABORT: core 3 would not park, still sandboxed");
             kprintf("[AGA] sandbox: core 3 would not park, leave abandoned\n");
             return 0;
@@ -1551,22 +1607,22 @@ static inline void chip7_wait(uint64_t far, int size);
 
 /* ---- chip RAM redirection, no MMU (core 0, abort handler) -----------------
  *
- * The old design remapped 68k address 0 onto the virtual chip RAM with the ARM
- * MMU, so that JIT-emitted loads and stores stopped faulting and hit Pi memory
- * directly. Emu68 was not written with its memory map being changed under it,
- * and every access that did NOT go through a plain load - or went through one
- * the map did not cover - was a question I could never quite close.
+ * Stari dizajn remapao je 68k adresu 0 na virtualni chip RAM pomoću ARM
+ * MMUa, da JIT-emitirani loadovi i storeovi prestanu faultati i direktno
+ * udaraju Pi memoriju. Emu68 nije pisan tako da mu se memory map mijenja pod
+ * njim, i svaki pristup koji NIJE išao kroz obični load - ili je išao kroz
+ * onaj koji map nije pokrivao - bio je pitanje koje nikad nisam uspio
+ * zatvoriti.
  *
- * This is the other way round: leave the page tables alone, let every chip RAM
- * access fault into the abort handler exactly as it does for the real bus, and
- * answer it from chip_va instead of the PiStorm. One door. Code and data
- * alike - the JIT's I-cache line fill is a plain 16-byte load from the 68k
- * address, so it comes through here too. And it is faster than the real thing:
- * an abort plus a memory copy beats a bus transaction.
+ * Ovo je obrnuto: ostavi page tableove na miru, pusti svaki chip RAM pristup
+ * da faulta u abort handler baš kao za pravi bus, i odgovori mu iz chip_va
+ * umjesto iz PiStorma. Jedna vrata. Code i data jednako - JIT-ov I-cache line
+ * fill je obični 16-byte load s 68k adrese, pa i on dolazi ovdje. I brže je
+ * od pravog: abort plus memory copy pobjeduje bus transakciju.
  *
- * Emu68 is built big-endian, so a plain load from chip_va already yields what
- * the 68k expects, and the 128-bit split (value = first 8 bytes, value2 = next
- * 8) matches SYSReadValFromAddr's own convention for unmapped space.
+ * Emu68 je buildan big-endian, pa obični load iz chip_va već daje ono što 68k
+ * očekuje, a 128-bitni split (value = prvih 8 bajtova, value2 = sljedećih 8)
+ * odgovara SYSReadValFromAddr konvenciji za unmapped prostor.
  */
 int aga_chip_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
 {
@@ -1574,11 +1630,11 @@ int aga_chip_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
     chip7_wait(far, size);
     aga_diag_ctr[AGA_D_CHIP_R]++;
     cpu_activity++;
-    /* NO instrumentation here. A 16-slot scan on every JIT cache-line fill -
-       the hottest path in the machine - slowed it enough that Banshee's intro
-       stopped progressing at all. And it answered nothing: the fetch list came
-       back empty, because a WHDLoad game's code runs from fast RAM, which is
-       mapped and never faults through this door. */
+    /* BEZ instrumentacije ovdje. 16-slot scan na svakom JIT cache-line fillu -
+       najtopliji put u mašini - usporio ga je dovoljno da Bansheejev intro
+       uopće prestane napredovati. I nije odgovorio ništa: fetch lista se
+       vraćala prazna, jer WHDLoad igrin kod radi iz fast RAMa, koji je mapiran
+       i nikad ne faulta kroz ova vrata. */
     const uint8_t *p = chip_va + far;
     switch (size) {
     case 1:  *value = *(const uint8_t  *)p; break;
@@ -1688,7 +1744,7 @@ void aga_bustest_run(int mode)
     aga_diag_set(AGA_D_BUSTEST_WORST_NS, (uint32_t)((worst * 1000000000u) / f));
 }
 
-/* Redirect test WITHOUT the sandbox: control word $5C0N.
+/* Redirect test BEZ sandboxa: control word $5C0N.
  *
  * Both sandbox entries on the no-MMU path killed the machine before the first
  * counter could be read, and a dead machine says nothing about WHICH of the
@@ -1698,14 +1754,14 @@ void aga_bustest_run(int mode)
  * the OS keeps its interrupts and caffed keeps talking: if the redirect is
  * what breaks, the break happens on a machine that can still report it.
  *
- *   N=1  the top 64 KB of chip RAM (agastat CHIPTEST's last two rows)
- *   N=2  all of chip RAM: every OS access, ExecBase, vectors, stacks, code
- *   N=0  off again; the window is copied back to the real chip RAM first,
- *        since the OS has been writing to the copy in the meantime.
+ *   N=1  gornjih 64 KB chip RAMa (agastat CHIPTEST zadnja dva reda)
+ *   N=2  cijeli chip RAM: svaki OS pristup, ExecBase, vektori, stackovi, code
+ *   N=0  opet off; prozor se prvo kopira natrag u pravi chip RAM, jer je OS
+ *        u međuvremenu pisao u kopiju.
  *
- * The window is copied from the bus first, so the 68k sees the same bytes
- * either side of the switch. agaboot sends this inside Disable() after a
- * CacheClearU(), exactly like the sandbox words. */
+ * Prozor se prvo kopira s busa, pa 68k vidi iste bajtove s obje strane
+ * prekidača. agaboot ovo šalje unutar Disable() nakon CacheClearU(), točno
+ * kao sandbox riječi. */
 int aga_redirect_test(unsigned n)
 {
     if (aga_sandbox_active || !chip_va) return 0;
@@ -1719,7 +1775,7 @@ int aga_redirect_test(unsigned n)
         aga_diag_log("[AGA] redirect test: off, window copied back");
         return 1;
     }
-    if (aga_chip_redirect) return 1;           /* already on: no double copy */
+    if (aga_chip_redirect) return 1;           /* već uključen: bez dvostrukog copyja */
     uint32_t lo = (n == 1) ? chip_size - 0x10000 : 0, hi = chip_size;
     for (uint32_t a = lo; a < hi; a += 4)
         wr_be32(chip_va + a, ps_read_32(a));
@@ -1819,17 +1875,17 @@ int aga_trap_write(uint64_t far, int size, uint64_t value, uint64_t value2)
     aga_diag_set(AGA_D_LAST_TRAP_RW, 1);
 #endif
 #ifdef AGA_PROBES
-    if ((reg & 0x1FE) == 0x096) {      /* DMACON: bit 15 sets, clear clears */
+    if ((reg & 0x1FE) == 0x096) {      /* DMACON: bit 15 seta, clear clearne */
         uint16_t dv = (uint16_t)value;
         aga_diag_inc(AGA_D_DMACON_W);
         aga_diag_set(AGA_D_DMACON_LAST_VAL, dv);
-        if (!(dv & 0x8000) && (dv & 0x0100)) {     /* clearing bitplane DMA */
+        if (!(dv & 0x8000) && (dv & 0x0100)) {     /* clearanje bitplane DMA */
             aga_diag_inc(AGA_D_DMACON_OFF_W);
             aga_diag_set(AGA_D_DMACON_OFF_PC, emu68_get_pc());
             aga_diag_set(AGA_D_DMACON_OFF_VAL, dv);
         }
     }
-    if ((reg & 0x1FE) == 0x1DC) {      /* BEAMCON0: bit 5 clear means NTSC */
+    if ((reg & 0x1FE) == 0x1DC) {      /* BEAMCON0: bit 5 clear znači NTSC */
         aga_diag_inc(AGA_D_BEAMCON0_W);
         aga_diag_set(AGA_D_BEAMCON0_LAST, (uint32_t)(uint16_t)value);
         if (!((uint16_t)value & 0x0020)) {
@@ -1849,9 +1905,9 @@ int aga_trap_write(uint64_t far, int size, uint64_t value, uint64_t value2)
     uint64_t hold0;
     __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(hold0));
 #endif
-    /* The sound driver's writes, in order, with where the beam was. A few
-       thousand a second at most; the blitter's millions never get past the
-       register test. */
+    /* Writeovi Sound drivera, po redu, s tim gdje je beam bio. Najviše
+       nekoliko tisuća u sekundi; blitterovi milioni nikad ne prođu register
+       test. */
 #ifdef AGA_PROBES
     if ((reg >= 0x0A0 && reg < 0x0E0)
         || ((reg & 0x1FE) == 0x096 && (value & 0x020F))
@@ -1877,22 +1933,22 @@ int aga_trap_write(uint64_t far, int size, uint64_t value, uint64_t value2)
         }
     }
 #endif
-#ifdef AGA_PROBES     /* test kernels only: the recorders that found OutRun's copper-only screen */
-    /* Who writes BPLCON0, and what: OutRun AGA's own $0211 arrives and is
-       $0200 again by the end of the frame, with no copper MOVE to it. A ring
-       of the last eight CPU writes, value and 68k PC (slot = count & 7). */
+#ifdef AGA_PROBES     /* samo test kerneli: recorderi koji su našli OutRunov copper-only ekran */
+    /* Tko piše BPLCON0, i što: OutRun AGA-ov vlastiti $0211 stigne i opet je
+       $0200 do kraja framea, bez copper MOVEa u njega. Ring zadnjih osam CPU
+       writeova, vrijednost i 68k PC (slot = count & 7). */
     if ((reg & 0x1FE) == 0x100 || (size >= 4 && (reg & 0x1FE) == 0x0FE) || (size == 16 && reg >= 0x0F2 && reg < 0x100)) {
         uint32_t k = aga_diag_ctr[AGA_D_BC0W_N] & 7;
         uint16_t v16 = (uint16_t)value;
-        if (size == 4 && (reg & 0x1FE) == 0x0FE) v16 = (uint16_t)value;          /* .L at $FE: low word is BPLCON0 */
+        if (size == 4 && (reg & 0x1FE) == 0x0FE) v16 = (uint16_t)value;          /* .L na $FE: donji word je BPLCON0 */
         else if (size == 4) v16 = (uint16_t)(value >> 16);
-        else if (size == 8 || size == 16) v16 = 0xFFFF;                          /* part of a wide store: marked */
+        else if (size == 8 || size == 16) v16 = 0xFFFF;                          /* dio wide storea: označeno */
         aga_diag_ctr[AGA_D_BC0W_VAL0 + k] = v16;
         aga_diag_ctr[AGA_D_BC0W_PC0 + k] = emu68_get_pc();
         aga_diag_ctr[AGA_D_BC0W_N]++;
         aga_diag_ctr[AGA_D_BC0W_FRAME] = aga_diag_ctr[AGA_D_FRAMES];
     }
-    {   /* the event log wants every write to these, word by word */
+    {   /* event log želi svaki write u ove, riječ po riječ */
         uint32_t r0 = reg & 0x1FE;
         if (size == 2 || size == 1) aga_dbg_event_cpu(aga, r0, (uint16_t)value);
         else if (size == 4) { aga_dbg_event_cpu(aga, r0, (uint16_t)(value >> 16)); aga_dbg_event_cpu(aga, r0 + 2, (uint16_t)value); }
@@ -1902,7 +1958,7 @@ int aga_trap_write(uint64_t far, int size, uint64_t value, uint64_t value2)
         uint32_t k = aga_diag_ctr[AGA_D_COPW_N] & 7;
         uint16_t v16 = (size == 4) ? (uint16_t)(value >> 16) : (uint16_t)value;
         aga_diag_ctr[AGA_D_COPW_RV0 + k] = (reg << 16) | v16;
-        if (size == 4) aga_diag_ctr[AGA_D_COPW_RV0 + k] = (reg << 16) | (uint16_t)value | ((uint32_t)1 << 31); /* .L: low word shown, bit 31 marks it */
+        if (size == 4) aga_diag_ctr[AGA_D_COPW_RV0 + k] = (reg << 16) | (uint16_t)value | ((uint32_t)1 << 31); /* .L: prikazan donji word, bit 31 ga označava */
         aga_diag_ctr[AGA_D_COPW_PC0 + k] = emu68_get_pc();
         aga_diag_ctr[AGA_D_COPW_N]++;
     }
@@ -1953,51 +2009,46 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
     aga_diag_reg(reg, 0);
     if ((reg & 0x1FE) == 0x01E && aga_sandbox_active)
         aga_diag_intreqr_pc(emu68_get_pc());
-    /* The beam registers bypass the mutex - see aga_peek_beam. They are 90% of
-       all reads a game makes, and locking them saturated the machine. */
+    /* Beam registri obilaze mutex - vidi aga_peek_beam. Oni su 90% svih
+       readova koje igra napravi, a lockanje ih je zasitilo mašinu. */
     if (aga_is_beam_reg(reg)) {
         uint64_t tpc = ticks_per_cck, base = beam_tick, add = 0;
         if (tpc) {
             uint64_t now;
             __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(now));
             if (now > base && aga_beam_mode != 1) add = (now - base) / tpc;
-            /* Never more than one pacing step ahead of the line the chipset core
-               has reached. The estimate used to run up to $FFFF colour clocks -
-               most of a frame - past it whenever the loop paused (presenting a
-               frame takes ~0.9 ms), and a program racing the beam then drew into
-               lines it believed were already on screen: Nexus 7's Gouraud scene
-               showed a fixed horizontal cut with the old object below it, gone
-               with the estimate off. Within a step the beam still moves, so an
-               exact-position raster wait sees every value. Mode 2 = the old way. */
+            /* Nikad više od jednog pacing stepa ispred linije do koje je
+               chipset core stigao. Estimate je prije trčao do $FFFF colour
+               clockova - veći dio framea - ispred nje kad god bi loop stao
+               (prezentiranje framea traje ~0.9 ms), i program koji se utrkuje
+               s beamom crtao je u linije za koje je vjerovao da su već na
+               ekranu: Nexus 7 Gouraud scena pokazivala je fiksni horizontalni
+               rez sa starim objektom ispod, nestao s isključenim estimateom.
+               Unutar stepa beam se još miče, pa exact-position raster wait
+               vidi svaku vrijednost. Mode 2 = stari način. */
             if (aga_beam_mode == 2) { if (add > 0xFFFF) add = 0xFFFF; }
             else {
                 if (add > BEAM_LEAD_CCK) add = BEAM_LEAD_CCK;
-                /* ...and never past the end of the line the core is on. A
-                   program that waits for the beam to leave line Y and then
-                   draws over line Y's data expects line Y to be on screen;
-                   here it is rendered when the core FINISHES the line, so a
-                   reported beam that crosses into line Y+1 a few clocks early
-                   lets the program overwrite data I have not drawn yet.
-                   Nexus 7's Gouraud scene kept its cut line with the 8-clock
-                   lead alone and lost it only with no lead at all (BEAM EXACT). */
+                /* AGA-PiStorm 1.118: never report beyond the line the core
+                   is actually rendering. */
                 int h = aga_get_hpos(aga), mh = aga_cycles_per_line(aga);
                 if (mh > 0 && h >= 0) {
-                    if (h >= mh - 1) add = 0;                         /* between lines: the line is being rendered NOW */
-                    else if ((uint64_t)h + add >= (uint64_t)mh) add = (uint64_t)(mh - 1 - h);
+                    if (h >= mh - 1) add = 0;
+                    else if ((uint64_t)h + add >= (uint64_t)mh)
+                        add = (uint64_t)(mh - 1 - h);
                 }
             }
         }
         *value = aga_peek_beam_at(aga, reg, size, (uint32_t)add);
         aga_diag_beam_value((uint16_t)*value);   /* the values a raster wait keeps seeing */
 #ifdef AGA_PROBES
-        /* A game that waits for one exact raster line does it in one of two
-           ways: the 9-bit number as two byte reads ($DFF005 then $DFF006), or,
-           when the line is below 256, the low byte alone in a tight loop.
-           Worms: The Director's Cut uses the second, nearly two million times a
-           second, and never gets out of it. Record what I hand that loop: the
-           values, the gap between them, and which of the 256 low bytes I ever
-           produced - if the line it wants is missing from that, the wait cannot
-           end. */
+        /* Igra koja čeka točno jednu raster liniju radi to na jedan od dva
+           načina: 9-bitni broj kao dva byte reada ($DFF005 pa $DFF006), ili,
+           kad je linija ispod 256, samo donji bajt u tight loopu. Worms: The
+           Director's Cut koristi drugi, skoro dva milijuna puta u sekundi, i
+           nikad ne izađe iz njega. Zabilježi što dajem tom loopu: vrijednosti,
+           razmak među njima, i koji od 256 donjih bajtova sam ikad proizveo -
+           ako linija koju želi nedostaje u tome, wait ne može završiti. */
         if (size == 1 && reg >= 0x005 && reg <= 0x007 && aga_sandbox_active) {
             static uint64_t pair_t0, prev_t;
             static uint32_t pair_line0, pair_open;
@@ -2008,7 +2059,7 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
             uint32_t gap = (f2 && prev_t && now2 > prev_t)
                          ? (uint32_t)(((now2 - prev_t) * 1000000u) / f2) : 0;
             prev_t = now2;
-            {   /* the WHOLE line number, not just its low byte */
+            {   /* CIJELI broj linije, ne samo njezin donji bajt */
                 uint32_t rv = (((uint32_t)aga_peek_beam(aga, VPOSR, 2) & 7) << 8)
                             | ((aga_peek_beam(aga, VHPOSR, 2) >> 8) & 0xFF);
                 aga_diag_max(AGA_D_TRAP_VPOS_MAX, rv);
@@ -2023,9 +2074,9 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
             aga_diag_set(AGA_D_CORE_LINES, (uint32_t)aga_lines_per_frame(aga));
             aga_diag_set(AGA_D_CORE_MAXHPOS, (uint32_t)aga_cycles_per_line(aga));
             if (reg == 0x006 || reg == 0x007) {
-                /* $006 is the line, $007 the position along it: a wait can
-                   test either, and mine only ever produces the positions the
-                   interpolation lands on */
+                /* $006 je linija, $007 pozicija duž nje: wait može
+                   testirati oboje, a moj proizvodi samo pozicije na koje
+                   interpolacija sleti */
                 aga_diag_beam_byte((uint8_t)*value, gap, reg == 0x007);
             } else {
                 uint32_t both = aga_peek_beam_at(aga, VPOSR, 4, (uint32_t)add);
@@ -2060,7 +2111,7 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
     case 2: *value = aga_read(aga, reg, 2); break;
     case 4: *value = aga_read(aga, reg, 4); break;
     case 8: *value = ((uint64_t)aga_read(aga, reg, 4) << 32) | aga_read(aga, reg + 4, 4); break;
-    case 16:   /* the same 128-bit split as the write path */
+    case 16:   /* isti 128-bitni split kao write put */
         *value  = ((uint64_t)aga_read(aga, reg, 4) << 32)     | aga_read(aga, reg + 4, 4);
         *value2 = ((uint64_t)aga_read(aga, reg + 8, 4) << 32) | aga_read(aga, reg + 12, 4);
         aga_diag_inc(AGA_D_TRAP_R16);
@@ -2068,8 +2119,8 @@ int aga_trap_read(uint64_t far, int size, uint64_t *value, uint64_t *value2)
     default: *value = 0; aga_diag_inc(AGA_D_TRAP_ODD_SIZE); break;
     }
     unlock();
-    /* after the read, so the ring records what the 68k actually got back - the
-       whole question with a busy-wait is what value it keeps seeing */
+    /* nakon reada, da ring zabilježi što je 68k stvarno dobio natrag - cijelo
+       pitanje kod busy-waita je koju vrijednost stalno vidi */
     last_rd = (reg << 16) | (uint16_t)*value;
     {
         uint32_t pc_now = emu68_get_pc();
@@ -2093,9 +2144,9 @@ static inline uint64_t cntfrq(void)
     return v;
 }
 
-#define CHUNK_CCK 8      /* colour clocks per pacing step (~2.3 us) */
+#define CHUNK_CCK 8      /* colour clockova po pacing stepu (~2.3 us) */
 
-/* ---- libc shims for the core (Emu68 has no malloc/free) ------------------- */
+/* ---- libc shims za core (Emu68 nema malloc/free) -------------------------- */
 extern void *tlsf;
 extern void *tlsf_malloc(void *handle, uintptr_t size);
 extern void  tlsf_free(void *handle, void *ptr);
@@ -2115,7 +2166,7 @@ void free(void *p)
 
 void aga_chipset_main(void)
 {
-  aga_evstream_on();                /* with aga.sleep, core 3's timed waits sleep (aga_glue.h) */
+  aga_evstream_on();                /* s aga.sleep, core 3 timed waits spavaju (aga_glue.h) */
   for (;;) {
     core_idle = 1;
     /* WFE, not a yield spin. Once aga_enabled became volatile, a tight
@@ -2127,8 +2178,8 @@ void aga_chipset_main(void)
        never missed; every writer of aga_enabled issues sev. */
     __asm__ volatile("sevl");
     while (!aga_enabled) {
-        /* parked, but an AHI ring is on (aga-hdmi.audio): its sound goes
-           to HDMI through the feed, which the chipset loop runs otherwise */
+        /* parkiran, ali AHI ring je uključen (aga-hdmi.audio): njegov zvuk ide
+           na HDMI kroz feed, koji chipset loop inače vrti */
         if (aga_hdmi_ahi_live()) { aga_hdmi_pump(); continue; }
         __asm__ volatile("wfe");
     }
@@ -2139,57 +2190,56 @@ void aga_chipset_main(void)
     /* PAL 3546895, NTSC 3579545 - from the flag I was created with, NOT from
      * the register file.
      *
-     * This used to ask aga_peek_reg(aga, BEAMCON0), and regs[] only ever holds
-     * what the 68k has WRITTEN: aga_reset memsets it, and the machine's real
-     * PAL/NTSC state lives in a->ntsc and a->beamcon0, not there. Almost no
-     * game writes BEAMCON0, so the read returned 0, DISPLAYPAL was clear, and
-     * the ternary picked NTSC - pacing a PAL machine, with PAL 227x313
-     * geometry, at the NTSC colour clock. 3579545/3546895 is 1.0092, so
-     * everything ran 0.92% fast.
+     * Ovo je prije pitalo aga_peek_reg(aga, BEAMCON0), a regs[] uvijek drži
+     * samo ono što je 68k WRITTEN: aga_reset ga memseta, a mašinino stvarno
+     * PAL/NTSC stanje živi u a->ntsc i a->beamcon0, ne tamo. Skoro nijedna
+     * igra ne piše BEAMCON0, pa je read vraćao 0, DISPLAYPAL je bio clear, i
+     * ternar je odabrao NTSC - tjerajući PAL mašinu, s PAL 227x313 geometrijom,
+     * na NTSC colour clock. 3579545/3546895 je 1.0092, pa je sve radilo 0.92%
+     * prebrzo.
      *
-     * Two measurements already in docs/VALIDATION-FINDINGS.md match that to
-     * better than 0.1%: 49.9203 x 1.0092 = 50.38 fps predicted against 50.4
-     * sustained, and 436.9 audio streams/s predicted against 436.8 measured.
+     * Dva mjerenja već u docs/VALIDATION-FINDINGS.md slažu se s tim na bolje
+     * od 0.1%: 49.9203 x 1.0092 = 50.38 fps predviđeno naspram 50.4
+     * održavanih, i 436.9 audio streamova/s predviđeno naspram 436.8
+     * izmjerenih.
      *
-     * It is also why the audio drifts. aga_audio_pull is asked for 27928
-     * samples per second of EMULATED time, so at 0.92% fast the writer produces
-     * 28185 a second while the real Paula, on the Amiga's own crystal, consumes
-     * 27928 - an overrun of 257 samples every second. That is one ring restart
-     * every 3.45 s, against the 3.55 s actually counted. Every correction in
-     * aga_audio.c is compensating for this one line. */
-    /* ...and from the standard in force since then: a game started NTSC
-       ($5911 before the entry) or switched by BEAMCON0 runs at NTSC's colour
-       clock - its 60 Hz frame, and the samples made from emulated time - and
-       the loop re-reads it at every frame (paced_ntsc, where it presents). */
+     * To je i zašto audio drifta. aga_audio_pull se traži za 27928 samplea u
+     * sekundi EMULIRANOG vremena, pa na 0.92% prebrzo writer proizvede 28185
+     * u sekundi dok prava Paula, na Amiginom vlastitom kristalu, troši 27928 -
+     * overrun od 257 samplea svake sekunde. To je jedan ring restart svakih
+     * 3.45 s, naspram 3.55 s koliko je stvarno izbrojano. Svaka korekcija u
+     * aga_audio.c kompenzira ovu jednu liniju. */
+    /* ...i iz standarda na snazi od tada: igra startana kao NTSC ($5911 prije
+       entryja) ili prebačena BEAMCON0 radi na NTSC colour clocku - njezin 60 Hz
+       frame, i sampleovi napravljeni iz emuliranog vremena - a loop ga
+       ponovno čita pri svakom frameu (paced_ntsc, gdje prezentira). */
     int paced_ntsc = aga_start_ntsc;
     uint64_t ticks_per_cck_fp = (freq << 32) / (paced_ntsc ? 3579545u : 3546895u);
-    /* The pacing deadline: whole timer ticks, plus a 32-bit fraction.
+    /* Pacing deadline: cijeli timer ticks, plus 32-bitna frakcija.
      *
-     * NOT `cntvct() << 32`. cntvct() is a free-running 64-bit tick count, so
-     * that shift throws away its top half and the time base keeps only the low
-     * 32 bits - wrapping every 2^32 ticks. Every comparison against it then
-     * becomes meaningless, and the counters showed it plainly: 6163 resyncs in
-     * 5973 frames against a threshold of a whole frame, while the largest lag
-     * ever recorded was 7380 colour clocks. A resync needs 71051 to fire. It
-     * could not have fired once, and it fired more often than there were
-     * frames.
+     * NE `cntvct() << 32`. cntvct() je free-running 64-bitni tick count, pa
+     * taj shift odbaci njegovu gornju polovicu i time base zadrži samo donjih
+     * 32 bita - wrapajući svakih 2^32 tickova. Svaka usporedba s njim onda
+     * postane besmislena, i counters su to jasno pokazali: 6163 resynca u
+     * 5973 framea naspram thresholda od cijelog framea, dok je najveći ikad
+     * zabilježeni lag bio 7380 colour clockova. Resync treba 71051 da opali.
+     * Nije mogao opaliti ni jednom - a opalio je češće nego što
+     * je bilo frameova, jebemu.
      *
-     * Every one of those spurious resyncs DISCARDS the time the loop owes, and
-     * the audio is generated from this clock - so this is the last thing left
-     * corrupting it.
+     * Svaki od tih lažnih resynca ODBACUJE vrijeme koje loop duguje, a audio
+     * se generira iz tog clocka - pa je ovo zadnja stvar koja ga još kvari.
      *
-     * This was tried once before and broke the game, because the blitter's
-     * completion delay was still counted in colour clocks: with the overflow
-     * gone the loop started genuinely catching up, replaying thousands of
-     * colour clocks in microseconds and expiring the delay before the game had
-     * armed its wait. The glue now times the blit against the real clock
-     * instead, so the two no longer interfere. */
+     * Ovo je prije bilo probano i pokvarilo igru, jer se blitterov completion
+     * delay još brojao u colour clockovima: s nestalim overflowom loop je
+     * počeo stvarno sustizati, replayajući tisuće colour clockova u
+     * mikrosekundama i istječući delay prije nego je igra armirala svoj wait.
+     * Glue sad mjeri blit prema pravom clocku, pa se dvoje više ne sukobljava. */
     uint64_t next_ticks = cntvct();
-    /* Where the frame's 20 ms go: the time spent waiting for the pacing
-       clock is the loop's headroom, the rest is what the emulation costs.
-       The Pi 3 fell a frame behind seven times a second (2026-09-13) and
-       frame_us_worst, which only times the present, said nothing about
-       why; these say it directly, on any board. */
+    /* Kamo ide frameovih 20 ms: vrijeme provedeno čekajući pacing clock je
+       loopov headroom, ostatak je što emulacija košta. Pi 3 je padao frame za
+       sobom sedam puta u sekundi (2026-09-13) i frame_us_worst, koji mjeri
+       samo present, nije rekao ništa o zašto; ovi kažu direktno, na svakom
+       boardu. */
     uint64_t frame_t0 = next_ticks, wait_acc = 0, audio_acc = 0;
     /* and where the busy time goes: the core itself per chunk, the once-a-
        frame statistics, and the whole loop body between two pacing waits -
@@ -2197,11 +2247,11 @@ void aga_chipset_main(void)
        under me (an interrupt, the firmware). DAIF says whether interrupts
        can even reach this core. */
     uint64_t cyc_acc = 0, cyc_max = 0, stat_max = 0, body_max = 0, stat_t0 = 0;
-    /* The A53's own account of where this core's time goes: L1 data refills
-       (event 0x03) and L2 refills (0x17) on core 3, per frame. A frame that
-       runs the same emulation six times slower while another core streams
-       through the shared L2 should show it here, and which of the two says
-       whether the remedy is my working set or the other core's traffic. */
+    /* A53-ov vlastiti izvještaj kamo ide vrijeme ovog corea: L1 data refillovi
+       (event 0x03) i L2 refillovi (0x17) na coreu 3, po frameu. Frame koji
+       vrti istu emulaciju šest puta sporije dok drugi core streama kroz shared
+       L2 trebao bi to pokazati ovdje, a koje od dvoje kaže je li lijek moj
+       working set ili promet drugog corea. */
 #ifdef AGA_PROBES
     uint64_t pmu_l1_prev = 0, pmu_l2_prev = 0;
     {
@@ -2212,20 +2262,19 @@ void aga_chipset_main(void)
         __asm__ volatile("msr PMEVCNTR1_EL0, %0" :: "r"((uint64_t)0));
         __asm__ volatile("msr PMCNTENSET_EL0, %0" :: "r"((uint64_t)0x3));
         __asm__ volatile("mrs %0, PMCR_EL0" : "=r"(v));
-        __asm__ volatile("msr PMCR_EL0, %0" :: "r"(v | 1));           /* E: counters on */
+        __asm__ volatile("msr PMCR_EL0, %0" :: "r"(v | 1));           /* E: counteri uključeni */
         __asm__ volatile("isb");
     }
-    /* A memory-latency probe, once a frame: 512 dependent loads chasing a
-       random cycle through 1 MB - twice the Pi 3's L2 - so it measures DRAM
-       under whatever the other cores are doing to it. If it spikes in the
-       frames where the emulation runs slow, the core is being starved of
-       memory, not of anything of its own. */
+    /* Memory-latency probe, jednom po frameu: 512 dependent loadova koji jure
+       random cycle kroz 1 MB - dvostruki Pi 3 L2 - pa mjeri DRAM pod onim što
+       mu drugi coreovi rade. Ako skoči u frameovima gdje emulacija radi sporo,
+       core je gladan memorije, ne nečeg svog. */
     static uint32_t mem_probe[262144];
     static uint32_t cw_prev;
     {
         uint32_t n = 262144, seed = 12345;
         for (uint32_t i = 0; i < n; i++) mem_probe[i] = i;
-        for (uint32_t i = n - 1; i > 0; i--) {          /* Sattolo: one cycle through all of it */
+        for (uint32_t i = n - 1; i > 0; i--) {          /* Sattolo: jedan cycle kroz sve */
             seed = seed * 1103515245u + 12345u;
             uint32_t j = (seed >> 8) % i;
             uint32_t t = mem_probe[i]; mem_probe[i] = mem_probe[j]; mem_probe[j] = t;
@@ -2234,53 +2283,53 @@ void aga_chipset_main(void)
 #endif
     { uint64_t daif; __asm__ volatile("mrs %0, DAIF" : "=r"(daif)); aga_diag_set(AGA_D_CORE3_DAIF, (uint32_t)daif); }
     uint32_t next_frac  = 0;
-    uint64_t chunk_at   = cntvct();   /* when the last pacing chunk actually ran */
+    uint64_t chunk_at   = cntvct();   /* kad je zadnji pacing chunk stvarno radio */
     const uint64_t ticks_per_frame = freq / 50;
-    /* How far behind before the owed time is dropped instead of caught up.
-       One frame on a Pi 4. The Pi 3's frames spike to 31 ms with video on
-       (2026-09-14) and every spike past 20 ms became a resync that dropped
-       the time, starving the audio ring; two frames lets it catch up, which
-       the loop does in a few milliseconds of real time. */
+    /* Koliko iza prije nego se dugovano vrijeme odbaci umjesto sustigne.
+       Jedan frame na Pi 4. Pi 3 frameovi skoče na 31 ms s uključenim videom
+       (2026-09-14) i svaki skok preko 20 ms postao je resync koji je odbacio
+       vrijeme, izgladnjujući audio ring; dva framea mu daju da sustigne, što
+       loop napravi u nekoliko milisekundi realnog vremena. */
     const uint64_t resync_ticks = ticks_per_frame * (aga_pi3_mode() ? 2 : 1);
-    /* Frame skip, Pi 3 only: ask for it once 2.5 ms behind, drop the request
-       once caught up. 5 ms was the first value and let the loop build
-       catch-up bursts big enough to be heard: the game's music routine runs
-       in real time off the emulated vertical blank, so a burst bunches its
-       note starts against the emulated Paula (Banshee, 2026-09-14). The Pi 4
-       never falls that far behind. */
+    /* Frame skip, samo Pi 3: traži ga kad si 2.5 ms iza, spusti zahtjev kad
+       sustigneš. 5 ms je bila prva vrijednost i pustila je loopu da izgradi
+       catch-up burstove dovoljno velike da se čuju: igrina glazbena rutina radi
+       u realnom vremenu s emuliranog vertical blanka, pa burst zbije njezine
+       note startove naspram emulirane Paule (Banshee, 2026-09-14). Pi 4 nikad
+       ne padne tako daleko. */
     const int skip_ok = aga_pi3_mode();
     int skip_want = 0;
     int last_real_ipl = 0;
-    uint32_t blit_prev = 0;   /* accumulate the delta, so zeroing `blits` sticks */
+    uint32_t blit_prev = 0;   /* akumuliraj deltu, da zeroiranje `blits` ostane */
     uint32_t pace_frames = 0;
-    uint32_t cia_poll = 0;   /* throttle for the real-CIA mirror below */
+    uint32_t cia_poll = 0;   /* throttle za real-CIA mirror ispod */
     int audio_countdown = 0;
-    /* ~9 microseconds: far more than the handful of instructions a game needs
-       to arm its wait flag after starting a blit, and 0.05% of a frame, so
-       nothing waiting on the blitter notices. Real time, not colour clocks. */
+    /* ~9 mikrosekundi: mnogo više od šačice instrukcija koje igra treba da
+       armira svoj wait flag nakon starta blita, i 0.05% framea, pa ništa što
+       čeka na blitter ne primijeti. Realno vrijeme, ne colour clockovi. */
     const uint64_t blit_delay_ticks = freq / 110000;
     uint64_t blit_due = 0;
 
     kprintf("[AGA] chipset loop on core 3, timer %d Hz, %d ticks/cck\n", (int)freq, (int)(ticks_per_cck_fp >> 32));
-    /* whole ticks per colour clock for the interpolating beam read. The Pi's
-       26 MHz counter gives ~7 ticks per cck, so integer division is good to
-       about a seventh of a colour clock - far finer than the 8 the loop steps. */
+    /* cijeli ticks po colour clocku za interpolirajući beam read. Pi-jev
+       26 MHz counter daje ~7 tickova po cck, pa je integer division dobar na
+       oko sedmine colour clocka - mnogo finije od 8 koliko loop korača. */
     ticks_per_cck = (ticks_per_cck_fp >> 32) ? (ticks_per_cck_fp >> 32) : 1;
     beam_tick = cntvct();
 
-    /* Bring-up watchdog. The first time the chipset ran on real hardware,
-       entering the sandbox hung the machine: agaboot never returned, so caffed
-       died with the 68k and neither the counters nor the log ring could be read.
-       Debugging a hang you cannot observe is not debugging.
+    /* Bring-up watchdog. Prvi put kad je chipset radio na pravom hardveru,
+       ulazak u sandbox objesio je mašinu: agaboot se nikad nije vratio, pa je
+       caffed umro zajedno s 68k i ni counters ni log ring nisu se mogli
+       pročitati. Debugirati hang koji ne možeš promatrati nije debugging, kvragu.
 
-       If the chipset is enabled but no frame completes within the timeout, give
-       up and park: clear aga_enabled so this loop drops out, release the
-       sandbox, and log it. That covers the likely case where core 0 is stuck in
-       a trap waiting on a lock this core holds - dropping out releases it and
-       the machine comes back with the counters intact and readable.
+       Ako je chipset enabled ali nijedan frame se ne završi unutar timeouta,
+       odustani i parkiraj: clearaj aga_enabled da ovaj loop ispadne, otpusti
+       sandbox, i logaj. To pokriva vjerojatni slučaj da je core 0 zaglavio u
+       trapu čekajući lock koji ovaj core drži - ispadanje ga otpusti i mašina
+       se vrati s netaknutim i čitljivim countersima.
 
-       It cannot help if THIS core is the stuck one. That needs a serial
-       console; see docs/HARDWARE-BRINGUP.md. */
+       Ne može pomoći ako je OVAJ core zaglavljeni. Za to treba serial console;
+       vidi docs/HARDWARE-BRINGUP.md. */
     uint64_t wd_deadline = cntvct() + freq * AGA_WATCHDOG_SEC;
     /* The stall check's state belongs to THIS session. It used to be two
        statics, so a new game started with the last one's count and the time
@@ -2324,7 +2373,7 @@ void aga_chipset_main(void)
                 aga_diag_set(AGA_D_STALL_INTENA, aga_peek_reg(aga, 0x09A));
                 aga_diag_set(AGA_D_STALL_INTREQ, aga_peek_reg(aga, 0x09C));
                 aga_diag_set(AGA_D_STALL_IPL, (uint32_t)aga_get_ipl(aga));
-                aga_diag_freeze_here();   /* before the desktop overwrites it */
+                aga_diag_freeze_here();   /* prije nego ga desktop prepiše */
                 aga_diag_log("[AGA] the 68k stopped touching the chipset for ten"
                              " seconds: handing the machine back");
                 aga_enabled = 0;
@@ -2343,19 +2392,19 @@ void aga_chipset_main(void)
             kprintf("[AGA] watchdog: no frame in %d s, parking the chipset\n",
                     AGA_WATCHDOG_SEC);
             aga_enabled = 0;
-            __asm__ volatile("sev");   /* wake core 3 */
+            __asm__ volatile("sev");   /* probudi core 3 */
             aga_sandbox_active = 0;
-            sandbox_restore();         /* NOT optional - see the note on it */
-            aga_video_hide();          /* same reason as in aga_sandbox_leave */
+            sandbox_restore();         /* NIJE opcionalno - vidi bilješku o tome */
+            aga_video_hide();          /* isti razlog kao u aga_sandbox_leave */
             break;
         }
         {
-            uint64_t inc = ticks_per_cck_fp * CHUNK_CCK;   /* 32.32 ticks */
+            uint64_t inc = ticks_per_cck_fp * CHUNK_CCK;   /* 32.32 ticka */
             uint32_t f = next_frac + (uint32_t)inc;
             next_ticks += (inc >> 32) + (f < next_frac ? 1u : 0u);
             next_frac = f;
 
-            /* Catch up at no more than twice real time.
+            /* Sustiži najviše dvostruko brže od realnog vremena.
              *
              * Being right ON AVERAGE is not enough. Presenting a frame blocks
              * this loop for about 900us, and an uncapped catch-up then replays
@@ -2367,58 +2416,58 @@ void aga_chipset_main(void)
              * notes fire at once and then nothing: "you hear drums all at once,
              * so lag", with effects appearing only here and there.
              *
-             * Requiring each chunk to occupy at least half its real duration
-             * caps the loop at 2x, so a 900us present is repaid smoothly over
-             * the next 900us instead of instantly - well inside one frame, and
-             * the interrupts stay evenly spaced. */
+             * Zahtjev da svaki chunk zauzme barem pola svog stvarnog trajanja
+             * ograniči loop na 2x, pa se 900us present vraća glatko kroz
+             * sljedećih 900us umjesto odmah - duboko unutar jednog framea, i
+             * interrupti ostaju ravnomjerno raspoređeni. */
             uint64_t floor_t = chunk_at + ((inc >> 32) >> 1);
             uint64_t target = next_ticks > floor_t ? next_ticks : floor_t;
             {
                 uint64_t w0 = cntvct();
                 if (chunk_at && w0 > chunk_at && w0 - chunk_at > body_max) body_max = w0 - chunk_at;
                 while (cntvct() < target)
-                    aga_nap_before(target); /* with aga.sleep: asleep while far ahead; a step's wait spins */
+                    aga_nap_before(target); /* s aga.sleep: spava dok je daleko ispred; stepov wait spinna */
                 chunk_at = cntvct();
                 if (chunk_at > w0) wait_acc += chunk_at - w0;
             }
         }
-        /* aga.loop_stop=N: a ladder, one rung per boot. Each level adds one
-           thing the loop does, so a level that boots and a level that dies
-           name the culprit between them.
+        /* aga.loop_stop=N: ljestve, jedan rung po bootu. Svaki level dodaje jednu
+           stvar koju loop radi, pa level koji boota i level koji umre imenuju
+           krivca između sebe.
 
-             1  pace only - keep time, count frames, call nothing
-             2  + the bus mutex: lock()/unlock() around nothing
-             3  + aga_run_cycles: the chipset core itself, no video, no audio
-             4  + the frame present path
-             5  + aga_audio_pull only - the audio maths, but nothing streamed
-             0  everything, audio included (the normal build)
+             1  samo pace - drži vrijeme, broji frameove, ne zove ništa
+             2  + bus mutex: lock()/unlock() oko ničega
+             3  + aga_run_cycles: sam chipset core, bez videa, bez audija
+             4  + frame present put
+             5  + samo aga_audio_pull - audio matematika, ali ništa se ne streama
+             0  sve, audio uključen (normalni build)
 
-           MEASURED 2026-09-07 on a Pi 4 in sandbox mode (see
-           docs/VALIDATION-FINDINGS.md): rung 3 and rung 4 both run at 50.4-50.5
-           frames per second, sustained, presents tracking frames exactly,
-           video_errors 0, machine reachable throughout. Rung 0 dies. So
-           aga_run_cycles and aga_video_present are BOTH innocent, and the fault
-           is in the audio block - which is what rung 5 now splits in half.
+           IZMJERENO 2026-09-07 na Pi 4 u sandbox modeu (vidi
+           docs/VALIDATION-FINDINGS.md): rung 3 i rung 4 oba rade na 50.4-50.5
+           frameova u sekundi, održano, presentovi prate frameove točno,
+           video_errors 0, mašina dostupna cijelo vrijeme. Rung 0 umre. Dakle
+           aga_run_cycles i aga_video_present su OBA nedužna, a greška je u
+           audio bloku - što rung 5 sad dijeli na pola.
 
-           Rungs 1 and 2 prove nothing, and cannot. Sandbox entry installs the
-           traps whatever this setting is, so at those rungs the 68k talks to a
-           chipset that never ticks: no vblank, no interrupts, AmigaOS stalls.
-           A hang there is the expected behaviour of correct code. They are kept
-           only to check that the loop skeleton and the wake handshake run at
-           all, and they now let the watchdog fire so the machine recovers and
-           the counters can be read. */
+           Rungovi 1 i 2 ne dokazuju ništa, i ne mogu. Sandbox entry instalira
+           trapove bez obzira na ovu postavku, pa na tim rungovima 68k
+           razgovara s chipsetom koji nikad ne ticka: nema vblank, nema
+           interrupta, AmigaOS stane. Hang tamo je očekivano ponašanje
+           ispravnog koda. Drže se samo da provjere rade li loop skeleton i
+           wake handshake uopće, i sad puštaju watchdog da opali pa se mašina
+           oporavi i counters se mogu pročitati. */
         if (aga_loop_stop == 1 || aga_loop_stop == 2) {
             if (aga_loop_stop == 2) { lock(); unlock(); }
-            if (++pace_frames >= 313 * 227 / CHUNK_CCK) {   /* one PAL frame */
+            if (++pace_frames >= 313 * 227 / CHUNK_CCK) {   /* jedan PAL frame */
                 pace_frames = 0;
                 aga_diag_inc(AGA_D_FRAMES);
-                /* deliberately NOT rearming the watchdog here. Rungs 1 and 2
-                   leave the chipset frozen - the traps are installed but
-                   nothing ticks, so the 68k waits forever for a vblank and
-                   AmigaOS stalls. That is expected, not a bug, and it means a
-                   hang at these rungs proves nothing. Letting the watchdog
-                   fire parks the chipset, releases the machine and leaves the
-                   counters readable, which is the whole point. */
+                /* namjerno NE rearmira watchdog ovdje. Rungovi 1 i 2 ostavljaju
+                   chipset zamrznut - trapovi su instalirani ali ništa ne
+                   ticka, pa 68k čeka vblank zauvijek i AmigaOS stane. To je
+                   očekivano, ne bug, i znači da hang na tim rungovima ne
+                   dokazuje ništa. Puštanje watchdogu da opali parkira chipset,
+                   oslobodi mašinu i ostavi counters čitljive, što je cijela
+                   poanta. */
             }
             continue;
         }
@@ -2433,8 +2482,8 @@ void aga_chipset_main(void)
 #endif
         lock();
         if (aga_loct_fix_pending && !(aga_custom_rget(aga, DMACONR) & 0x0080)) {
-            /* the copper is off: the OS list is history and the game has not
-               started its own yet - the one moment LOCT can be cleared safely */
+            /* copper je off: OS lista je povijest i igra još nije počela svoju -
+               jedini trenutak kad se LOCT može sigurno clearati */
             uint16_t b3 = aga_peek_reg(aga, 0x106);
             aga_loct_fix_pending = 0;
             if (b3 & 0x0200) {
@@ -2445,12 +2494,12 @@ void aga_chipset_main(void)
             }
         }
         if (aga_ecs_forget_pending && !(aga_custom_rget(aga, DMACONR) & 0x0080)) {
-            /* The same moment: the AGA signs an ECS Denise saw until now were
-               the OS's - WHDLoad's splash, drawn by a graphics.library that
-               believes the machine is AGA - not the game's, so ecs_says_aga
-               judges the game alone. If the OS's screen already made it AGA,
-               it is an ECS Denise again. Never in "always ECS" (nothing is
-               judged) or in a session entered as AGA. */
+            /* Isti trenutak: AGA znakovi koje je ECS Denise dosad vidjela bili su
+               OS-ovi - WHDLoadov splash, koji je nacrtala graphics.library koja
+               vjeruje da je mašina AGA - ne igrini, pa ecs_says_aga sudi samo
+               igru. Ako je OS-ov ekran već učinio chipset AGA, opet je ECS
+               Denise. Nikad u "always ECS" (ništa se ne sudi) ni u sesiji
+               ušloj kao AGA. */
             unsigned sg = aga_ecs_signs(aga);
             aga_ecs_forget_pending = 0;
             if (ecs_entry == 1 && !(sg & 0x80)) {
@@ -2475,29 +2524,29 @@ void aga_chipset_main(void)
 #else
         aga_run_cycles(aga, CHUNK_CCK);
 #endif
-        /* Report an outstanding blit finished once enough WALL time has passed.
-           The core no longer counts this down in colour clocks: those only mean
-           anything while the loop runs them at real-time speed, and it does
-           not - so a catch-up burst used to expire the delay before the game
-           had armed the wait it was about to sleep on. Timing it here decouples
-           the blitter from the pacing entirely. */
-        /* HOW long: at least as long as the real blitter would take. The data is
-           done at once either way; what the length decides is when the program
-           hears about it. Synergy runs its chunky-to-planar as a chain of blits
-           driven by the blitter interrupt, and its handler starts the next blit
-           BEFORE it acknowledges the last:
-               jsr   next_pass              ; ... writes BLTSIZH
-               move.w #$4040,$dff09c        ; then clears BLIT
-           Safe on an Amiga, where a pass takes the blitter milliseconds. With
-           a fixed 9 us, a level 6 music interrupt landing between the two was
-           enough for the new blit's BLIT to be raised and then wiped by the
-           old acknowledge; the chain stopped, the main loop waited for ever
-           for its done flag, and the light effect, the whirlwind and the
-           tunnel never appeared while the music played on. */
+        /* Javi da je outstanding blit gotov kad prođe dovoljno WALL vremena.
+           Core to više ne odbrojava u colour clockovima: oni znače nešto samo
+           dok ih loop vrti realnom brzinom, a ne vrti - pa je catch-up burst
+           prije istjecao delay prije nego je igra armirala wait na koji je
+           htjela zaspati. Mjerenje ovdje odvezuje blitter od pacinga u
+           potpunosti. */
+        /* KOLIKO dugo: barem koliko bi pravi blitter trajao. Podaci su gotovi
+           odmah u oba slučaja; duljina odlučuje kad program za to čuje.
+           Synergy vrti svoj chunky-to-planar kao lanac blitova vođen blitter
+           interruptom, a njegov handler starta sljedeći blit PRIJE nego
+           acknowledga zadnji:
+               jsr   next_pass              ; ... piše BLTSIZH
+               move.w #$4040,$dff09c        ; pa clearne BLIT
+           Sigurno na Amigi, gdje pass traje blitteru milisekunde. S fiksnih
+           9 us, level 6 music interrupt koji sleti između dva bio je dovoljan
+           da se novi blitov BLIT digne i onda bude zbrisan starim
+           acknowledgeom; lanac se zaustavio, main loop čekao zauvijek svoj
+           done flag, i light efekt, whirlwind i tunnel nikad se nisu pojavili
+           dok je glazba svirala dalje. */
         if (aga_blit_pending(aga)) {
             uint64_t now = cntvct();
             if (!blit_due) {
-                /* aga_blit_fast (agaboot BLITTIMING FAST): 1.101's fixed delay, for A/B tests */
+                /* aga_blit_fast (agaboot BLITTIMING FAST): fiksni delay iz 1.101, za A/B testove */
                 uint64_t real = aga_blit_fast ? 0 : ((uint64_t)aga_blit_duration(aga) * freq) / 3546895u;
                 blit_due = now + (real > blit_delay_ticks ? real : blit_delay_ticks);
             }
@@ -2505,35 +2554,35 @@ void aga_chipset_main(void)
         } else {
             blit_due = 0;
         }
-        /* publish the beam base for the lock-free interpolating read. Order
-           matters: the timestamp goes last, so a reader that sees a fresh tick
-           is guaranteed to be looking at the position that goes with it. */
+        /* objavi beam bazu za lock-free interpolirajući read. Redoslijed je
+           važan: timestamp ide zadnji, pa je reader koji vidi svjež tick
+           zagarantirano gleda poziciju koja ide s njim. */
         __asm__ volatile("dmb ish" ::: "memory");
         beam_tick = cntvct();
-        /* A CIA interrupt has to be able to WAKE the game, not just be visible
-         * once it asks.
+        /* CIA interrupt mora moći PROBUDITI igru, ne samo biti vidljiv kad ga
+         * ona pita.
          *
-         * In the sandbox the CIAs stay real: the real Paula latches EXTER
-         * (level 6) and PORTS (level 2), and an INTREQR read folds those bits
-         * in (vectors.c) so a running handler sees them. A game that goes to
-         * sleep on them never reads anything. Worms: The Director's Cut sits
-         * on STOP #$2300 at its menu - supervisor, interrupts masked to 3 -
-         * waiting for the CIA-B timer that clocks its music. My IPL is
-         * computed from the VIRTUAL INTREQ alone, which knows nothing about
-         * the CIAs, so the wake-up never came: the picture stood still, one
-         * note of music repeated, and nothing in the machine moved again.
+         * U sandboxu CIA-e ostaju prave: prava Paula latcha EXTER (level 6) i
+         * PORTS (level 2), i INTREQR read folda te bitove unutra (vectors.c)
+         * da ih running handler vidi. Igra koja zaspi na njima nikad ništa ne
+         * pročita. Worms: The Director's Cut sjedi na STOP #$2300 u svom
+         * meniju - supervisor, interrupti maskirani na 3 - čekajući CIA-B
+         * timer koji taktira njegovu glazbu. Moj IPL se računa samo iz
+         * VIRTUALNOG INTREQa, koji ne zna ništa o CIA-ama, pa buđenje nikad
+         * nije došlo: slika je stajala, jedna nota glazbe se ponavljala, i
+         * ništa u mašini se više nije pomaknulo.
          *
-         * Mirror the real pending bits into the virtual INTREQ so they raise
-         * the IPL like any other source. Only the ones the game has enabled
-         * itself - handing a game an EXTER it never asked for makes its
-         * handler acknowledge a source that is not its own - and only in game
-         * mode. The clear path already exists: an INTREQ write that clears
-         * PORTS or EXTER is forwarded to the real Paula (custom.c), so the
-         * handler's own acknowledgement stops this re-raising it. */
-        /* Nudge a sleeping 68k that has an interrupt waiting for it. Emu68's
-           STOP parks on WFE and only looks again when an event arrives, so
-           one missed event is a machine that never moves again. An SEV
-           costs nothing and any core that is not waiting ignores it. */
+         * Mirroraj prave pending bitove u virtualni INTREQ da dižu IPL kao
+         * svaki drugi izvor. Samo one koje je igra sama enableala - dati igri
+         * EXTER koji nikad nije tražila čini da njezin handler acknowledga
+         * izvor koji nije njezin - i samo u game modeu. Clear put već
+         * postoji: INTREQ write koji clearne PORTS ili EXTER forwarda se
+         * pravoj Pauli (custom.c), pa handlerov vlastiti acknowledge
+         * zaustavlja ovo ponovno dizanje. */
+        /* Gurni uspavani 68k koji ima interrupt koji ga čeka. Emu68 STOP se
+           parkira na WFE i pogleda opet samo kad stigne event, pa je jedan
+           promašeni event mašina koja se više nikad ne pomakne. SEV ne košta
+           ništa i svaki core koji ne čeka ga ignorira. */
         if (aga_sandbox_active && (cia_poll & 255) == 128 && aga_get_ipl(aga) > 0)
             __asm__ volatile("dsb ish; sev" ::: "memory");
         if (aga_sandbox_active && frame_pending) {
@@ -2550,15 +2599,15 @@ void aga_chipset_main(void)
                enables back to the CIA sources whenever anything else turns
                up. */
             uint16_t ri = (uint16_t)ps_read_16(0xDFF01C);
-            /* AUDIO ONLY. The first version cleared every non-CIA enable, and
-               when WHDLoad crashed back to a desktop before its cleanup could
-               leave the sandbox, that took VBlank, blitter and disk away from
-               the restored OS - Worms ended in a Software Failure. The storm
-               came from audio alone, and the real Paula's audio is mine. */
+            /* SAMO AUDIO. Prva verzija clearala je svaki non-CIA enable, i kad se
+               WHDLoad srušio natrag na desktop prije nego je njegov cleanup
+               mogao napustiti sandbox, to je uzelo VBlank, blitter i disk od
+               restauriranog OS-a - Worms je završio u Software Failureu. Storm
+               je dolazio samo od audija, a audio prave Paule je moj. */
             uint16_t stray = (uint16_t)(ri & 0x0780);
             if (stray) {
-                ps_write_16(0xDFF09A, stray);        /* clear those enables */
-                ps_write_16(0xDFF09C, stray);        /* and what they latched */
+                ps_write_16(0xDFF09A, stray);        /* clearaj te enablee */
+                ps_write_16(0xDFF09C, stray);        /* i ono što su latchali */
                 if (!aga_diag_ctr[AGA_D_REAL_INTENA_FIX])
                     aga_diag_log("[AGA] the real Paula had its audio interrupts enabled: switched off");
                 aga_diag_inc(AGA_D_REAL_INTENA_FIX);
@@ -2566,17 +2615,17 @@ void aga_chipset_main(void)
             }
         }
         if (aga_sandbox_active && frame_pending) {
-            /* The mouse quit. Both buttons for two seconds - or the left one alone
-               for six, because the right one is read through POTGO and a program
-               that reconfigures that port makes it unreadable, while the left is
-               a CIA pin nobody can take away. Stage one hands WHDLoad an F10 (see
-               aga_cia_read); if the machine is still in the sandbox three seconds
-               later, the program is not taking interrupts at all, and stage two
-               is a level 7 - it cannot be masked, and it lands in WHDLoad's own
-               vector table, which reports it and offers the way out. */
+            /* Mouse quit. Oba buttona dvije sekunde - ili lijevi sam šest, jer se
+               desni čita kroz POTGO i program koji rekonfigurira taj port
+               učini ga nečitljivim, dok je lijevi CIA pin koji nitko ne može
+               oduzeti. Stage jedan preda WHDLoadu F10 (vidi aga_cia_read); ako
+               je mašina tri sekunde kasnije još u sandboxu, program uopće ne
+               prima interrupte, i stage dva je level 7 - ne može se maskirati,
+               i sleti u WHDLoadov vlastiti vector table, koji ga prijavi i
+               ponudi izlaz. */
             uint8_t pra = (uint8_t)ps_read_8(0xBFE001);
             uint16_t pot = (uint16_t)ps_read_16(0xDFF016);
-            aga_hdmi_led(!(pra & 0x02));         /* /LED low: lit, the LED filter on */
+            aga_hdmi_led(!(pra & 0x02));         /* /LED low: upaljen, LED filter uključen */
             int lmb = !(pra & 0x40), rmb = !(pot & 0x0400);
             mq_held2 = (lmb && rmb) ? mq_held2 + 1 : 0;
             mq_held1 = lmb ? mq_held1 + 1 : 0;
@@ -2594,26 +2643,26 @@ void aga_chipset_main(void)
                 aga_diag_log("[AGA] mouse quit: still in the sandbox, raising an NMI");
             }
         } else if (!aga_sandbox_active) {
-            /* a fresh game gets a fresh mouse quit */
+            /* svježa igra dobije svježi mouse quit */
             mq_held2 = mq_held1 = mq_stage = 0;
         }
         if (aga_game_mode && aga_sandbox_active && (++cia_poll & 63) == 0) {
-            /* ONLY once the machine has gone quiet. A running game already gets
-               its CIA interrupts: the real Paula raises the real IPL and the
-               68k takes them through the normal PiStorm path, and an INTREQR
-               read folds the bits in for the handler. Mirroring them all the
-               time instead means re-raising a source whose real latch is still
-               set, over and over, which buries a loader in level 6 - the very
-               storm the takeover silencing exists to prevent. A CPU asleep on
-               STOP makes no accesses at all, so half a second of silence is
-               the signal, and it is one no working game ever gives. */
+            /* SAMO kad se mašina utišala. Igra koja radi već dobiva svoje CIA
+               interrupte: prava Paula diže pravi IPL i 68k ih uzima kroz
+               normalni PiStorm put, a INTREQR read folda bitove unutra za
+               handler. Mirrorati ih cijelo vrijeme umjesto toga znači
+               re-dizati izvor čiji je pravi latch još set, iznova i iznova,
+               što zakopa loader u level 6 - upravo storm koji takeoverovo
+               utišavanje postoji da spriječi. CPU uspavan na STOP ne pravi
+               nikakve pristupe, pa je pola sekunde tišine signal, i to onaj
+               koji nijedna radna igra nikad ne da. */
             static uint32_t q_seen;
             static uint64_t q_since, q_last;
-            /* Half a second to decide this game sleeps at all; once it has
-               woken from one, a fortieth is enough, so a game that sleeps
-               between every tick of its music keeps its tempo. A loader is
-               never quiet for that long with nothing to acknowledge, and the
-               spacing below caps the rate either way. */
+            /* Pola sekunde da se odluči spava li ova igra uopće; kad se jednom
+               probudila iz jednog, četrdesetina je dovoljna, pa igra koja
+               spava između svakog ticka svoje glazbe zadrži tempo. Loader
+               nikad nije tih toliko dugo bez ičega za acknowledgati, a
+               razmak ispod ograniči ratu u svakom slučaju. */
             static int q_proven;
             uint32_t act = aga_diag_ctr[AGA_D_TRAPS_W] + aga_diag_ctr[AGA_D_TRAPS_R]
                          + aga_diag_ctr[AGA_D_CHIP_W] + aga_diag_ctr[AGA_D_CHIP_R];
@@ -2629,9 +2678,9 @@ void aga_chipset_main(void)
                     uint16_t real = (uint16_t)ps_read_16(0xDFF01E) & en;
                     uint16_t have = aga_custom_rget(aga, INTREQR) & en;
                     if (real & ~have) {
-                        /* the loop already holds the chipset lock here - taking
-                           it again wedges this core, and with it the frames,
-                           the watchdog and the game's only way out */
+                        /* loop ovdje već drži chipset lock - uzeti ga opet
+                           zaglavi ovaj core, a s njim frameove, watchdog i
+                           igrin jedini izlaz */
                         aga_custom_wput(aga, INTREQ, (uint16_t)(0x8000 | (real & ~have)));
                         aga_diag_inc(AGA_D_CIA_WAKE);
                         q_last = nowq;
@@ -2641,14 +2690,13 @@ void aga_chipset_main(void)
             }
         }
 #ifdef AGA_PROBES
-        if (frame_pending) {   /* one line of the 68k's life, per frame */
+        if (frame_pending) {   /* jedan line 68k-ovog života, po frameu */
             static uint32_t tp, cw, i3, i6;
             uint32_t t = aga_diag_ctr[AGA_D_TRAPS_W] + aga_diag_ctr[AGA_D_TRAPS_R];
             uint32_t c = aga_diag_ctr[AGA_D_CHIP_W];
             uint32_t a3 = aga_diag_ctr[AGA_D_IRQ_L3], a6 = aga_diag_ctr[AGA_D_IRQ_L6];
-            {   /* instructions retired this frame, in the traps column when
-                   nothing else is moving: it says whether the CPU is asleep
-                   or spinning */
+            {   /* instrukcije retired ovog framea, u traps koloni kad se ništa
+                   drugo ne miče: kaže je li CPU uspavan ili spinna */
                 static uint32_t lt;
                 uint32_t lk = emu68_get_loop_ticks();
                 aga_diag_frame_trace(emu68_get_sr(), t - tp, c - cw, a3 - i3, a6 - i6,
@@ -2657,7 +2705,7 @@ void aga_chipset_main(void)
             }
             tp = t; cw = c; i3 = a3; i6 = a6;
         }
-        {   /* one line of heartbeat per chunk: a stall leaves the last one */
+        {   /* jedan line heartbeata po chunku: stall ostavi zadnji */
             uint32_t bv = aga_peek_beam(aga, VHPOSR, 2);
             aga_diag_inc(AGA_D_CHUNK_SEQ);
             aga_diag_set(AGA_D_CHUNK_VPOS,
@@ -2666,15 +2714,15 @@ void aga_chipset_main(void)
         }
 #endif
 #ifdef AGA_PROBES
-        /* the highest line this core actually stepped the chipset to */
+        /* najviši line do kojeg je ovaj core stvarno odveo chipset */
         aga_diag_max(AGA_D_LOOP_VPOS_MAX,
                      (((uint32_t)aga_peek_beam(aga, VPOSR, 2) & 7) << 8)
                      | ((aga_peek_beam(aga, VHPOSR, 2) >> 8) & 0xFF));
         if (!aga_diag_is_frozen())
-        {   /* where the display is reading from, and whether anything is
-               there: 256 words at the first bitplane's pointer. Frozen with
-               everything else, or quitting the game overwrites the evidence
-               with WHDLoad's teardown: no planes and a one-line window. */
+        {   /* odakle display čita, i ima li išta tamo: 256 riječi na pointeru
+               prvog bitplanea. Zamrznuto sa svim ostalim, ili izlazak iz igre
+               prepiše dokaze WHDLoadovim teardownom: nema planeova i
+               one-line window. */
             static uint32_t bpl1_prev;
             uint32_t p1 = aga_peek_bplpt(aga, 0);
             aga_diag_set(AGA_D_BPL1PT_NOW, p1);
@@ -2703,7 +2751,7 @@ void aga_chipset_main(void)
                 aga_diag_set(AGA_D_DMALOG0 + i, aga_peek_dmacon_log(aga, i));
                 aga_diag_set(AGA_D_BC0LOG0 + i, aga_peek_beamcon0_log(aga, i));
             }
-            {   /* per frame, not since boot: the picture is about this frame */
+            {   /* po frameu, ne od boota: slika je o ovom frameu */
                 static uint32_t fprev[6];
                 static uint32_t fframe;
                 uint32_t fr = (uint32_t)aga_frame_count(aga);
@@ -2718,7 +2766,7 @@ void aga_chipset_main(void)
             }
         }
         if (!aga_diag_is_frozen())
-        {   /* bitplane DMA on or off, and the frame it last changed in */
+        {   /* bitplane DMA on ili off, i frame u kojem se zadnje promijenio */
             static uint16_t dma_prev;
             uint16_t dm = aga_peek_dmacon(aga);
             aga_diag_set(AGA_D_DMACON_NOW, dm);
@@ -2730,8 +2778,8 @@ void aga_chipset_main(void)
             dma_prev = dm;
         }
         if (!aga_diag_is_frozen())
-        {   /* PAL is 313 lines, NTSC 263: a game that sets one and gets the
-               other waits for lines that never come round */
+        {   /* PAL je 313 linija, NTSC 263: igra koja postavi jedno a dobije
+               drugo čeka linije koje se nikad ne vrte */
             static int geom_prev;
             int lpf = aga_lines_per_frame(aga);
             if (lpf != geom_prev) {
@@ -2762,20 +2810,19 @@ void aga_chipset_main(void)
                 program_display_lines = aga_last_frame_display_lines(aga);
             }
         }
-        /* CIA interrupts are NOT mirrored here any more. This used to compare
-           emu68_get_real_ipl() against 2 and 6, but on the classic PiStorm
-           that byte is a 0/1 "IPL line active" flag, never the level, so it
-           never matched and the virtual INTREQ never showed PORTS/EXTER. The
-           real exception path delivers those levels; vectors.c folds the real
-           INTREQR bits into INTREQR reads so the OS handler acknowledges the
-           CIA. */
+        /* CIA interrupti se ovdje VIŠE ne mirroraju. Ovo je prije uspoređivalo
+           emu68_get_real_ipl() s 2 i 6, ali na klasičnom PiStormu taj bajt je
+           0/1 "IPL line active" flag, nikad level, pa se nikad nije poklopio i
+           virtualni INTREQ nikad nije pokazao PORTS/EXTER. Pravi exception put
+           dostavlja te levelove; vectors.c folda prave INTREQR bitove u
+           INTREQR readove da OS handler acknowledga CIA. */
         (void)last_real_ipl;
         unlock();
         if (frame_pending && aga_loop_stop == 3) {
-            /* chipset only: a frame completed, but nothing is presented. */
+            /* samo chipset: frame se završio, ali ništa se ne prezentira. */
             frame_pending = 0;
             aga_diag_inc(AGA_D_FRAMES);
-            {   /* the frame's time budget: busy = everything but the pacing wait */
+            {   /* frameov time budget: busy = sve osim pacing waita */
                 uint64_t fn = cntvct(), ft = fn - frame_t0;
                 uint64_t busy = ft > wait_acc ? ft - wait_acc : 0;
                 uint32_t bus_us = (uint32_t)((busy * 1000000u) / freq);
@@ -2808,7 +2855,7 @@ void aga_chipset_main(void)
                   aga_diag_set(AGA_D_CHIPW_FRAME, cw - cw_prev);
                   aga_diag_max(AGA_D_CHIPW_FRAME_WORST, cw - cw_prev); cw_prev = cw; }
                 { uint64_t m0 = cntvct(); uint32_t p = (uint32_t)(m0 & 0x3FFFF);
-                  for (int i = 0; i < 512; i++) p = mem_probe[p];      /* ~80 us on a Pi 3, less on a Pi 4 */
+                  for (int i = 0; i < 512; i++) p = mem_probe[p];      /* ~80 us na Pi 3, manje na Pi 4 */
                   __asm__ volatile("" :: "r"(p));
                   uint32_t mus = (uint32_t)(((cntvct() - m0) * 1000000u) / freq);
                   aga_diag_set(AGA_D_MEM_US, mus); aga_diag_max(AGA_D_MEM_US_WORST, mus); }
@@ -2820,10 +2867,10 @@ void aga_chipset_main(void)
         } else if (frame_pending) {
             frame_pending = 0;
             if (AGA_PROBES_ON && aga_sandbox_active) {
-                /* three bus reads per frame: what the real Paula thinks */
-                /* timed: on a Pi 3 these three bus reads are the last thing
-                   core 3 does on the PiStorm bus in rung 5, and the bus is
-                   the suspect for the 12 ms stalls (2026-09-14) */
+                /* tri bus reada po frameu: što prava Paula misli */
+                /* timed: na Pi 3 su ova tri bus reada zadnje što core 3 radi na
+                   PiStorm busu u rungu 5, a bus je osumnjičeni za 12 ms
+                   zastoje (2026-09-14) */
                 uint64_t b0 = cntvct();
                 aga_diag_set(AGA_D_REAL_INTENA, ps_read_16(0xDFF01C));
                 aga_diag_set(AGA_D_REAL_INTREQ, ps_read_16(0xDFF01E));
@@ -2841,7 +2888,7 @@ void aga_chipset_main(void)
                     aga_diag_set(AGA_D_TRAPHOLD_US_FRAME, (uint32_t)((th * 1000000u) / freq));
                     aga_diag_max(AGA_D_TRAPHOLD_US_WORST, (uint32_t)((traphold_max * 1000000u) / freq));
                 }
-                {   /* the bus mutex, per core: this frame's share added to the session totals */
+                {   /* bus mutex, po coreu: ovosezonski udio dodan u session totale */
                     extern volatile uint64_t ps_bus_wait_ticks[4], ps_bus_hold_ticks[4], ps_bus_wait_max[4];
                     extern volatile uint32_t ps_bus_count[4];
                     static uint64_t w_prev[4], h_prev[4];
@@ -2866,10 +2913,11 @@ void aga_chipset_main(void)
             }
             uint64_t t0 = cntvct();
             aga_video_set_window(wmode, wx, wy, ww, wh);
-            {   /* what the core made of the frame - woven, PAL or NTSC - and
-                   the pacing clock for the standard from now on */
+            {   /* što je core napravio od framea - woven, PAL ili NTSC - i pacing
+                   clock za standard od sad */
                 int row = 0, woven = aga_frame_woven(aga, &row), ntsc = aga_is_ntsc(aga);
                 aga_video_set_frame(woven, row, ntsc);
+                aga_video_set_frame_len(aga_last_frame_cck(aga));
                 int ax0, ax1, ay0, ay1;            /* and its display window, for Size Auto */
                 int aok = aga_last_frame_window(aga, &ax0, &ax1, &ay0, &ay1);
                 aga_video_auto_window(aok, ax0, ax1, ay0, ay1);
@@ -2914,7 +2962,7 @@ void aga_chipset_main(void)
                 ps_reset_watch();
 #endif
             }
-            if (AGA_PROBES_ON) {   /* how far behind real time the loop is as this frame goes out */
+            if (AGA_PROBES_ON) {   /* koliko je loop iza realnog vremena dok ovaj frame izlazi */
                 uint64_t nowt = cntvct();
                 uint64_t lagt = nowt > next_ticks ? nowt - next_ticks : 0;
                 uint32_t lms = (uint32_t)((lagt * 1000u) / freq);
@@ -2922,7 +2970,7 @@ void aga_chipset_main(void)
                 aga_diag_inc(AGA_D_LAG_HIST0 + b);
                 aga_diag_frame_lag(lms);
             }
-            {   /* the frame's time budget: busy = everything but the pacing wait */
+            {   /* frameov time budget: busy = sve osim pacing waita */
                 uint64_t fn = cntvct(), ft = fn - frame_t0;
                 uint64_t busy = ft > wait_acc ? ft - wait_acc : 0;
                 uint32_t bus_us = (uint32_t)((busy * 1000000u) / freq);
@@ -2955,7 +3003,7 @@ void aga_chipset_main(void)
                   aga_diag_set(AGA_D_CHIPW_FRAME, cw - cw_prev);
                   aga_diag_max(AGA_D_CHIPW_FRAME_WORST, cw - cw_prev); cw_prev = cw; }
                 { uint64_t m0 = cntvct(); uint32_t p = (uint32_t)(m0 & 0x3FFFF);
-                  for (int i = 0; i < 512; i++) p = mem_probe[p];      /* ~80 us on a Pi 3, less on a Pi 4 */
+                  for (int i = 0; i < 512; i++) p = mem_probe[p];      /* ~80 us na Pi 3, manje na Pi 4 */
                   __asm__ volatile("" :: "r"(p));
                   uint32_t mus = (uint32_t)(((cntvct() - m0) * 1000000u) / freq);
                   aga_diag_set(AGA_D_MEM_US, mus); aga_diag_max(AGA_D_MEM_US_WORST, mus); }
@@ -2964,10 +3012,10 @@ void aga_chipset_main(void)
                 frame_t0 = fn; wait_acc = 0; audio_acc = 0;
             }
             stat_t0 = cntvct();
-            aga_audio_set_mask(aga, aud_mask_want);   /* survives any reset */
+            aga_audio_set_mask(aga, aud_mask_want);   /* preživi svaki reset */
 #ifdef AGA_PROBES
-            {   /* per-channel audio, once a frame: which channels the game
-                   actually runs, and how much data each one pulls */
+            {   /* per-channel audio, jednom po frameu: koje kanale igra
+                   stvarno vrti, i koliko podataka svaki vuče */
                 uint32_t aon[4], awd[4], anz[4];
                 aga_audio_stats(aga, aon, awd, anz);
                 for (int n = 0; n < 4; n++) {
@@ -2980,7 +3028,7 @@ void aga_chipset_main(void)
                 aga_diag_triggers(atrig, ntrig);
                 uint32_t avol[4], avmax[4], aaud[4];
                 aga_audio_vols(aga, avol, avmax, aaud);
-                {   /* per-channel loudness for THIS frame, not since boot */
+                {   /* per-channel glasnoća OVOG framea, ne od boota */
                     static uint32_t nrg_prev[4];
                     uint32_t d[4];
                     for (int n = 0; n < 4; n++) { d[n] = anz[n] - nrg_prev[n]; nrg_prev[n] = anz[n]; }
@@ -3009,14 +3057,14 @@ void aga_chipset_main(void)
             aga_diag_ctr[AGA_D_BLITS] += bc - blit_prev;
             blit_prev = bc;
             if (had_data) aga_diag_inc(AGA_D_DATA_FRAMES);
-            aga_diag_snapshot(had_data);   /* survives the reset a wedged game forces */
-            /* and put it on the screen, which is the only channel that
-               survives a wedge: no OS, no caffed, no keyboard needed. */
-            /* The display state, two registers a row. On a classic PiStorm every
-               Ctrl-Amiga-Amiga reboots the whole Pi (Emu68's housekeeper does it
-               on purpose), so after a game that has no quit - Reshoot Proxima 3 -
-               nothing the kernel recorded survives. A photograph of this does.
-               Off unless `agaboot OVERLAY ON`; the diag build has it on.
+            aga_diag_snapshot(had_data);   /* preživi reset koji zaglavljena igra forsira */
+            /* i stavi to na ekran, jedini kanal koji preživi wedge: nema OS,
+               nema caffed, nema tipkovnice. */
+            /* Display state, dva registra po redu. Na klasičnom PiStormu svaki
+               Ctrl-Amiga-Amiga reboota cijeli Pi (Emu68 housekeeper to radi
+               namjerno), pa nakon igre koja nema quit - Reshoot Proxima 3 -
+               ništa što je kernel snimio ne preživi. Fotografija ovoga
+               preživi. Off osim `agaboot OVERLAY ON`; diag build ga ima on.
                  0 BPLCON0:DMACONR  1 BPLCON1:BPLCON2  2 BPLCON3:BPLCON4
                  3 FMODE:DIWHIGH    4 DIWSTRT:DIWSTOP  5 DDFSTRT:DDFSTOP
                  6 BPL1MOD:BPL2MOD  7 BPL1PT   8 BPL2PT
@@ -3040,8 +3088,8 @@ void aga_chipset_main(void)
               aga_diag_set(AGA_D_DL_INUSE, aga_dl_inuse);
               aga_diag_set(AGA_D_DL_FREE_AT, aga_dl_free_at);
               aga_diag_set(AGA_D_DL_FREE_LEN, aga_dl_free_len); }
-            {   /* the core gave up the ECS Denise it was told to be: the game
-                   turned on an AGA-only feature (playfield.c ecs_says_aga) */
+            {   /* core je odustao od ECS Denisea kakav mu je rečeno da bude: igra
+                   je uključila AGA-only feature (playfield.c ecs_says_aga) */
                 int e = aga_get_ecs(aga);
                 if (ecs_seen == 1 && !e && aga_sandbox_active) {
                     unsigned sg = aga_ecs_signs(aga);
@@ -3051,8 +3099,8 @@ void aga_chipset_main(void)
                                                         : "[AGA] chipset: AGA after all - an AGA fetch and AGA colours, before WHDLoad took the machine"));
                 }
                 ecs_seen = e;
-                /* and what it saw first, once each: tells a short run from a
-                   switch that never came */
+                /* i što je prvo vidio, svaki po jednom: razlikuje kratki run od
+                   prekidača koji nikad nije došao */
                 if (e && aga_sandbox_active) {
                     unsigned sg = aga_ecs_signs(aga), fresh = sg & ~ecs_signs_logged & 15u;
                     if (fresh & 1) aga_diag_log("[AGA] chipset: ECS Denise sees an AGA fetch (FMODE or eight planes)");
@@ -3070,29 +3118,38 @@ void aga_chipset_main(void)
             audio_countdown = 0;
             int maxf;
             int16_t *buf = aga_audio_scratch(&maxf);
-            /* Paula on HDMI band-limited (aga_hdmi.c): the core logs Paula's
-               steps for it while it is on - all that fit its ring, so all
-               the core has are taken each time */
+            /* Paula na HDMI-u band-limited (aga_hdmi.c): core loga Pauline
+               stepove za njega dok je uključen - sve što stane u njegov ring,
+               pa se svaki put uzme sve što core ima */
             static aga_step_t steps[AGA_STEP_RING];
             static int steps_were;
             int bl = aga_hdmi_paula_bl(), ns = 0;
             uint64_t steps_now = 0;
             lock();
             if (bl != steps_were) { aga_audio_steps_on(aga, bl); steps_were = bl; }
-            /* at the rate the real Paula plays: 3546895 / 127 on a PAL
-               crystal, 3579545 / 128 on an NTSC one (aga_audio.c) */
+            /* ratom kojom prava Paula svira: 3546895 / 127 na PAL
+               kristalu, 3579545 / 128 na NTSC (aga_audio.c) */
             extern uint32_t aga_audio_rate(void);
+            /* AGA-PiStorm 1.118 voice mixer + sound monitor. */
+            int von;
+            int32_t vgl[4], vgr[4];
+            aga_hdmi_voice_gains(&von, vgl, vgr);
+            aga_audio_set_voices(aga, von, vgl, vgr);
             int n = aga_audio_pull(aga, buf, maxf, (int)aga_audio_rate());
             if (bl) ns = aga_audio_steps(aga, steps, AGA_STEP_RING, &steps_now);
+            static uint32_t vwords[4096];
+            aga_voice_t vinf[4];
+            int nv = aga_audio_voices(aga, vwords, 4096, vinf);
             unlock();
+            aga_hdmi_voices(vwords, nv, vinf, aga_audio_rate());
             if (bl && aga_loop_stop == 0)
                 aga_hdmi_feed_steps(steps, ns, steps_now, paced_ntsc ? 3579545u : 3546895u);
-            /* rung 5 stops here: aga_audio_pull has run (pure computation over
-               virtual state, under the lock) but nothing is streamed. Rung 0
-               goes on to aga_audio_stream, which issues 32-bit ps_write_32
-               PiStorm bus writes from core 3 and reprograms the real Paula.
-               Rung 4 survives at 50 fps and rung 0 does not, so the fault is in
-               this block; this splits it in half. */
+            /* rung 5 staje ovdje: aga_audio_pull je radio (čista računica nad
+               virtualnim stanjem, pod lockom) ali ništa se ne streama. Rung 0
+               ide dalje na aga_audio_stream, koji izdaje 32-bitne ps_write_32
+               PiStorm bus writeove s corea 3 i reprogramira pravu Paulu.
+               Rung 4 preživi na 50 fps a rung 0 ne, pa je greška u ovom bloku;
+               ovo ga dijeli na pola. */
             if (n > 0 && aga_loop_stop == 0) {
                 uint64_t a0 = cntvct();
                 aga_audio_stream(buf, n);
@@ -3107,52 +3164,52 @@ void aga_chipset_main(void)
             uint64_t behind = ((now_ticks - next_ticks) * (paced_ntsc ? 3579545u : 3546895u)) / freq;
             aga_diag_max(AGA_D_LAG_MAX, (uint32_t)behind);
         }
-        /* Give up and drop the owed time only when hopelessly behind - a whole
-           frame - not after a normal one.
-           The threshold used to be four scanlines, 256us. Presenting a frame
-           takes about 900us (frame_us_worst), so EVERY frame overshot it and
-           resynchronised: 4848 resyncs in 4990 frames. Each one discards the
-           time it fell behind, and the audio mix is generated from this very
-           clock, so the stream ran short by ~900us a frame, the Paula ring
-           repeated what was already in it, and the music came out with its
-           beats in the wrong places.
-           The ARM runs far faster than the emulated chipset, so the honest
-           answer is to catch the cycles up, which the loop does by itself as
-           soon as the present returns. */
-        /* Four scanlines, NOT a frame.
+        /* Odustani i odbaci dugovano vrijeme samo kad si beznadno iza - cijeli
+           frame - ne nakon normalnog.
+           Threshold je prije bio četiri scanlinea, 256us. Prezentiranje framea
+           traje oko 900us (frame_us_worst), pa ga je, fuck, SVAKI frame premašio i
+           resynchronizirao: 4848 resynca u 4990 frameova. Svaki odbaci vrijeme
+           za koje je pao iza, a audio mix se generira iz tog istog clocka, pa
+           je stream bio kratak ~900us po frameu, Paula ring je ponavljao ono
+           što je već u njemu bilo, i glazba je izlazila s beatovima na
+           pogrešnim mjestima.
+           ARM radi mnogo brže od emuliranog chipseta, pa je pošten odgovor
+           sustići cikluse, što loop sam napravi čim se present vrati. */
+        /* Četiri scanlinea, NE frame.
          *
          * Raising this to a frame looked right - presenting a frame takes about
          * 900us and the loop resynchronised on every one of them - but it put
          * Banshee straight back to a blank screen with blits at zero.
          *
-         * Resynchronising DROPS the time it owes; catching up REPLAYS it, and
-         * the loop catches up as fast as the ARM can run. So with a frame-sized
-         * budget the chipset runs ~3200 colour clocks in a few microseconds of
-         * real time after every present. The blitter's completion delay is
-         * counted in colour clocks (BLIT_DELAY_CCK), so inside a catch-up burst
-         * those 64 colour clocks expire in well under a microsecond - before
-         * the game has armed the wait it is about to sleep on, which is the
-         * very race the delay exists to prevent.
+         * Resynchroniziranje ODBACUJE vrijeme koje duguje; sustizanje ga
+         * REPLAYA, i loop sustiže brzinom kojom ARM može trčati. Pa s
+         * frame-sized budgetom chipset odradi ~3200 colour clockova u
+         * nekoliko mikrosekundi realnog vremena nakon svakog presenta.
+         * Blitterov completion delay se broji u colour clockovima
+         * (BLIT_DELAY_CCK), pa unutar catch-up bursta tih 64 colour clockova
+         * istekne u znatno manje od mikrosekunde - prije nego igra armira
+         * wait na koji će zaspati, upravo utrku koju delay postoji da
+         * spriječi.
          *
-         * Anything measured in emulated colour clocks is only as trustworthy as
-         * the loop's willingness to run them at real-time speed. Four scanlines
-         * keeps that promise; a frame does not. The audio drift this was meant
-         * to fix is handled where it belongs, in aga_audio.c, one sample at a
-         * time - audio_resyncs went from 31 in 110 seconds to 0. */
-        /* A whole frame, not four scanlines.
+         * Sve mjereno u emuliranim colour clockovima samo je pouzdano koliko
+         * je loop voljan vrtjeti ih realnom brzinom. Četiri scanlinea drže to
+         * obećanje; frame ne. Audio drift koji je ovo trebalo popraviti
+         * rješava se gdje mu je mjesto, u aga_audio.c, sample po sample -
+         * audio_resyncs je pao s 31 u 110 sekundi na 0. */
+        /* Cijeli frame, ne četiri scanlinea.
          *
-         * Resynchronising DROPS the time the loop owes. Presenting a frame
-         * costs about 900us - 4.5% of a 20 ms frame - so at four scanlines the
-         * loop discarded that on essentially every frame (1883 resyncs in 1993
-         * frames), and the emulated machine, with the audio generated from its
-         * clock, ran 4.5% slow. That is what every nudge and ring restart in
-         * aga_audio.c has been trying to paper over.
+         * Resynchroniziranje ODBACUJE vrijeme koje loop duguje. Prezentiranje
+         * framea košta oko 900us - 4.5% framea od 20 ms - pa je na četiri
+         * scanlinea loop to odbacivao na suštinski svakom frameu (1883 resynca
+         * u 1993 framea), i emulirana mašina, s audiom generiranim iz njezina
+         * clocka, radila je 4.5% sporo. To je ono što je svaki nudge i ring
+         * restart u aga_audio.c pokušavao papirnato pokriti.
          *
-         * Catching up instead was impossible while the blitter's completion
-         * delay was counted in colour clocks, because a catch-up burst replays
-         * thousands of them in a few microseconds. Now that the glue times the
-         * blit against the real clock, the two are independent and the loop can
-         * pay back what it owes. */
+         * Sustizanje je umjesto toga bilo nemoguće dok se blitterov
+         * completion delay brojao u colour clockovima, jer catch-up burst
+         * replaya tisuće njih u nekoliko mikrosekundi. Sad kad glue mjeri
+         * blit prema pravom clocku, dvoje je neovisno i loop može vratiti
+         * ono što duguje. */
         if (skip_ok) {
             uint64_t behind_t = now_ticks > next_ticks ? now_ticks - next_ticks : 0;
             int want = skip_want;
@@ -3209,7 +3266,7 @@ int aga_virtual_disk_pra(uint8_t *bits)
 #endif
 
 #define DSK_SLOTS 4
-static uint8_t *dsk_slot[DSK_SLOTS];      /* images kept for Ctrl+F1..F4 swapping */
+static uint8_t *dsk_slot[DSK_SLOTS];      /* imageovi držani za Ctrl+F1..F4 swapping */
 static uint32_t dsk_slot_size[DSK_SLOTS];
 static int      key_ctrl;
 
@@ -3224,9 +3281,82 @@ static int slot_insert(int n)
     return 1;
 }
 
-/* The CIA hooks exist only for the virtual drives: with no image inserted they
-   do nothing and the normal Emu68 bus path handles the access unchanged, so a
-   WHDLoad game without a floppy never sees them. */
+/* RGB2HDMI-SEL (1.121): HDMI switch vođen SEL linijom paralelnog porta -
+   CIA-B PRA bit 2 na $BFD000, smjer u DDRA bit 2 na $BFD200 - kako ga vozi
+   VC4 monitorov VC4_SWITCH_METHOD SEL, između RGB2HDMI (Amigine vlastite
+   slike) i Pi-jevog HDMIja. Moja slika je na Pi-jevom HDMIju, ali VC4 driver
+   to broji kao native screen i prebaci na RGB2HDMI, a igra koja resetira
+   CIA-B spusti SEL na njegov power-on level: zvuk, crni ekran (user report,
+   A2000, 11-04). S uključenim holdom (agabootov Expert - RGB2HDMI-SEL), SEL
+   je output na odabranom levelu dok god sandbox radi; 68k-ovi writeovi drže
+   svoje ostale bitove, a što su htjeli za SEL se čuva, da se vrati pri
+   leaveu.
+     $5280 off, $5282 držan low, $5283 držan high (šalje se prije enter
+     riječi) */
+static volatile int sel_hold = -1;   /* -1 off, inače level koji se drži */
+static int sel_held = 0;             /* pravi line je sad držan */
+static int sel_os_pra = 0, sel_os_ddr = 0;   /* SEL kako ga je 68k zadnje htio */
+
+static void sel_take(void)
+{
+    uint8_t pra = (uint8_t)ps_read_8(0xBFD000), ddra = (uint8_t)ps_read_8(0xBFD200);
+    if (!sel_held) {
+        sel_os_pra = (pra >> 2) & 1;
+        sel_os_ddr = (ddra >> 2) & 1;
+        sel_held = 1;
+    }
+    ps_write_8(0xBFD000, (pra & ~4) | (sel_hold ? 4 : 0));   /* prvo level, pa smjer */
+    ps_write_8(0xBFD200, ddra | 4);
+}
+
+static void sel_give(void)
+{
+    if (!sel_held) return;
+    sel_held = 0;
+    uint8_t pra = (uint8_t)ps_read_8(0xBFD000), ddra = (uint8_t)ps_read_8(0xBFD200);
+    ps_write_8(0xBFD000, (pra & ~4) | (sel_os_pra << 2));
+    ps_write_8(0xBFD200, (ddra & ~4) | (sel_os_ddr << 2));
+}
+
+/* vectors.c, core 0: $528n */
+void aga_sel_command(int v)
+{
+    sel_hold = (v & 2) ? (v & 1) : -1;
+    if (!aga_sandbox_active) return;
+    if (sel_hold >= 0) sel_take();
+    else sel_give();
+}
+
+/* aga_glue.c, core 0: sandbox ušao ili izašao */
+static void aga_sel_sandbox(int entered)
+{
+    if (entered && sel_hold >= 0) sel_take();
+    if (!entered) sel_give();
+}
+
+/* vectors.c, core 0: 68k write u CIA-B PRA ili DDRA dok je line držan -
+   1 = riješeno ovdje, sa SEL sačuvanim */
+int aga_sel_write(uint64_t far, int size, uint64_t value)
+{
+    if (!sel_held || sel_hold < 0 || (size != 1 && size != 2)) return 0;
+    if (far != 0xBFD000 && far != 0xBFD200) return 0;
+    /* CIA-B sjedi na gornjem data bajtu: word write ga nosi u bitovima 8-15 */
+    uint8_t b = (size == 1) ? (uint8_t)value : (uint8_t)(value >> 8);
+    if (far == 0xBFD200) {
+        sel_os_ddr = (b >> 2) & 1;
+        b |= 4;
+    } else {
+        sel_os_pra = (b >> 2) & 1;
+        b = (b & ~4) | (sel_hold ? 4 : 0);
+    }
+    if (size == 1) ps_write_8(far, b);
+    else           ps_write_16(far, ((unsigned)b << 8) | (value & 0xFF));
+    return 1;
+}
+
+/* CIA hookovi postoje samo za virtualne drive: bez imagea umetnutog ne
+   rade ništa i normalni Emu68 bus put obrađuje pristup nepromijenjen, pa ih
+   WHDLoad igra bez floppyja nikad ne vidi. */
 int aga_cia_write(uint64_t far, int size, uint64_t value)
 {
 #ifdef FRF_VIRTUAL_AGA
@@ -3235,13 +3365,13 @@ int aga_cia_write(uint64_t far, int size, uint64_t value)
 #else
     if (!aga_enabled || !aga || !aga_disk_active(aga)) return 0;
     if (far == 0xBFD100 && (size == 1 || size == 2)) {
-        /* CIA-B lives on the upper data byte: a word access carries PRB in bits 8-15 */
+        /* CIA-B živi na gornjem data bajtu: word pristup nosi PRB u bitovima 8-15 */
         uint8_t prb = (size == 1) ? (uint8_t)value : (uint8_t)(value >> 8);
         lock();
         aga_disk_cia_prb(aga, prb);
         uint8_t mask = aga_disk_cia_prb_mask(aga);
         unlock();
-        prb |= mask;                               /* virtual drives stay deselected on the real bus */
+        prb |= mask;                               /* virtualni driveovi ostaju deselected na pravom busu */
         if (size == 1) ps_write_8(0xBFD100, prb);
         else           ps_write_16(0xBFD100, ((unsigned)prb << 8) | (value & 0xFF));
         return 1;
@@ -3271,13 +3401,12 @@ int aga_cia_read(uint64_t far, int size, uint64_t *value)
     }
     if (!aga_enabled || !aga || !aga_disk_active(aga)) return 0;
     if (size == 2 && far == 0xBFE000) {
-        /* A WORD read spanning $BFE000-$BFE001. The CIA sits on the odd byte
-           lane, so the low half is the register and the high half is whatever
-           the bus floats. Kickstart and bootblocks do use this form, and until
-           now it fell straight through to the real bus, where the virtual
-           drive's READY, TRACK0, WPROT and CHANGE bits do not exist - so a
-           machine booting from the virtual floppy polled a drive that never
-           answered. */
+        /* WORD read koji premošćuje $BFE000-$BFE001. CIA sjedi na neparnoj byte
+           lane, pa je donja polovica registar a gornja ono što bus floa.
+           Kickstart i bootblockovi koriste ovaj oblik, i dosad je padao ravno
+           na pravi bus, gdje virtualnog drivea READY, TRACK0, WPROT i CHANGE
+           bitovi ne postoje - pa je mašina koja boota s virtualne floppy
+           pollala drive koji nikad nije odgovorio. */
         uint16_t w = (uint16_t)ps_read_16(0xBFE000);
         uint8_t bits;
         lock();
@@ -3298,7 +3427,7 @@ int aga_cia_read(uint64_t far, int size, uint64_t *value)
         return 1;
     }
     if (far == 0xBFEC01) {
-        /* keyboard data: watch for Ctrl+F1..F4 = insert swap slot 1..4 into DF0 */
+        /* keyboard data: pazi na Ctrl+F1..F4 = umetni swap slot 1..4 u DF0 */
         uint8_t v = (uint8_t)ps_read_8(0xBFEC01);
         uint8_t raw = (uint8_t)~((v >> 1) | (v << 7));
         int up = raw & 0x80, code = raw & 0x7F;
@@ -3347,7 +3476,7 @@ int aga_disk_command(unsigned cmd)
         kprintf("[AGA] disk command %02x: bad image %08x/%d\n", cmd, addr, size);
         return 0;
     }
-    const uint8_t *src = (const uint8_t *)(uintptr_t)addr;   /* 68k fast RAM is Pi memory, identity mapped */
+    const uint8_t *src = (const uint8_t *)(uintptr_t)addr;   /* 68k fast RAM je Pi memorija, identity mapirana */
     if (op == 0xF && n < 2) {
         lock(); int r = aga_disk_insert(aga, n, src, size, wprot); unlock();
         if (n == 0 && r == 0) {
@@ -3377,10 +3506,10 @@ void aga_machine_reset(void)
     lock();
     uint16_t ctrl = aga_peek_reg(aga, 0x1F2), win[4];
     for (int i = 0; i < 4; i++) win[i] = aga_peek_reg(aga, 0x1F4 + 2 * i);
-    aga_reset(aga);                           /* registers; disks stay inserted */
+    aga_reset(aga);                           /* registri; diskovi ostaju umetnuti */
     fwd_forget();
     for (int i = 0; i < 4; i++) aga_custom_wput(aga, 0x1F4 + 2 * i, win[i]);
-    aga_custom_wput(aga, 0x1F2, ctrl);        /* keep the fullscreen/windowed choice */
+    aga_custom_wput(aga, 0x1F2, ctrl);        /* sačuvaj fullscreen/windowed izbor */
     unlock();
     key_ctrl = 0;
     kprintf("[AGA] machine reset on the virtual chipset (ctrl %04x)\n", ctrl);

@@ -1,0 +1,15 @@
+# EMU68AGA joystick decoded-bit profile
+# Add this once to config.txt:
+#   include joystick-map.txt
+#
+# JF1/JF2/JF3/JF4 are DECODED HID button bit indices (0..31).
+# Edit, save to the FAT32 Emu68 boot partition, reboot and test.
+# Historical working 057E:2009 mapping:
+#   decoded bit 0 -> primary CIA fire
+#   decoded bit 1 -> second fire / POTGOR bit 14
+#
+dtoverlay=emu68,JMAP,JF1=0,JF2=1,JF3=2,JF4=3
+#
+# Comment the dtoverlay line above to disable the profile.
+# Fallback with no valid profile:
+# decoded bits 0/1/2/3 remain independent Fire1/Fire2/Fire3/Fire4.

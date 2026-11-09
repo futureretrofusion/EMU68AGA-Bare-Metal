@@ -168,7 +168,7 @@ struct M68KState
             uint8_t IPL;
             uint8_t RESET;
             uint8_t PPC;
-            uint8_t AGA;        /* AGA-PISTORM: IPL requested by the virtual Paula */
+            uint8_t AGA;        /* AGA-STORM: IPL koji traži virtualna Paula */
         } INTF;
         uint64_t INT64;
     } __attribute__((aligned(8)));

@@ -15,6 +15,21 @@ Our role is to adapt and integrate the existing emulation for standalone use, an
 **Current public release: [EMU68AGA Bare Metal v0.10.40a](https://github.com/futureretrofusion/EMU68AGA-Bare-Metal/releases/tag/v0.10.40a) (23 October 2026).**
 Hardware-verified Pi 3 USB/HID endian correction, including working gamepad direction and button input. Download the ready-to-copy `kernel8.img` and matching R40a ZIP from that release. The release does not include Kickstart ROM, AmigaOS or commercial software. Earlier R18–R23 experimental release entries have been archived as **unpublished drafts**; their assets and Git tags are retained for maintainers. See [historical release index](docs/ARCHIVED_RELEASES_2026-10-23.md).
 
+## Experimental AGA-Storm v1.121 integration
+
+**Pre-release:** [FRF v1.121 RC8](https://github.com/futureretrofusion/EMU68AGA-Bare-Metal/releases/tag/v1.121-rc8-frf)
+contains the updated Pi 3 kernel and corresponding source. It merges
+AGA-Storm v1.121 atop our v1.120-derived integration, with the **FRF
+TinyUSB/DWC2 USB stack retained**. The OSD now uses native AGA display
+activity to gate keyboard input. OSD keyboard navigation and activation
+remain **hardware-unverified in RC8**; do not mistake it for the latest
+fully tested release. The previously hardware-verified v0.10.40a is
+still linked below.
+
+Read [RC8 release notes](RELEASE_NOTES_v1.121_rc8.md),
+[build instructions](docs/BUILD_1.121_RC8.md) and
+[upstream credits](THIRD_PARTY_NOTICES.md) before installing.
+
 ## Start here
 
 > **RESET THE SYSTEM:** press **Ctrl + Left Shift + F11**. This is the EMU68AGA reset shortcut and is the quickest way to reboot the Amiga without power-cycling the Pi.

@@ -1,23 +1,22 @@
-/* AGA-PISTORM - Blitter (immediate mode).
+/* AGA-STORM — Blitter (immediate mode).
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * The blit engine is UAE's, from WinUAE blitter.cpp and in places from its
- * older form kept in E-UAE's blitter.c: do_fill is the fill step of
- * blitter_dofast (copied, names changed); build_fill_table builds UAE's
- * blit_filltable; blit_normal translates blitter_dofast / blitter_dofast_desc,
- * and blit_line the line mode, its steps and texture rotate in the older form
- * (blitter_line_proc, blitter_nxline) in the order of WinUAE's
- * actually_do_blit (each pixel written to BLTDPT after the step, the SING
- * dot, blitter_line_adat); the BLTBDAT write shifts as WinUAE's
- * blitter_loadbdat; the cycles per word in blit_duration are WinUAE's
- * (blit_cycle_diagram). The minterm function, the other register writes and
- * starting, finishing and timing a blit are mine.
+ * Blit engine je UAE-ov, iz WinUAE blitter.cpp i mjestimice iz njegovog
+ * starijeg oblika sačuvanog u E-UAE blitter.c: do_fill je fill korak
+ * blitter_dofast (kopiran, imena promijenjena); build_fill_table gradi UAE-ov
+ * blit_filltable; blit_normal prevodi blitter_dofast / blitter_dofast_desc,
+ * a blit_line line mode, njegove korake i rotaciju teksture u starijem obliku
+ * (blitter_line_proc, blitter_nxline) redoslijedom WinUAE actually_do_blit
+ * (svaki piksel upisan u BLTDPT nakon koraka, SING točka, blitter_line_adat);
+ * BLTBDAT upis pomiče kao WinUAE blitter_loadbdat; ciklusi po riječi u
+ * blit_duration su WinUAE-ovi (blit_cycle_diagram). Minterm funkcija, ostali
+ * upisi registara te pokretanje, završavanje i mjerenje vremena blita su moji.
  *   WinUAE blitter.cpp: (c) 1995 Bernd Schmidt, Alessandro Bissacco
  *                       (c) 2002 - 2025 Toni Wilen
  *   E-UAE blitter.c:    (c) 1995 Bernd Schmidt, Alessandro Bissacco
  *                       (c) 2002 - 2005 Toni Wilen
- * Changed from the UAE/WinUAE code for AGA-PISTORM in 2026.
- * UAE and WinUAE are GPL, like this file.
+ * Promijenjeno u odnosu na UAE/WinUAE kod za AGA-STORM 2026.
+ * UAE i WinUAE su GPL, kao i ova datoteka.
  */
 #include "internal.h"
 
@@ -35,10 +34,11 @@ static void build_fill_table(void)
                 int b = (d >> bit) & 1;
                 int nfc = fc ^ b;
                 if (ife) {
-                    /* inclusive fill: bit set if fc or b or new fc */
+                    /* uključivi fill: bit postavljen ako je fc ili b ili novi fc */
                     if (fc || b || nfc) out |= 1 << bit;
                 } else {
-                    /* exclusive fill: set if (fc xor b) */
+                    /* isključivi fill: postavljen ako je (fc xor b) - da, XOR,
+                       tko bi rekao */
                     if (fc ^ b) out |= 1 << bit;
                 }
                 fc = nfc;
@@ -77,7 +77,8 @@ static inline uint32_t blit_func(uint32_t sa, uint32_t sb, uint32_t sc, uint8_t 
 
 static inline uint16_t do_fill(const blitter_t *b, uint16_t d, int *fc)
 {
-    /* IFE and EFE both set fill exclusively (WinUAE's "weird fill mode") */
+    /* IFE i EFE zajedno postavljaju isključivi fill (WinUAE-ov "weird fill
+       mode"); ime je zasluženo */
     int ife = (b->con1 & (BLTCON1_IFE | BLTCON1_EFE)) == BLTCON1_IFE ? 2 : 0;
     int fc1 = fill_table[d & 255][ife + *fc][1];
     uint16_t out = fill_table[d & 255][ife + *fc][0] | (fill_table[d >> 8][ife + fc1][0] << 8);
@@ -93,11 +94,11 @@ static void blit_normal(aga_t *a, int hsize, int vsize)
     int usec = b->con0 & BLTCON0_USEC, used = b->con0 & BLTCON0_USED;
     int ash = (b->con0 >> 12) & 15, bsh = (b->con1 >> 12) & 15;
     int desc = b->con1 & BLTCON1_DESC;
-    /* fill works ascending too, the carry running the other way through the
-       words (WinUAE fills; its debugger only warns "fill without desc") */
+    /* fill radi i uzlazno, a carry prolazi obrnuto kroz riječi (WinUAE izvodi
+       fill; njegov debugger samo upozorava "fill without desc" - hrabro) */
     int fill = (b->con1 & (BLTCON1_IFE | BLTCON1_EFE)) != 0;
     uint32_t apt = b->apt, bpt = b->bpt, cpt = b->cpt, dpt = b->dpt;
-    /* the shifters' previous words, cleared as the blit started (blit_start) */
+    /* prethodne riječi shiftera, očišćene pri pokretanju blita (blit_start) */
     uint32_t preva = b->aold, prevb = b->bold;
     uint32_t bhold = b->bhold;
     uint16_t cdat = b->cdat, ddat = b->ddat;
@@ -172,36 +173,36 @@ static void blit_line(aga_t *a, int count)
     int usea = b->con0 & BLTCON0_USEA;
     int usec = b->con0 & BLTCON0_USEC;
     uint32_t cpt = b->cpt, dpt = b->dpt;
-    int16_t apt = (int16_t)b->apt;   /* error accumulator lives in BLTAPTL */
+    int16_t apt = (int16_t)b->apt;   /* akumulator pogreške je u BLTAPTL */
     uint16_t blineb = (uint16_t)((b->bdat >> bsh) | (b->bdat << (16 - bsh)));
     int zero = 1;
-    int onedot = 0;                  /* SING: this row has its dot */
+    int onedot = 0;                  /* SING: ovaj red ima svoju točku */
 
-    /* As WinUAE's line mode (actually_do_blit): each pixel is worked out from
-       C at BLTCPT and written to BLTDPT only after the step, and D then
-       follows C. So the first dot goes wherever the program pointed BLTDPT -
-       a filled-vector routine points it at a scratch word to keep each line's
-       first dot out of the fill; written at BLTCPT it toggled the fill there
-       and shredded the shape - and every other one where C was read. The
-       write needs USEC, not USED (C must be on or nothing is drawn), and only
-       with USEC does a Y step move C and start a new row for SING. 9 Fingers
-       and State of the Art matched the real chip RAM after this in RGB2RTG
-       (from RGB2RTG 6429272). */
+    /* Kao WinUAE line mode (actually_do_blit): svaki piksel izračuna se iz
+       C na BLTCPT i upiše u BLTDPT tek nakon koraka, a D zatim slijedi C.
+       Zato prva točka ide kamo je program usmjerio BLTDPT - rutina za
+       popunjene vektore usmjerava ga na scratch riječ da prva točka svake
+       linije ostane izvan fill-a; upisana na BLTCPT, prekidala je fill tamo
+       i razderala oblik - a svaka druga kamo je C pročitan. Upis traži USEC,
+       ne USED (C mora biti uključen ili se ništa ne crta), i samo s USEC
+       Y korak pomiče C i započinje novi red za SING. 9 Fingers i State of
+       the Art poklopili su se sa stvarnim chip RAM-om nakon ovoga u RGB2RTG
+       (od RGB2RTG 6429272). */
     for (int i = 0; i < count; i++) {
         int pixel = !sing || !onedot;
         onedot = 1;
         uint16_t ahold = (uint16_t)((b->adat & b->afwm & 0x8000) >> shift);
         b->aold = (uint16_t)((((uint32_t)b->aold << 16) | (b->adat & b->afwm)) >> shift);   /* blitter_line_adat */
-        /* the texture bit is bit 0 of BLTBDAT rotated right by BSH: bit BSH for
-           the first pixel, then BSH-1, BSH-2... (WinUAE blitter_line_minterm,
-           blitter_nxline). Bit 15 drew every dash one pixel early. */
+        /* bit teksture je bit 0 BLTBDAT-a rotiran udesno za BSH: bit BSH za
+           prvi piksel, zatim BSH-1, BSH-2... (WinUAE blitter_line_minterm,
+           blitter_nxline). Bit 15 crtao je svaku crticu jedan piksel ranije. */
         uint16_t bhold = (blineb & 1) ? 0xFFFF : 0;
         uint16_t cdat = usec ? chip_rd16(a, cpt) : b->cdat;
         uint16_t ddat = (uint16_t)blit_func(ahold, bhold, cdat, mt);
         if (ddat) zero = 0;
         b->ddat = ddat;
 
-        /* step */
+        /* korak */
         if (usea) apt += sign ? b->bmod : b->amod;
         if (!sign) {
             if (b->con1 & BLTCON1_SUD) {
@@ -231,70 +232,69 @@ static void blit_line(aga_t *a, int count)
     b->cpt = cpt;
     b->dpt = dpt;
     b->con0 = (uint16_t)((b->con0 & 0x0FFF) | (shift << 12));
-    /* BSH steps down once a pixel, as the texture moves along (WinUAE) */
+    /* BSH se smanjuje za jedan po pikselu, kako se tekstura pomiče (WinUAE) */
     b->con1 = (uint16_t)((b->con1 & ~(BLTCON1_SIGN | 0xF000)) | (sign ? BLTCON1_SIGN : 0)
                          | (((bsh - count) & 15) << 12));
-    b->bhold = (blineb & 1) ? 0xFFFF : 0;     /* B's hold: the texture bit it stopped on */
+    b->bhold = (blineb & 1) ? 0xFFFF : 0;     /* B-ov hold: bit teksture na kojem se zaustavio */
     b->zero = zero;
 }
 
-/* Report a blit finished: drop BBUSY, raise the interrupt, release a copper
-   that is waiting on BLTDONE. */
+/* Prijavi završetak blita: spusti BBUSY, podigni prekid, oslobodi copper
+   koji čeka na BLTDONE. */
 static void blit_finish(aga_t *a)
 {
     blitter_t *b = &a->blt;
     b->busy = 0;
     b->irq_cck = 0;
     b->fin_count++;
-    aga_intreq_set(a, INTF_BLIT);       /* always at once - see INTREQ_write */
+    aga_intreq_set(a, INTF_BLIT);       /* uvijek odmah - vidi INTREQ_write */
     cop_blitter_done(a);
 }
 
-/* NOTE ON THE DELAY, which is now the GLUE's job.
+/* NAPOMENA O KAŠNJENJU, koje je sada posao GLUE-a.
  *
- * A blit must not report finished inside its own BLTSIZE write, or a game that
- * arms its wait AFTER starting the blit misses the interrupt and waits for
- * ever. That much has not changed.
+ * Blit ne smije prijaviti završetak unutar vlastitog upisa BLTSIZE, inače igra
+ * koja postavi svoje čekanje NAKON pokretanja blita propusti prekid i čeka
+ * zauvijek. To se nije promijenilo.
  *
- * What changed is the CLOCK the delay is measured against. It used to be
- * colour clocks, decremented from the chipset's own cycle loop, and that is
- * only meaningful while the loop runs those cycles at real-time speed. It does
- * not: presenting a frame costs about 900us, so the loop is always behind, and
- * whenever it is allowed to CATCH UP it replays thousands of colour clocks in
- * a few microseconds - expiring the delay long before the game has armed its
- * wait, which is the exact race the delay exists to prevent. That coupling is
- * why the loop could not be allowed to catch up, and why the audio generated
- * from the same clock ran 4.5% slow.
+ * Promijenio se SAT prema kojem se mjeri kašnjenje. Prije su to bili colour
+ * clocks, umanjeni iz chipsetove vlastite petlje ciklusa, a to ima smisla samo
+ * dok petlja vrti te cikluse stvarnom brzinom. Ne vrti: prikazivanje framea
+ * stoji oko 900us, pa petlja uvijek zaostaje, a kad joj se dopusti SUSTIZANJE,
+ * ona odigra tisuće colour clocks u nekoliko mikrosekundi - istekom
+ * kašnjenja davno prije nego igra postavi svoje čekanje, što je upravo ta
+ * utrka koju kašnjenje postoji da spriječi. To je sprezanje razlog zašto se
+ * petlji nije smjelo dopustiti sustizanje i zašto je audio generiran iz istog
+ * sata radio 4,5% presporo.
  *
- * So the core now only says "a blit is outstanding" and the glue, which has a
- * real timer, decides when enough WALL TIME has passed. The two clocks are
- * independent again: the loop may catch up freely, and the blit still cannot
- * finish inside its own write. */
+ * Zato jezgra sada samo kaže "blit je na čekanju", a glue, koji ima pravi
+ * timer, odlučuje kada je prošlo dovoljno WALL TIME-a. Dva sata su opet
+ * neovisna: petlja se smije slobodno sustizati, a blit još ne može završiti
+ * unutar vlastitog upisa. */
 
-/* How long to hold a blit "running" before reporting it finished.
+/* Koliko dugo držati blit "u radu" prije nego se prijavi završenim.
  *
- * A fixed, short delay - NOT the time the real blitter would have taken.
+ * Fiksno, kratko kašnjenje - NE vrijeme koje bi stvarni blitter uzeo.
  *
- * Modelling real duration (one cycle per active channel per word) is more
- * accurate and is the wrong thing here, because the duration becomes
- * load-bearing the moment anything waits on it. A copper list that waits on
- * BLTDONE stalls for the whole blit, and a big one costs frames: with a
- * per-word cost, Banshee drew its title and then crawled, sound stuck and its
- * quit key taking minutes to answer.
+ * Modeliranje stvarnog trajanja (jedan ciklus po aktivnom kanalu po riječi)
+ * točnije je i ovdje pogrešno, jer trajanje postaje nosivo čim bilo što na
+ * njemu čeka. Copper lista koja čeka na BLTDONE staje za cijeli blit, a veliki
+ * blit košta frameove: s cijenom po riječi, Banshee je nacrtao naslov i zatim
+ * puzao, zvuk je zapeo, a njegova tipka za izlaz odgovarala je minutama.
  *
- * The delay exists for exactly one reason: a blit must not report finished
- * inside its own BLTSIZE write, or a game that arms its wait AFTER starting
- * the blit misses the interrupt and waits for ever. 64 colour clocks is about
- * 9 microseconds - far more than the handful of instructions a game needs to
- * set its flag, and 0.1% of a frame, so nothing that waits on the blitter
- * notices. The blit DATA is finished before this returns either way. */
+ * Kašnjenje postoji zbog točno jednog razloga: blit ne smije prijaviti
+ * završetak unutar vlastitog upisa BLTSIZE, inače igra koja postavi svoje
+ * čekanje NAKON pokretanja blita propusti prekid i čeka zauvijek. 64 colour
+ * clocks je oko 9 mikrosekundi - mnogo više od šačice instrukcija koje igra
+ * treba da postavi zastavicu, i 0,1% framea, pa ništa što čeka na blitter ne
+ * primjećuje. Blit DATA gotovi su prije povratka u svakom slučaju. */
 #define BLIT_DELAY_CCK 64
 
-/* Colour clocks the real blitter spends on a blit: words x cycles per word
-   from the channels it uses (WinUAE blit_cycle_diagram: 2 for none/one of
-   A and D alone, 3 for three channels, 4 for ABCD; fill mode adds one when D
-   runs without C), line mode about 4 a pixel. No bitplane DMA contention, so
-   a lower bound - which is all the glue needs it for. */
+/* Colour clocks koje stvarni blitter potroši na blit: riječi x ciklusi po
+   riječi iz kanala koje koristi (WinUAE blit_cycle_diagram: 2 za nijedan/jedan
+   od A i D sam, 3 za tri kanala, 4 za ABCD; fill mode dodaje jedan kad D
+   radi bez C), line mode oko 4 po pikselu. Bez sukoba s bitplane DMA, dakle
+   donja granica - a glue je samo za to i treba. */
 static uint32_t blit_duration(const blitter_t *b, int hsize, int vsize)
 {
     static const uint8_t cyc[16] = { 2,2,2,3, 3,3,3,4, 2,2,2,3, 3,3,3,4 };
@@ -304,7 +304,7 @@ static uint32_t blit_duration(const blitter_t *b, int hsize, int vsize)
     } else {
         unsigned ch = (b->con0 >> 8) & 0xF;           /* USEA USEB USEC USED */
         n = cyc[ch];
-        if ((b->con1 & 0x18) && (ch & 1) && !(ch & 2)) n++;   /* fill, D without C */
+        if ((b->con1 & 0x18) && (ch & 1) && !(ch & 2)) n++;   /* fill, D bez C */
     }
     return n * (uint32_t)hsize * (uint32_t)vsize + 4;
 }
@@ -314,47 +314,48 @@ static void blit_start(aga_t *a, int hsize, int vsize)
     blitter_t *b = &a->blt;
     b->dur_cck = blit_duration(b, hsize, vsize);
     if (!aga_dma_enabled(a, DMAF_BLTEN)) {
-        /* Blitter DMA disabled: the blit is latched and would start when enabled.
-           For simplicity run it anyway (games always enable it). */
+        /* Blitter DMA onemogućen: blit je zapamćen i pokrenuo bi se kad se
+           omogući. Radi jednostavnosti ipak ga izvrši - igre ga uvijek
+           omoguće, koji kurac, valjda. */
     }
-    if (b->busy) blit_finish(a);       /* a new blit while one is outstanding */
+    if (b->busy) blit_finish(a);       /* novi blit dok je prethodni na čekanju */
     b->busy = 1;
-    /* The shifters' previous words start at 0 (WinUAE, blit start: bltaold =
-       bltbold = 0). They keep what the blit left in them afterwards, so a
-       BLTBDAT written after a blit without B shifts in zeros: $FFFF with
-       BSH 12 is the mask $000F, which Arte's rotating logo merges each
-       column into its word with. */
+    /* Prethodne riječi shiftera počinju od 0 (WinUAE, početak blita: bltaold =
+       bltbold = 0). Nakon toga zadržavaju ono što je blit ostavio u njima, pa
+       BLTBDAT upisan nakon blita bez B ubacuje nule: $FFFF sa
+       BSH 12 je maska $000F, kojom Arteov rotirajući logo spaja svaki
+       stupac u svoju riječ. */
     b->aold = b->bold = 0;
     a->blit_count++;
     if (b->con1 & BLTCON1_LINE) blit_line(a, vsize);
     else                        blit_normal(a, hsize, vsize);
 
-    /* The DATA is done now, but the blit must not report finished yet.
+    /* DATA je sada gotov, ali blit još ne smije prijaviti završetak.
      *
-     * Completing inside the BLTSIZE write raises INTF_BLIT before the write
-     * instruction has even retired, and a game that starts the blit and only
-     * then arms its wait - sets its "blit running" flag AFTER writing BLTSIZE -
-     * gets the interrupt first. Its handler clears a flag that has not been set,
-     * the game sets it a moment later, and then waits for an interrupt that
-     * already happened. Banshee sits in exactly that loop for ever:
+     * Dovršetak unutar upisa BLTSIZE podiže INTF_BLIT prije nego što je upisna
+     * instrukcija uopće završila, a igra koja pokrene blit i tek onda postavi
+     * svoje čekanje - postavi svoju zastavicu "blit running" NAKON upisa
+     * BLTSIZE - prvo dobije prekid. Njezin handler očisti zastavicu koja nije
+     * postavljena, igra ju postavi trenutak kasnije i zatim čeka prekid koji
+     * se već dogodio. Banshee sjedi točno u takvoj petlji zauvijek:
      *
      *   3618cd9e: move.w $3618b926(pc),d7
-     *   3618cda2: bne.w  $3618cd9e            ; wait for the handler to zero it
+     *   3618cda2: bne.w  $3618cd9e            ; čekaj da ga handler nulira
      *   3618cda6: lea    $dff000,a6
-     *   3618cdac: move.w #$0040,$9a(a6)       ; INTENA: done with INTF_BLIT
+     *   3618cdac: move.w #$0040,$9a(a6)       ; INTENA: gotovo s INTF_BLIT
      *
-     * so its main loop never reaches the copper-list writes below it, nothing
-     * is ever drawn, and the screen stays blank while the game runs happily.
+     * pa njezina glavna petlja nikad ne stigne do upisa copper liste ispod,
+     * ništa se ne crta i zaslon ostaje prazan dok igra veselo radi.
      *
-     * Deferring by the time the real blitter would have taken fixes the
-     * handshake and is what the hardware does anyway. It also makes BBUSY in
-     * DMACONR and the copper's BLTDONE wait behave, both of which already read
+     * Odgađanje za vrijeme koje bi stvarni blitter uzeo popravlja
+     * handshake i to hardver ionako radi. Ono i BBUSY u DMACONR-u i
+     * copperovo čekanje na BLTDONE čini ispravnima, a oboje već čita
      * b->busy. */
     if (a->cfg.blit_immediate) blit_finish(a);
-    else                       b->irq_cck = 1;   /* outstanding; the glue times it */
+    else                       b->irq_cck = 1;   /* na čekanju; glue mu mjeri vrijeme */
 }
 
-/* Is a blit waiting to be reported finished? */
+/* Čeka li blit da bude prijavljen završenim? */
 int aga_blit_pending(aga_t *a)
 {
     return a->blt.busy && a->blt.irq_cck;
@@ -365,9 +366,9 @@ uint32_t aga_blit_duration(aga_t *a)
     return a->blt.dur_cck;
 }
 
-/* 0: blits finished, 1: acknowledges that cleared two or more completions at
-   once (a program that answers every BLIT interrupt lost one), 2: the frame
-   of the last such */
+/* 0: blitovi završeni, 1: potvrde koje su očistile dva ili više dovršetaka
+   odjednom (program koji odgovara na svaki BLIT prekid izgubio je jedan), 2:
+   frame posljednjeg takvog */
 void aga_blit_set_nohold(aga_t *a, int on) { a->blt.no_hold = on; }
 
 uint32_t aga_peek_blit_irq(const aga_t *a, int i)
@@ -375,7 +376,7 @@ uint32_t aga_peek_blit_irq(const aga_t *a, int i)
     return i == 0 ? a->blt.fin_count : i == 1 ? a->blt.lost : i == 2 ? a->blt.lost_frame : a->blt.held_count;
 }
 
-/* Enough wall time has passed: report it. */
+/* Prošlo je dovoljno wall time-a: prijavi. */
 void aga_blit_complete(aga_t *a)
 {
     if (a->blt.busy && a->blt.irq_cck) blit_finish(a);
@@ -416,7 +417,7 @@ void blt_write(aga_t *a, uint32_t reg, uint16_t v)
     case BLTAMOD:  b->amod = (int16_t)(v & 0xFFFE); break;
     case BLTDMOD:  b->dmod = (int16_t)(v & 0xFFFE); break;
     case BLTCDAT:  b->cdat = v; break;
-    case BLTBDAT: {                     /* shifted as it is loaded (HRM; WinUAE blitter_loadbdat) */
+    case BLTBDAT: {                     /* pomiče se pri učitavanju (HRM; WinUAE blitter_loadbdat) */
         int sh = b->con1 >> 12;
         b->bdat = v;
         b->bhold = (b->con1 & BLTCON1_DESC) ? (uint16_t)((((uint32_t)v << 16) | b->bold) >> (16 - sh))

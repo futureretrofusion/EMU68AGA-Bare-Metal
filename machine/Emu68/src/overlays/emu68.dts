@@ -14,6 +14,14 @@
                 // ppc-enable
                 // disable-fpu
                 
+                joymap: joystick {
+                    /* Disabled unless profile_enable is supplied. */
+                    fire1-bit = <0>;
+                    fire2-bit = <1>;
+                    fire3-bit = <2>;
+                    fire4-bit = <3>;
+                };
+
                 defs: defaults {
                     insn-count = <0xffffffff>;
                     ccr-scan-depth = <0xffffffff>;
@@ -33,6 +41,11 @@
 
     __overrides__ {
         args = <&emu68>,"args";
+        JMAP = <&joymap>,"profile-enable?";
+        JF1 = <&joymap>,"fire1-bit:0";
+        JF2 = <&joymap>,"fire2-bit:0";
+        JF3 = <&joymap>,"fire3-bit:0";
+        JF4 = <&joymap>,"fire4-bit:0";
         ppc_enable = <&emu68>,"ppc-enable?";
         ppc_jit_size = <&emu68>,"ppc-jit-size:0";
         m68k_jit_size = <&emu68>,"m68k-jit-size:0";
