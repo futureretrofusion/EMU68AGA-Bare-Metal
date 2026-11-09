@@ -30,6 +30,37 @@ Read [RC8 release notes](RELEASE_NOTES_v1.121_rc8.md),
 [build instructions](docs/BUILD_1.121_RC8.md) and
 [upstream credits](THIRD_PARTY_NOTICES.md) before installing.
 
+### OSD keyboard controls (experimental RC8)
+
+While a **native AGA game** is displayed, press **Left Ctrl + Left Alt + F12**
+to open or close the on-screen display. **Left Ctrl + Left Shift + F12**
+is an alternate shortcut. Use **Up/Down** to navigate, **Left/Right** to
+change a setting, **Enter** to select, and **Escape** or **F12** to close.
+System reset remains **Ctrl + Left Shift + F11**.
+
+RC8 OSD keyboard operation is **not yet verified on real Pi 3 hardware**.
+The upstream AGA-Storm PiStorm shortcut is Ctrl+Alt+Help; FRF uses
+F12 because standard PC USB keyboards generally do not have Help.
+
+### Support the original projects
+
+This standalone FRF build depends on the original work of **AGA-Storm
+(previously AGA-PiStorm)** by Astair86 and **Emu68** by Michal Schulz
+and collaborators. Please visit their official pages, credit their work
+and consider supporting ongoing development independently of FRF:
+
+- [AGA-Storm by Astair86 — official project and optional contribution](https://astair86.itch.io/aga-storm)
+- [Emu68 — official source, issues and contributors](https://github.com/michalsc/Emu68)
+- [VideoCore.card — official Michal Schulz source](https://github.com/michalsc/VideoCore.card)
+- [Emu68-tools — official driver and utility distribution](https://github.com/michalsc/Emu68-tools)
+
+**VideoCore.card** is the Picasso96 RTG display driver associated with
+Emu68, credited to Michal Schulz and contributors. We preserve RTG
+handoff compatibility work in FRF, but **do not bundle or claim to own
+VideoCore.card** in the RC8 kernel release. On an Amiga with PiStorm,
+the official AGA-Storm installer manages the matching driver; do not
+install that package on this independent FRF bare-metal system.
+
 ## Start here
 
 > **RESET THE SYSTEM:** press **Ctrl + Left Shift + F11**. This is the EMU68AGA reset shortcut and is the quickest way to reboot the Amiga without power-cycling the Pi.

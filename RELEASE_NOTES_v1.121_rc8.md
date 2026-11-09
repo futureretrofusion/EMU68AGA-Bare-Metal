@@ -5,6 +5,32 @@
 This version merges AGA-Storm v1.121 onto our v1.120-derived FRF bare-metal
 Pi 3 fork. It is not an official AGA-Storm or Emu68 release.
 
+## VideoCore.card, upstream projects and OSD shortcut
+
+**VideoCore.card** (Picasso96/RTG) is the work of **Michal Schulz
+and Emu68 contributors**. The official AGA-Storm installation uses a
+matching VideoCore.card on PiStorm-equipped Amigas, whereas FRF's
+standalone Raspberry Pi 3 release has its own HDMI/AGA output path
+and RTG handoff work. **VideoCore.card is not distributed in RC8**.
+Do not mix the official PiStorm installer with FRF's standalone boot
+setup.
+
+Upstream projects deserve independent recognition and support:
+- [AGA-Storm / AGA-PiStorm by Astair86](https://astair86.itch.io/aga-storm)
+  — official page; optional contribution is supported.
+- [Emu68 by Michal Schulz and contributors](https://github.com/michalsc/Emu68)
+  — official code and contribution community.
+- [VideoCore.card](https://github.com/michalsc/VideoCore.card)
+  and [Emu68-tools](https://github.com/michalsc/Emu68-tools)
+  — official RTG driver and utility resources.
+
+**FRF OSD hotkey:** While a native AGA game is running, use
+**Left Ctrl + Left Alt + F12**, or alternatively **Left Ctrl +
+Left Shift + F12**. Up/Down navigates, Left/Right changes values,
+Enter selects and Escape/F12 closes. **RC8 shortcut and navigation
+are pending hardware verification**. The Emu68AGA reset shortcut
+remains **Ctrl + Left Shift + F11**.
+
 ## Included
 
 - AGA-Storm v1.121 chipset / HDMI video and OSD source changes,

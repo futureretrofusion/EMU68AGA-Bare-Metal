@@ -67,3 +67,25 @@ The AGA-Storm chipset source retains its original GPL-2.0-only headers;
 Emu68 remains under its file-level MPL-2.0 terms and TinyUSB under MIT.
 Any required copying of source, notices and licences must accompany
 redistribution. Future Retro Fusion claims only its own modifications.
+
+## VideoCore.card and original project support
+
+**VideoCore.card** is the Picasso96 RTG driver from the Emu68
+ecosystem, by **Michal Schulz and contributors** (MPL-2.0).
+The upstream AGA-Storm project credits Emu68 and VideoCore.card as
+Michal Schulz's work, and its installer can replace the matching driver
+on PiStorm-based Amigas. This FRF standalone RC8 release does not
+package that driver or claim any ownership of it.
+
+We encourage users to support upstream development directly:
+- AGA-Storm (formerly AGA-PiStorm), Astair86:
+  https://astair86.itch.io/aga-storm (optional pay-what-you-want contribution)
+- Emu68, Michal Schulz and contributors:
+  https://github.com/michalsc/Emu68
+- VideoCore.card source:
+  https://github.com/michalsc/VideoCore.card
+- Official Emu68 tools:
+  https://github.com/michalsc/Emu68-tools
+
+FRF donations are separate from these upstream projects and should
+not be represented as funding their authors.
