@@ -993,7 +993,20 @@ static inline int32_t cubic(int32_t a, int32_t b, int32_t c, int32_t d, int32_t 
    1.112 i 1.113; iznad 100 % peakovi se zaokružuju soft kneeom iz aga_mix.h
    umjesto da se clipaju. */
 static volatile int32_t hdmi_gain16 = 2 << 16;
-void aga_hdmi_volume(int i) { if (i >= 0 && i < 5) hdmi_gain16 = (int32_t)((mix_vol_pc(i) << 16) / 100); }
+/* FRF OSD volume: same HDMI gain as agaboot SOUND VOLUME, with -1=mute.
+ * Native Paula output on a physical Amiga is intentionally unaffected. */
+static volatile int hdmi_volume_step = 2;
+int aga_hdmi_volume_get(void)
+{
+    return __atomic_load_n(&hdmi_volume_step, __ATOMIC_ACQUIRE);
+}
+void aga_hdmi_volume(int i)
+{
+    if (i < -1 || i >= 5) return;
+    int32_t gain = i == -1 ? 0 : (int32_t)((mix_vol_pc(i) << 16) / 100);
+    __atomic_store_n(&hdmi_gain16, gain, __ATOMIC_RELEASE);
+    __atomic_store_n(&hdmi_volume_step, i, __ATOMIC_RELEASE);
+}
 
 /* ---- AHI (1.114): stereo drivera aga-hdmi.audio, umiksan ----------------------
    Zvuk AHI programa, koji AHI sam miksa u stereo - 16 bita, ili 32 u svojim

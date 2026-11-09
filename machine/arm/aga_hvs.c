@@ -1,3 +1,4 @@
+#include "frf_osd_steps.h"
 /* AGA-STORM — video izlaz kroz VideoCore HVS (VC6: Pi 4 / CM4).
  * SPDX-License-Identifier: GPL-2.0-only
  *
@@ -1683,6 +1684,10 @@ static char *osd_num(char *p, int v)
 /* ---- što menu pokazuje i mijenja (core 0 mijenja, core 3 crta) ---- */
 extern void aga_tone_get(int *bright, int *gamma, int *weave);   /* aga_glue.c */
 static volatile int osd_open, osd_row, osd_saved, hud_on;
+/* Snapshot slots are UI-only until an atomic CPU+chipset+RAM state backend
+ * and the WHDLoad drawer path bridge exist. Never write fake .ss files. */
+static volatile int osd_ss_slot = 1;
+static volatile int osd_ss_unavailable;
 /* kako se OSD otvara ($5288 + mode, agaboot OSD, Boot settings): 0 nikako,
    1 Ctrl + Alt + Help, 2 to ili USB padov Select (default), 3 to ili
    stickovi načini - dvije tipke držane, fire + Up Down Up Down, što
@@ -1692,10 +1697,12 @@ static volatile int osd_save_req;              /* "Save for this game": agaboot 
 static void osd_set_open(int on);              /* niže: otvaranje skriva i port 1 od igre */
 
 enum { OI_SCAN, OI_SHAPE, OI_MASK, OI_LOOK, OI_SIZE, OI_SCALE, OI_BRIGHT, OI_GAMMA, OI_FLICKER,
-       OI_HUD, OI_SAVE, OI_CLOSE, OI_N };
+       OI_HUD, OI_SAVE, OI_SS_SLOT, OI_SS_WRITE, OI_SS_READ, OI_HDMI_VOLUME,
+       OI_DISPLAY_DETAIL, OI_CLOSE, OI_N };
 static const char *const osd_label[OI_N] = {
     "SCANLINES", "SHAPE", "CRT MASK", "LOOK", "SIZE", "SCALE", "BRIGHTNESS", "GAMMA",
-    "FLICKER FIXER", "MONITOR", "SAVE FOR THIS GAME", "CLOSE",
+    "FLICKER FIXER", "MONITOR", "SAVE FOR THIS GAME", "STATE SLOT", "SAVE STATE",
+    "LOAD STATE", "HDMI VOLUME", "DISPLAY DETAIL", "CLOSE",
 };
 /* Size (RTG Imageov): koliko se framea pokazuje - FULL zadržava igrin
    border, pa ga Fill i dalje pokazuje oko slike; 640x256 ili Auto ispune
@@ -1722,6 +1729,11 @@ static int osd_value(int item)
     case OI_GAMMA:   return g;
     case OI_FLICKER: return w;
     case OI_HUD:     return hud_on;
+    case OI_SS_SLOT: return osd_ss_slot;
+    case OI_HDMI_VOLUME: return aga_hdmi_volume_get();
+    /* This is HDMI presentation detail, NOT the game's BPLCON0 resolution.
+       SHARP vs TV horizontal filtering comes from the existing renderer. */
+    case OI_DISPLAY_DETAIL: return cur_look == 0 ? 1 : 0;
     }
     return 0;
 }
@@ -1747,6 +1759,17 @@ static void osd_value_text(int item, char *buf)
     case OI_GAMMA:   s = gamma_names[v >= 0 && v < 3 ? v : 0]; break;
     case OI_FLICKER: case OI_HUD: s = v ? "ON" : "OFF"; break;
     case OI_SAVE:    s = osd_saved ? "OK" : ""; break;               /* sačuvano kad igra završi */
+    case OI_SS_SLOT:
+        { char *p=osd_num(buf,v); *p=0; } return;
+    case OI_SS_WRITE: case OI_SS_READ: s = "NO ENGINE"; break;
+    case OI_HDMI_VOLUME:
+        if (v < 0) { s = "MUTE"; break; }
+        {
+            static const int pc[5]={100,150,200,300,400};
+            char *p=osd_num(buf,pc[v < 5 ? v : 2]); *p++='%'; *p=0;
+        }
+        return;
+    case OI_DISPLAY_DETAIL: s = v ? "HIRES FX" : "LORES FX"; break;
     default:         s = ""; break;
     }
     int i = 0;
@@ -1774,6 +1797,18 @@ static void osd_change(int item, int dir)
     case OI_GAMMA:   aga_gamma((v + dir + 3) % 3); break;
     case OI_FLICKER: aga_flickerfix(!v); break;
     case OI_HUD:     hud_on = !v; break;
+    case OI_SS_SLOT: osd_ss_slot = frf_osd_slot_step(v,dir); osd_ss_unavailable = 0; break;
+    case OI_HDMI_VOLUME:
+        aga_hdmi_volume(frf_osd_volume_step(v,dir));
+        break;
+    case OI_DISPLAY_DETAIL:
+        /* Emulated game stays in its own low-/hires mode. This selects
+         * the existing HVS sharp/TV presentation filter only. */
+        aga_video_set_look(dir > 0 ? 0 : 2);
+        break;
+    case OI_SS_WRITE: case OI_SS_READ:
+        osd_ss_unavailable=1; /* no snapshot backend: explicit failure */
+        return;
     default: return;
     }
     osd_saved = 0;
@@ -1821,10 +1856,12 @@ int aga_osd_key(int code, int up)
     case 0x4E: osd_change(osd_row, +1); break;                   /* Right */
     case 0x44: case 0x43: case 0x40:                             /* Return, Enter, Space */
         if (osd_row == OI_SAVE) { osd_save_req = 1; osd_saved = 1; }
-        else if (osd_row == OI_CLOSE) osd_open = 0;
+        else if (osd_row == OI_CLOSE) osd_set_open(0);
+        else if (osd_row == OI_DISPLAY_DETAIL)
+            aga_video_set_look(osd_value(OI_DISPLAY_DETAIL) ? 2 : 0);
         else osd_change(osd_row, +1);
         break;
-    case 0x45: case 0x7e: osd_open = 0; break;                   /* Esc or F12 */
+    case 0x45: case 0x7e: osd_set_open(0); break;                   /* Esc or F12 */
     }
     return 1;
 }
@@ -1854,7 +1891,7 @@ static uint64_t osd_flick_from;
 static void osd_set_open(int on)
 {
     osd_open = on;
-    if (on) { osd_saved = 0; aga_osd_hide = 1; }
+    if (on) { osd_saved = 0; osd_ss_unavailable = 0; aga_osd_hide = 1; }
     else { aga_osd_hide = 0; osd_wait_release = 0; }
 }
 
@@ -2037,6 +2074,10 @@ static void osd_draw(const struct osd_fb *f)
             osd_text(f, vx, ly, v, value);
         }
     }
+    /* The OSD is not a functional save-state implementation yet. Tell
+     * the user visibly instead of accepting Return and silently doing nothing. */
+    if(osd_ss_unavailable)
+        osd_text(f, x + 8, y + h - 10, "SAVE/LOAD NOT READY", value);
 }
 
 /* Allow overlay composition even without debug HUD enabled. */

@@ -188,6 +188,7 @@ void aga_hdmi_service(void);
 void aga_hdmi_enable(int on);       /* $5821 / $5820 from agaboot SOUND */
 void aga_hdmi_filter(int mode);     /* 0 off, 1 A500, 2 A1200: $5830, $5831, $5834 (agaboot SOUND FILTER) */
 void aga_hdmi_led(int lit);         /* power LED, CIA-A PRA bit 1 low: LED filter uključen */
+int  aga_hdmi_volume_get(void);  /* -1 mute, 0..4 = 100,150,200,300,400% */
 void aga_hdmi_volume(int i);        /* 100 150 200 300 400 %: $5840 + enc(i) (agaboot SOUND VOLUME) */
 void aga_hdmi_ahi_nibble(int d);    /* the AHI ring's address, four bits more: $58A0 + E4(d) */
 void aga_hdmi_ahi(int on);          /* the AHI ring at that address on / off: $5895 / $5894 */
