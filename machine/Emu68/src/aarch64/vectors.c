@@ -455,6 +455,20 @@ static uint32_t frf_kbd_drop;
  * guest CPU drains them and calls aga_osd_key outside the CIA lock.
  * This keeps ARM video/OSD operations off the TinyUSB host core. */
 static volatile uint32_t frf_osd_hotkey_requests,frf_osd_hotkey_seen;
+/* Cross-core guest reset requests: CPU1 HID / core0 OSD -> core0 MainLoop.
+ * This never reboots the Raspberry Pi itself. */
+static volatile uint32_t frf_guest_reset_requests;
+void frf_vcia_guest_soft_reset_request(void)
+{
+    __atomic_add_fetch(&frf_guest_reset_requests,1u,__ATOMIC_RELEASE);
+    __asm__ volatile("sev" ::: "memory");
+}
+int frf_vcia_guest_soft_reset_take(void)
+{
+    return __atomic_exchange_n(&frf_guest_reset_requests,0u,
+                                __ATOMIC_ACQ_REL)!=0u;
+}
+
 void frf_vcia_osd_hotkey(void)
 {
     __atomic_add_fetch(&frf_osd_hotkey_requests,1u,__ATOMIC_RELEASE);
@@ -585,6 +599,39 @@ static void frf_vcia_overlay_recalc_locked(void)
     __asm__ volatile("dsb ish; isb" ::: "memory");
 }
 
+
+/* Called only on the guest 68k execution core, between JIT blocks.
+ * Preserve virtual disks/SD storage; the guest CPU reset separately
+ * reloads Kickstart's initial SSP/PC after ROM overlay is restored. */
+void frf_vcia_guest_soft_reset_hardware(void)
+{
+    frf_vcia_lock();
+    frf_ciaa=(struct frf_vcia){ .pra=0x00, .prb=0xff,
+        .ta=0xffff, .tb=0xffff, .la=0xffff, .lb=0xffff,
+        .cra=0x04, .crb=0x04 };
+    frf_ciab=(struct frf_vcia){ .pra=0x8c, .prb=0xff,
+        .ta=0xffff, .tb=0xffff, .la=0xffff, .lb=0xffff,
+        .cra=0x04, .crb=0x04 };
+    frf_kbd_qr=frf_kbd_qw=0u;
+    frf_osd_rd=frf_osd_wr=0u;
+    frf_kbd_tx_active=0u;
+    frf_kbd_wait_ack=0u;
+    frf_kbd_ack_active=0u;
+    frf_kbd_tx_done=0u;
+    frf_kbd_ack_deadline=0u;
+    frf_kbd_next_tick=0u;
+    frf_ciab_takeover_pending=0u;
+    frf_vcia_last_tick=frf_cntvct();
+    frf_vcia_e_frac=0u;
+    frf_vcia_a_tod_frac=0u;
+    frf_vcia_b_tod_frac=0u;
+    /* Internal OVL must become ROM even if the game mapped chip RAM at 0. */
+    frf_vcia_overlay_recalc_locked();
+    frf_vcia_unlock();
+    aga_machine_reset();  /* never while holding CIA lock */
+    extern void aga_osd_soft_reset(void);
+    aga_osd_soft_reset();
+}
 
 static unsigned frf_vcia_timer_advance(uint16_t *counter, uint16_t latch,
                                        uint8_t *cr, uint64_t ticks)

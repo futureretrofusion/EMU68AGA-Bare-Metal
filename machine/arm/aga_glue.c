@@ -3229,6 +3229,17 @@ void aga_chipset_main(void)
 }
 
 /* ---- virtual floppy: CIA lines, image commands, disk-swap hotkey ----------- */
+/* Lock-free display indicators: OSD renderer must never take the AGA lock. */
+#define DSK_SLOTS 4
+static uint8_t *dsk_slot[DSK_SLOTS];
+static uint32_t dsk_slot_size[DSK_SLOTS];
+static volatile uint8_t frf_disk_present[2];
+int aga_disk_drive_present(int drive)
+{
+    return (drive>=0 && drive<2) ?
+        __atomic_load_n(&frf_disk_present[drive],__ATOMIC_ACQUIRE) : 0;
+}
+
 #ifdef FRF_VIRTUAL_AGA
 int aga_boot_insert_adf(int drive, const uint8_t *adf, uint32_t size, int wprot)
 {
@@ -3237,6 +3248,16 @@ int aga_boot_insert_adf(int drive, const uint8_t *adf, uint32_t size, int wprot)
     lock();
     r = aga_disk_insert(aga, drive, adf, size, wprot);
     unlock();
+    __atomic_store_n(&frf_disk_present[drive],(uint8_t)(r==0),__ATOMIC_RELEASE);
+    /* Keep the boot ADF as slot 1 so an OSD eject isn't irreversible.
+     * The boot source is freed by the initramfs loader after insertion. */
+    if(r==0 && drive==0 && size<=1802240u) {
+        if(!dsk_slot[0]) dsk_slot[0]=calloc(1,1802240u);
+        if(dsk_slot[0]) {
+            memcpy(dsk_slot[0],adf,size);
+            dsk_slot_size[0]=size;
+        }
+    }
     if (r == 0)
         kprintf("[AGA] boot floppy: DF%d <- SD initramfs ADF (%d bytes)%s\n",
                 drive, size, wprot ? " [WP]" : "");
@@ -3265,20 +3286,44 @@ int aga_virtual_disk_pra(uint8_t *bits)
 }
 #endif
 
-#define DSK_SLOTS 4
-static uint8_t *dsk_slot[DSK_SLOTS];      /* imageovi držani za Ctrl+F1..F4 swapping */
-static uint32_t dsk_slot_size[DSK_SLOTS];
 static int      key_ctrl;
 
+int aga_disk_slot_available(int slot)
+{
+    return slot>=0 && slot<DSK_SLOTS && dsk_slot[slot] &&
+           dsk_slot_size[slot]>0u;
+}
+/* Host-side ADF writes have no automatic filesystem persistence yet.
+ * Refuse to overwrite/eject a dirty image from OSD and lose game data. */
+int aga_disk_drive_dirty(int drive)
+{
+    if(!aga_enabled || !aga || drive<0 || drive>=2) return 0;
+    uint32_t bytes=0;int dirty=0;
+    lock();
+    (void)aga_disk_image(aga,drive,&bytes,&dirty);
+    unlock();
+    return dirty;
+}
+int aga_disk_slot_insert(int drive,int slot)
+{
+    if (!aga_enabled || !aga || drive<0 || drive>=2 ||
+        !aga_disk_slot_available(slot)) return 0;
+    if(aga_disk_drive_dirty(drive))return -2;
+    lock();
+    int rc=aga_disk_insert(aga,drive,dsk_slot[slot],dsk_slot_size[slot],1);
+    unlock();
+    __atomic_store_n(&frf_disk_present[drive],(uint8_t)(rc==0),__ATOMIC_RELEASE);
+    if(rc) {
+        kprintf("[AGA] OSD floppy DF%d insert slot %d failed rc=%d\n",drive,slot+1,rc);
+        return 0;
+    }
+    kprintf("[AGA] OSD floppy DF%d <- slot %d (%u KB) [WP]\n",
+            drive,slot+1,dsk_slot_size[slot]>>10);
+    return 1;
+}
 static int slot_insert(int n)
 {
-    if (!aga || n < 0 || n >= DSK_SLOTS || !dsk_slot[n]) return 0;
-    lock();
-    int rc = aga_disk_insert(aga, 0, dsk_slot[n], dsk_slot_size[n], 1);
-    unlock();
-    if (rc != 0) return 0;
-    kprintf("[AGA] disk: DF0 <- slot %d (%d KB) [WP]\n", n + 1, dsk_slot_size[n] >> 10);
-    return 1;
+    return aga_disk_slot_insert(0,n)==1;
 }
 
 /* RGB2HDMI-SEL (1.121): HDMI switch vođen SEL linijom paralelnog porta -
@@ -3462,7 +3507,13 @@ int aga_disk_command(unsigned cmd)
         return rc;
     }
     if (op == 0xE) {
+        if(aga_disk_drive_dirty(n & 1)) {
+            frf_adf_status=0xAD40u;
+            kprintf("[AGA] DF%d ejection refused: unsaved ADF writes\n",n & 1);
+            return 0;
+        }
         lock(); aga_disk_eject(aga, n & 1); unlock();
+        __atomic_store_n(&frf_disk_present[n&1],0u,__ATOMIC_RELEASE);
         kprintf("[AGA] disk: DF%d ejected\n", n & 1);
         frf_adf_status = 0xAD82u;
         return 1;
@@ -3478,7 +3529,13 @@ int aga_disk_command(unsigned cmd)
     }
     const uint8_t *src = (const uint8_t *)(uintptr_t)addr;   /* 68k fast RAM je Pi memorija, identity mapirana */
     if (op == 0xF && n < 2) {
+        if(aga_disk_drive_dirty(n)) {
+            frf_adf_status=0xAD40u;
+            kprintf("[AGA] DF%d replacement refused: unsaved ADF writes\n",n);
+            return 0;
+        }
         lock(); int r = aga_disk_insert(aga, n, src, size, wprot); unlock();
+        __atomic_store_n(&frf_disk_present[n],(uint8_t)(r==0),__ATOMIC_RELEASE);
         if (n == 0 && r == 0) {
             if (!dsk_slot[0]) dsk_slot[0] = calloc(1, 1802240);
             if (dsk_slot[0]) { memcpy(dsk_slot[0], src, size); dsk_slot_size[0] = size; }
