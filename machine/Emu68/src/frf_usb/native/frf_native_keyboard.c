@@ -48,6 +48,9 @@ static uint8_t usage_to_amiga(uint8_t h)
 /* This event goes to core 0 via an atomic request flag; USB core 1
  * must not manipulate the AGA HVS or its OSD state directly. */
 extern void frf_vcia_osd_hotkey(void);
+/* Guest 68k reset request is consumed by the emulator execution loop,
+ * never executed by the TinyUSB worker. Weak allows host-only key tests. */
+extern void frf_vcia_guest_soft_reset_request(void) __attribute__((weak));
 static int contains(const uint8_t *keys, uint8_t key)
 {
     for (unsigned i=0; i<6; ++i) if (keys[i] == key) return 1;
@@ -86,6 +89,7 @@ void frf_native_keyboard_report(struct frf_native_keyboard *s,
        repeatedly reboot the Pi. Do not send F11 to Amiga guest. */
     const uint8_t chord=(uint8_t)(((modifiers & 0x11u)!=0u) &&
                            ((modifiers & 0x02u)!=0u) &&
+                           ((modifiers & 0x04u)==0u) &&
                            contains(keys,0x44u));
     if(chord && !s->host_reboot_held) s->host_reboot_pending=1u;
     s->host_reboot_held=chord;
@@ -96,6 +100,17 @@ void frf_native_keyboard_report(struct frf_native_keyboard *s,
                      (modifiers & 0x06u) && contains(keys,0x45u));
     if(osd_chord && !s->osd_hotkey_held) frf_vcia_osd_hotkey();
     s->osd_hotkey_held=osd_chord;
+    /* Amiga soft reset: Ctrl+both Windows (Amiga) modifiers, or
+     * Ctrl+LEFT Alt+F11. USB HID: Ctrl 0x11; LGUI 0x08;
+     * RGUI 0x80; LAlt 0x04; F11 0x44. Distinct from Pi reboot:
+     * Ctrl+LEFT Shift+F11. Edge triggered; no host restart. */
+    const uint8_t soft_reset=(uint8_t)(((modifiers & 0x11u)!=0u) &&
+        (((modifiers & 0x88u)==0x88u) ||
+        ((modifiers & 0x04u) && contains(keys,0x44u))));
+    if(soft_reset && !s->guest_soft_reset_held &&
+       frf_vcia_guest_soft_reset_request)
+        frf_vcia_guest_soft_reset_request();
+    s->guest_soft_reset_held=soft_reset;
     for (unsigned i=0; i<8; ++i) {
         uint8_t bit = (uint8_t)(1u << i);
         if ((s->modifiers ^ modifiers) & bit)
@@ -105,6 +120,8 @@ void frf_native_keyboard_report(struct frf_native_keyboard *s,
         uint8_t k = s->keys[i];
         if (k>=4 && !contains(keys,k) && k!=0x53 && k!=0x47) {
             if(k==0x45 && (s->modifiers & 0x01u) && (s->modifiers & 0x06u)) continue;
+            if(k==0x44 && ((s->modifiers & 0x11u)!=0u) &&
+                 ((s->modifiers & 0x06u)!=0u)) continue;
             output(s,emit,ctx,usage_to_amiga(k),1);
         }
     }
@@ -112,6 +129,8 @@ void frf_native_keyboard_report(struct frf_native_keyboard *s,
         uint8_t k=keys[i];
         if (k>=4 && !contains(s->keys,k) && k!=0x53 && k!=0x47) {
             if(k==0x45 && osd_chord)continue;
+            if(k==0x44 && ((modifiers & 0x11u)!=0u) &&
+                 ((modifiers & 0x06u)!=0u))continue;
             output(s,emit,ctx,usage_to_amiga(k),0);
         }
     }

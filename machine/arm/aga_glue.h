@@ -66,7 +66,9 @@ int aga_osd_keyboard_active(void);
 #define OSDI_SEL   64      /* USB padov Select */
 #define OSDI_BOTH  (OSDI_A | OSDI_B)
 void aga_osd_input(int in);
-void aga_osd_run(void);                         /* vectors.c: promjena koju je pad tražio */
+void aga_osd_run(void);
+void aga_osd_soft_reset(void);     /* close native OSD on guest-only reset */
+void frf_vcia_guest_soft_reset_request(void); /* async, consumed by guest core */                         /* vectors.c: promjena koju je pad tražio */
 extern volatile int aga_osd_hide, aga_osd_pend;
 void aga_pad_osd_poll(int joy1);                /* aga_pad.c: JOY1DAT kako je pročitan, ili -1 */
 void aga_pad_usb_select(int down);              /* aga_usb.c: USB padov Select */
@@ -83,6 +85,10 @@ void aga_disk_bridge_poll(void);
 /* control register $DFF1F2 = $ADxx: disk image commands (see aga_disk_command) */
 int  aga_disk_command(unsigned cmd);
 uint16_t aga_disk_status(void);
+int aga_disk_slot_available(int slot); /* 0..3 */
+int aga_disk_slot_insert(int drive,int slot); /* DF0/DF1, read-only ADF */
+int aga_disk_drive_present(int drive); /* lock-free OSD status */
+int aga_disk_drive_dirty(int drive); /* blocks unsafe OSD eject/overwrite */
 /* M68k RESET instruction / ColdReboot: the machine restarts on the current
    chipset (virtual disks and window mode are kept) */
 void aga_machine_reset(void);
@@ -188,6 +194,7 @@ void aga_hdmi_service(void);
 void aga_hdmi_enable(int on);       /* $5821 / $5820 from agaboot SOUND */
 void aga_hdmi_filter(int mode);     /* 0 off, 1 A500, 2 A1200: $5830, $5831, $5834 (agaboot SOUND FILTER) */
 void aga_hdmi_led(int lit);         /* power LED, CIA-A PRA bit 1 low: LED filter uključen */
+int  aga_hdmi_volume_get(void);  /* -1 mute, 0..4 = 100,150,200,300,400% */
 void aga_hdmi_volume(int i);        /* 100 150 200 300 400 %: $5840 + enc(i) (agaboot SOUND VOLUME) */
 void aga_hdmi_ahi_nibble(int d);    /* the AHI ring's address, four bits more: $58A0 + E4(d) */
 void aga_hdmi_ahi(int on);          /* the AHI ring at that address on / off: $5895 / $5894 */

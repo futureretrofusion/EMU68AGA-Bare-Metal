@@ -1,3 +1,4 @@
+#include "frf_osd_steps.h"
 /* AGA-STORM — video izlaz kroz VideoCore HVS (VC6: Pi 4 / CM4).
  * SPDX-License-Identifier: GPL-2.0-only
  *
@@ -1683,6 +1684,12 @@ static char *osd_num(char *p, int v)
 /* ---- što menu pokazuje i mijenja (core 0 mijenja, core 3 crta) ---- */
 extern void aga_tone_get(int *bright, int *gamma, int *weave);   /* aga_glue.c */
 static volatile int osd_open, osd_row, osd_saved, hud_on;
+/* Snapshot slots are UI-only until an atomic CPU+chipset+RAM state backend
+ * and the WHDLoad drawer path bridge exist. Never write fake .ss files. */
+static volatile int osd_ss_slot = 1;
+static volatile int osd_ss_unavailable;
+static volatile int osd_adf_slot=1,osd_adf_result;
+static volatile int osd_reset_confirm;
 /* kako se OSD otvara ($5288 + mode, agaboot OSD, Boot settings): 0 nikako,
    1 Ctrl + Alt + Help, 2 to ili USB padov Select (default), 3 to ili
    stickovi načini - dvije tipke držane, fire + Up Down Up Down, što
@@ -1692,10 +1699,15 @@ static volatile int osd_save_req;              /* "Save for this game": agaboot 
 static void osd_set_open(int on);              /* niže: otvaranje skriva i port 1 od igre */
 
 enum { OI_SCAN, OI_SHAPE, OI_MASK, OI_LOOK, OI_SIZE, OI_SCALE, OI_BRIGHT, OI_GAMMA, OI_FLICKER,
-       OI_HUD, OI_SAVE, OI_CLOSE, OI_N };
+       OI_HUD, OI_SAVE, OI_SS_SLOT, OI_SS_WRITE, OI_SS_READ, OI_HDMI_VOLUME,
+       OI_DISPLAY_DETAIL, OI_DF_SLOT, OI_DF0_INSERT, OI_DF0_EJECT,
+       OI_DF1_INSERT, OI_DF1_EJECT, OI_AMIGA_RESET, OI_CLOSE, OI_N };
 static const char *const osd_label[OI_N] = {
     "SCANLINES", "SHAPE", "CRT MASK", "LOOK", "SIZE", "SCALE", "BRIGHTNESS", "GAMMA",
-    "FLICKER FIXER", "MONITOR", "SAVE FOR THIS GAME", "CLOSE",
+    "FLICKER FIXER", "MONITOR", "SAVE FOR THIS GAME", "STATE SLOT", "SAVE STATE",
+    "LOAD STATE", "HDMI VOLUME", "DISPLAY DETAIL", "ADF SLOT",
+    "DF0 INSERT", "DF0 EJECT", "DF1 INSERT", "DF1 EJECT",
+    "AMIGA SOFT RESET", "CLOSE",
 };
 /* Size (RTG Imageov): koliko se framea pokazuje - FULL zadržava igrin
    border, pa ga Fill i dalje pokazuje oko slike; 640x256 ili Auto ispune
@@ -1722,6 +1734,14 @@ static int osd_value(int item)
     case OI_GAMMA:   return g;
     case OI_FLICKER: return w;
     case OI_HUD:     return hud_on;
+    case OI_SS_SLOT: return osd_ss_slot;
+    case OI_HDMI_VOLUME: return aga_hdmi_volume_get();
+    /* This is HDMI presentation detail, NOT the game's BPLCON0 resolution.
+       SHARP vs TV horizontal filtering comes from the existing renderer. */
+    case OI_DISPLAY_DETAIL: return cur_look == 0 ? 1 : 0;
+    case OI_DF_SLOT: return osd_adf_slot;
+    case OI_DF0_EJECT: return aga_disk_drive_present(0);
+    case OI_DF1_EJECT: return aga_disk_drive_present(1);
     }
     return 0;
 }
@@ -1747,6 +1767,34 @@ static void osd_value_text(int item, char *buf)
     case OI_GAMMA:   s = gamma_names[v >= 0 && v < 3 ? v : 0]; break;
     case OI_FLICKER: case OI_HUD: s = v ? "ON" : "OFF"; break;
     case OI_SAVE:    s = osd_saved ? "OK" : ""; break;               /* sačuvano kad igra završi */
+    case OI_SS_SLOT:
+        { char *p=osd_num(buf,v); *p=0; } return;
+    case OI_SS_WRITE: case OI_SS_READ: s = "NO ENGINE"; break;
+    case OI_HDMI_VOLUME:
+        if (v < 0) { s = "MUTE"; break; }
+        {
+            static const int pc[5]={100,150,200,300,400};
+            char *p=osd_num(buf,pc[v < 5 ? v : 2]); *p++='%'; *p=0;
+        }
+        return;
+    case OI_DISPLAY_DETAIL: s = v ? "HIRES FX" : "LORES FX"; break;
+    case OI_DF_SLOT: {
+        char *p=osd_num(buf,v);*p++=' ';
+        const char *state=aga_disk_slot_available(v-1) ? "READY" : "EMPTY";
+        while(*state) *p++=*state++;
+        *p=0;
+        return;
+    }
+    case OI_DF0_INSERT: case OI_DF1_INSERT:
+        if(osd_adf_result==1) s="NO ADF";
+        else if(osd_adf_result==3) s="DIRTY";
+        else if(osd_adf_result==2) s="INSERTED";
+        else s=aga_disk_slot_available(osd_adf_slot-1) ? "READY" : "NO ADF";
+        break;
+    case OI_DF0_EJECT: case OI_DF1_EJECT:
+        s=osd_adf_result==3?"DIRTY":v?"INSERTED":"EMPTY";
+        break;
+    case OI_AMIGA_RESET: s=osd_reset_confirm ? "CONFIRM" : "SELECT"; break;
     default:         s = ""; break;
     }
     int i = 0;
@@ -1774,6 +1822,42 @@ static void osd_change(int item, int dir)
     case OI_GAMMA:   aga_gamma((v + dir + 3) % 3); break;
     case OI_FLICKER: aga_flickerfix(!v); break;
     case OI_HUD:     hud_on = !v; break;
+    case OI_SS_SLOT: osd_ss_slot = frf_osd_slot_step(v,dir); osd_ss_unavailable = 0; break;
+    case OI_HDMI_VOLUME:
+        aga_hdmi_volume(frf_osd_volume_step(v,dir));
+        break;
+    case OI_DISPLAY_DETAIL:
+        /* Emulated game stays in its own low-/hires mode. This selects
+         * the existing HVS sharp/TV presentation filter only. */
+        aga_video_set_look(dir > 0 ? 0 : 2);
+        break;
+    case OI_SS_WRITE: case OI_SS_READ:
+        osd_ss_unavailable=1; /* no snapshot backend: explicit failure */
+        return;
+    case OI_DF_SLOT:
+        osd_adf_slot = ((osd_adf_slot-1+dir+4)%4)+1;
+        osd_adf_result=0;
+        return;
+    case OI_DF0_INSERT: case OI_DF1_INSERT: {
+        int rc=aga_disk_slot_insert(item==OI_DF0_INSERT ? 0 : 1,osd_adf_slot-1);
+        osd_adf_result=rc==1 ? 2 : rc==-2 ? 3 : 1;
+        return;
+    }
+    case OI_DF0_EJECT: case OI_DF1_EJECT: {
+        int drive=item==OI_DF0_EJECT ? 0 : 1;
+        if(aga_disk_drive_dirty(drive)) {osd_adf_result=3;return;}
+        aga_disk_command(drive ? 0xE1u : 0xE0u);
+        osd_adf_result=0;
+        return;
+    }
+    case OI_AMIGA_RESET:
+        if(!osd_reset_confirm) {
+            osd_reset_confirm=1;
+        } else {
+            osd_set_open(0);
+            frf_vcia_guest_soft_reset_request();
+        }
+        return;
     default: return;
     }
     osd_saved = 0;
@@ -1815,16 +1899,18 @@ int aga_osd_key(int code, int up)
     }
     if (up) return 1;
     switch (code) {
-    case 0x4C: osd_row = (osd_row + OI_N - 1) % OI_N; break;     /* Up */
-    case 0x4D: osd_row = (osd_row + 1) % OI_N; break;            /* Down */
+    case 0x4C: osd_reset_confirm=0; osd_adf_result=0; osd_row=(osd_row+OI_N-1)%OI_N; break;
+    case 0x4D: osd_reset_confirm=0; osd_adf_result=0; osd_row=(osd_row+1)%OI_N; break;
     case 0x4F: osd_change(osd_row, -1); break;                   /* Left */
     case 0x4E: osd_change(osd_row, +1); break;                   /* Right */
     case 0x44: case 0x43: case 0x40:                             /* Return, Enter, Space */
         if (osd_row == OI_SAVE) { osd_save_req = 1; osd_saved = 1; }
-        else if (osd_row == OI_CLOSE) osd_open = 0;
+        else if (osd_row == OI_CLOSE) osd_set_open(0);
+        else if (osd_row == OI_DISPLAY_DETAIL)
+            aga_video_set_look(osd_value(OI_DISPLAY_DETAIL) ? 2 : 0);
         else osd_change(osd_row, +1);
         break;
-    case 0x45: case 0x7e: osd_open = 0; break;                   /* Esc or F12 */
+    case 0x45: case 0x7e: osd_set_open(0); break;                   /* Esc or F12 */
     }
     return 1;
 }
@@ -1854,8 +1940,20 @@ static uint64_t osd_flick_from;
 static void osd_set_open(int on)
 {
     osd_open = on;
-    if (on) { osd_saved = 0; aga_osd_hide = 1; }
-    else { aga_osd_hide = 0; osd_wait_release = 0; }
+    if (on) {
+        osd_saved=0;osd_ss_unavailable=0;osd_adf_result=0;
+        osd_reset_confirm=0;aga_osd_hide=1;
+    }
+    else { osd_reset_confirm=0;aga_osd_hide=0;osd_wait_release=0; }
+}
+
+void aga_osd_soft_reset(void)
+{
+    osd_set_open(0);
+    osd_saved=0;
+    osd_ss_unavailable=0;
+    osd_row=0;
+    hud_on=0;
 }
 
 static void osd_queue(int item, int dir)
@@ -1929,6 +2027,7 @@ void aga_osd_input(int in)
     int act = edge, dirs = in & 15;
     if (edge & 15) osd_rep_at = now + f * 2 / 5;            /* držan smjer ponavlja nakon 0.4 s */
     else if (dirs && now >= osd_rep_at) { act |= dirs; osd_rep_at = now + f * 3 / 20; }   /* ...svakih 0.15 s */
+    if (act & (OSDI_UP|OSDI_DOWN)) {osd_reset_confirm=0;osd_adf_result=0;}
     if (act & OSDI_UP)    osd_row = (osd_row + OI_N - 1) % OI_N;
     if (act & OSDI_DOWN)  osd_row = (osd_row + 1) % OI_N;
     if (act & OSDI_LEFT)  osd_queue(osd_row, -1);
@@ -2018,16 +2117,26 @@ static void osd_draw(const struct osd_fb *f)
 {
     const uint32_t bg = 0xFF101828u, frame = 0xFF8090B0u, label = 0xFFC0C8D8u,
                    value = 0xFFFFD060u, hi_bg = 0xFF304878u, title = 0xFFFFFFFFu;
-    int w = 32 * OSD_CW + 16, h = (OI_N + 3) * OSD_CH + 10;
-    int x = f->x0 + (f->w - w) / 2, y = f->y0 + (f->h - h) / 2;
+    /* Scroll the longer RC10 OSD instead of drawing past a PAL game frame. */
+    int visible=OI_N;
+    int max_visible=(f->h-38)/OSD_CH-3;
+    if(max_visible<6)max_visible=6;
+    if(max_visible>13)max_visible=13;
+    if(visible>max_visible)visible=max_visible;
+    int first=osd_row>=visible ? osd_row-visible+1 : 0;
+    int w=32*OSD_CW+16,h=(visible+3)*OSD_CH+10;
+    int x=f->x0+(f->w-w)/2,y=f->y0+(f->h-h)/2;
     if (x < f->x0) x = f->x0;
     if (y < f->y0) y = f->y0;
     osd_fill(f, x - 2, y - 2, w + 4, h + 4, frame);
     osd_fill(f, x, y, w, h, bg);
-    osd_text(f, x + 8, y + 4, "AGA-STORM PICTURE", title);
+    osd_text(f,x+8,y+4,"FRF EMU68AGA SETTINGS",title);
+    if(first>0)osd_text(f,x+w-50,y+4,"UP",value);
+    if(first+visible<OI_N)osd_text(f,x+w-64,y+OSD_CH+4,"MORE",value);
     int row = osd_row;
-    for (int i = 0; i < OI_N; i++) {
-        int ly = y + 4 + (i + 2) * OSD_CH;
+    for(int j=0;j<visible;j++) {
+        int i=first+j;
+        int ly=y+4+(j+2)*OSD_CH;
         char v[24];
         if (i == row) osd_fill(f, x + 4, ly - 1, w - 8, OSD_CH, hi_bg);
         osd_text(f, x + 8, ly, osd_label[i], label);
@@ -2037,6 +2146,10 @@ static void osd_draw(const struct osd_fb *f)
             osd_text(f, vx, ly, v, value);
         }
     }
+    /* The OSD is not a functional save-state implementation yet. Tell
+     * the user visibly instead of accepting Return and silently doing nothing. */
+    if(osd_ss_unavailable)
+        osd_text(f, x + 8, y + h - 10, "SAVE/LOAD NOT READY", value);
 }
 
 /* Allow overlay composition even without debug HUD enabled. */

@@ -8,6 +8,7 @@
 */
 
 #include <M68k.h>
+#include <cache.h>
 #include <support.h>
 #include <config.h>
 #ifdef PISTORM_CLASSIC
@@ -60,6 +61,47 @@ static inline void setSR(uint32_t sr)
 extern struct List ICache[EMU68_HASHSIZE];
 void M68K_LoadContext(struct M68KState *ctx);
 void M68K_SaveContext(struct M68KState *ctx);
+void LRU_InvalidateAll(void);
+#ifdef FRF_VIRTUAL_AGA
+extern int frf_vcia_guest_soft_reset_take(void);
+extern void frf_vcia_guest_soft_reset_hardware(void);
+/* True guest restart, not aga_reboot(): Kickstart reset vectors, new 68k
+ * exception state, ROM overlay, CIA/AGA reset, preserved RAM + ADF media.
+ * This must be invoked at a JIT block boundary on the guest CPU core. */
+static void frf_68k_warm_reset(struct M68KState *ctx)
+{
+    M68K_SaveContext(ctx);
+    frf_vcia_guest_soft_reset_hardware();
+    uintptr_t vector_base;
+    __asm__ volatile("mov %0, xzr" : "=r"(vector_base));
+    const volatile uint32_t *vectors=(const volatile uint32_t *)vector_base;
+    /* The ROM overlay is now active at zero; these are big-endian longwords. */
+    uint32_t ssp=BE32(vectors[0]), pc=BE32(vectors[1]);
+    for(int i=0;i<8;i++){ctx->D[i].u32=0; ctx->A[i].u32=0;}
+    ctx->USP.u32=0; ctx->MSP.u32=0;
+    ctx->ISP.u32=BE32(ssp);
+    ctx->PC=BE32(pc);
+    ctx->SR=BE16(SR_S|SR_IPL);
+    ctx->VBR=0;ctx->CACR=0;
+    ctx->SFC=0;ctx->DFC=0;
+    ctx->TCR=0;ctx->URP=0;ctx->SRP=0;ctx->MMUSR=0;
+    ctx->ITT0=0;ctx->ITT1=0;ctx->DTT0=0;ctx->DTT1=0;
+    ctx->FPSR=0;ctx->FPIAR=0;ctx->FPCR=0;
+    ctx->INT64=0;
+    /* Kickstart reruns Autoconfig after a warm restart. */
+    extern struct ExpansionBoard *__boards_start;
+    extern struct ExpansionBoard **board;
+    extern int board_idx;
+    board=&__boards_start;board_idx=0;
+    EPOCH++;
+    LRU_InvalidateAll();
+    cache_invalidate_all(ICACHE);
+    setLastPC(~0u);
+    M68K_LoadContext(ctx);
+    kprintf("[FRF] Guest Amiga soft reset: ROM PC=%08x SSP=%08x (Pi stays up)\n",pc,ssp);
+}
+#endif
+
 
 struct Entry {
     uintptr_t m68k;
@@ -349,6 +391,12 @@ void MainLoop()
         /* Load m68k context and last used PC counter into temporary register */ 
         LastPC = getLastPC();
         ctx = getCTX();
+#ifdef FRF_VIRTUAL_AGA
+        if(unlikely(frf_vcia_guest_soft_reset_take())) {
+            frf_68k_warm_reset(ctx);
+            continue;
+        }
+#endif
 
 #ifndef PISTORM_ANY_MODEL
         if (unlikely(PC == 0)) {

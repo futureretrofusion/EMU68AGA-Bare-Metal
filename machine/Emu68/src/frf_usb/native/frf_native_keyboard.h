@@ -8,7 +8,7 @@
 typedef void (*frf_key_emit_fn)(void *context, uint8_t amiga_raw);
 struct frf_native_keyboard {
     uint8_t modifiers, keys[6];
-    uint8_t host_reboot_held, host_reboot_pending, osd_hotkey_held;
+    uint8_t host_reboot_held, host_reboot_pending, osd_hotkey_held, guest_soft_reset_held;
     uint32_t reports, transitions;
 };
 int frf_native_keyboard_take_reboot(struct frf_native_keyboard *state);
