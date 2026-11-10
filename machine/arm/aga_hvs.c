@@ -602,6 +602,14 @@ static int       video_ok;
 #if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
 static frf_rtg_handoff frf_rtg_display;
 #endif
+/* Hand off on the video frame worker, not from the 68k reset callback.
+ * Also compile the request hook for FRF_RTG_HANDOFF=OFF builds. */
+static volatile uint32_t frf_guest_pal_request;
+static volatile int frf_force_pal_no_handoff;
+void aga_video_guest_pal_reset_request(void)
+{
+    __atomic_store_n(&frf_guest_pal_request,1u,__ATOMIC_RELEASE);
+}
 
 
 #define FB_BYTES   (AGA_OUT_W * AGA_OUT_H * 4)
@@ -2661,6 +2669,16 @@ void aga_video_present(const uint32_t *frame, int native_active)
     /* Native output state is not the sandbox state in standalone mode. */
     __atomic_store_n(&frf_osd_native_video_active,0u,__ATOMIC_RELEASE);
     if (!video_ok) return;
+    if (__atomic_exchange_n(&frf_guest_pal_request,0u,__ATOMIC_ACQ_REL)) {
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+        frf_rtg_handoff_guest_pal_reset(&frf_rtg_display);
+#else
+        frf_force_pal_no_handoff=1;
+#endif
+        aga_video_set_frame(0,0,0); /* native non-interlaced PAL */
+        hs.prev=-1;
+        aga_diag_log("[RTG] guest reset: forced native PAL, old P96 ownership revoked");
+    }
 #if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
     /* P96 VideoCore.card writes DISPLIST1 independently on the 68k.
        On a standalone Amiga our AGA core runs persistently; without this
@@ -2674,8 +2692,13 @@ void aga_video_present(const uint32_t *frame, int native_active)
                        live != frf_rtg_display.boot_list &&
                        live < DL_RAM_WORDS - 0x70u && list_len(live) > 0;
         unsigned was = frf_rtg_display.rtg_owns;
-        int rtg = frf_rtg_handoff_step(&frf_rtg_display,live,
-            LIST_A,LIST_B,native_active,external,cur_list != 0);
+        int pal_gate=frf_rtg_handoff_pal_gate(&frf_rtg_display,
+                                              native_active,external,live,cur_list!=0);
+        int rtg=0;
+        if (!pal_gate) {
+            rtg=frf_rtg_handoff_step(&frf_rtg_display,live,
+                    LIST_A,LIST_B,native_active,external,cur_list!=0);
+        }
         if (rtg) {
             if (!was) {
                 saved_list = live;
@@ -2699,6 +2722,23 @@ void aga_video_present(const uint32_t *frame, int native_active)
        black plane with the numbers on it instead. Outside the sandbox
        nothing changes, desktop untouched. */
     if (!native_active) {
+#if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
+        if (frf_rtg_display.force_pal_until_rtg) {
+#else
+        if (frf_force_pal_no_handoff) {
+#endif
+            /* Before Kickstart programs its first bitplanes, keep an opaque
+             * PAL-native HVS plane up. Hiding here would reveal the old RTG
+             * list, exactly the wrong behavior during warm reset. */
+            int p=fb_next_page(fb_page);
+            uint32_t *dst=(uint32_t *)(fb_va+(uintptr_t)p*FB_BYTES);
+            for (unsigned i=0;i<AGA_OUT_W*AGA_OUT_H;i++)
+                dst[i]=0xff000000u;
+            show_frame(fb_phys+(uintptr_t)p*FB_BYTES,0);
+            fb_page=p;
+            __atomic_store_n(&frf_osd_native_video_active,1u,__ATOMIC_RELEASE);
+            return;
+        }
         snap_take();        /* the frame before this one is still in its page, until the next is drawn */
         hs.prev = -1;       /* HDMI sync: the next frame shown starts a new run of phases */
         /* Default: hide. My display list REPLACES the HVS list, so while
@@ -2727,6 +2767,7 @@ void aga_video_present(const uint32_t *frame, int native_active)
     }
 
     __atomic_store_n(&frf_osd_native_video_active,1u,__ATOMIC_RELEASE);
+    frf_force_pal_no_handoff=0; /* fallback when optional RTG handshake is off */
     /* Core rendered this frame straight into one of my three pages (see
        aga_set_framebuffers3): no copy, and the pages are uncached, so no
        flush either. Used to be 900 KB read, 900 KB written, 900 KB of cache

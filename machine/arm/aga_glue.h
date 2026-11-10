@@ -157,6 +157,7 @@ extern volatile int aga_blit_fast;   /* $5801: 1.101's fixed blit completion (A/
 void aga_blit_mode(int v);            /* $580N: bit 0 fast completion, bit 1 no held completions */
 extern volatile int aga_beam_mode;   /* $581N: beam estimate lead - 0 one step, 1 none, 2 a frame */
 void aga_video_hide(void);        /* take the plane off the display: sandbox leave, watchdog park */
+void aga_video_guest_pal_reset_request(void); /* guest reset => native PAL until new P96 activation */
 void aga_video_probe_pointer(void); /* re-read the RTG mouse pointer into the PTR_NOW counters */
 /* Debug overlay drawn into the presented frame. It is MY output, not the
    game's, so it appears even when the game draws fuck-all - which is the only

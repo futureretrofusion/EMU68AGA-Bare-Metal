@@ -16,12 +16,56 @@ typedef struct {
     unsigned prev_native;
     unsigned takeovers;
     unsigned returns;
+    unsigned force_pal_until_rtg;
+    unsigned pal_seen_native;
+    unsigned new_external_stable;
+    uint32_t new_external_list;
 } frf_rtg_handoff;
 
 static inline void frf_rtg_handoff_init(frf_rtg_handoff *h, uint32_t boot)
 {
     *h = (frf_rtg_handoff){0};
     h->boot_list = boot;
+}
+
+/* A guest warm reset unconditionally revokes *previous* P96 ownership.
+ * Do not reactivate the pre-reset RTG desktop merely because its old HVS
+ * list is still visible. Require a new native PAL frame and a later
+ * native-off transition with a stable external P96 list. */
+static inline void frf_rtg_handoff_guest_pal_reset(frf_rtg_handoff *h)
+{
+    uint32_t boot=h->boot_list;
+    frf_rtg_handoff_init(h,boot);
+    h->force_pal_until_rtg=1u;
+}
+static inline int frf_rtg_handoff_pal_gate(frf_rtg_handoff *h,
+                                           int native,int external_valid,
+                                           uint32_t live,int own_visible)
+{
+    if (!h->force_pal_until_rtg) return 0;
+    if (native) {
+        h->pal_seen_native=1u;
+        h->new_external_stable=0u;
+    } else if (h->pal_seen_native && own_visible && external_valid) {
+        if (live==h->new_external_list)
+            ++h->new_external_stable;
+        else {
+            h->new_external_list=live;
+            h->new_external_stable=1u;
+        }
+        /* The first post-native valid external list is a deliberate
+         * P96 claim. A second-frame requirement cannot work here:
+         * native HVS would reclaim the list on the intervening frame. */
+        if (h->new_external_stable>=1u) {
+            h->force_pal_until_rtg=0u;
+            h->rtg_owns=1u;
+            h->saw_native_off=1u;
+            return 0;
+        }
+    } else {
+        h->new_external_stable=0u;
+    }
+    return 1;
 }
 
 /* Call once per completed AGA frame.

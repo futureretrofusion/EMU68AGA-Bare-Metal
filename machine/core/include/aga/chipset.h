@@ -55,6 +55,9 @@ typedef struct aga_hooks {
        order). May be NULL. Last, so a positional initializer of the fields
        above leaves it NULL. */
     void     (*line_done)(void *user, int y, int page, const uint32_t *line);
+    /* Emulated floppy INDEX edge: caller must be lock-free (chipset can
+     * hold its own lock); host guest CIA-B consumes the queued event. */
+    void     (*disk_index)(void *user, int drive);
 } aga_hooks_t;
 
 typedef struct aga_config {
@@ -220,6 +223,8 @@ int      aga_audio_steps(aga_t *a, aga_step_t *out, int max, uint64_t *now);
 /* While any virtual disk is inserted the DSK* registers are emulated (real
    drives are unreachable); otherwise they are forwarded to ext_write/ext_read. */
 int      aga_disk_insert(aga_t *a, int drive, const uint8_t *adf, uint32_t size, int wprot); /* copies; 0 = ok */
+int      aga_disk_swap(aga_t *a, int drive, const uint8_t *adf, uint32_t size, int wprot); /* disk-change interval, copies */
+
 void     aga_disk_eject(aga_t *a, int drive);
 int      aga_disk_inserted(const aga_t *a, int drive);
 int      aga_disk_active(const aga_t *a);

@@ -150,6 +150,13 @@ typedef struct disk_drive {
     uint16_t *mfm;                    /* trenutačna staza, MFM riječi */
     int       mfm_words, mfm_track, mfm_valid;
     int       pos;                    /* riječ pod glavom */
+    /* RC11: staged image for an observable disk-out -> disk-in interval.
+     * Memory belongs to this drive and is freed on eject or completion. */
+    uint8_t  *pending_image;
+    uint16_t *pending_mfm;
+    uint32_t  pending_size;
+    uint32_t  swap_lines;
+    int       pending_wprot;
 } disk_drive_t;
 
 typedef struct disk {
