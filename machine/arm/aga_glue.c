@@ -845,6 +845,15 @@ static void hook_frame(void *u)
 
 /* each drawn line, from the core's cache: the RGB port keeps its own copy
    (aga_rgbout_line), so core 1 no longer reads the uncached page back */
+/* Called while chipset lock is held; only publish an atomic count.
+ * The guest CPU's frf_vcia_service handles CIA-B FLAG outside AGA lock. */
+static void hook_disk_index(void *user, int drive)
+{
+    (void)user;(void)drive;
+    extern void frf_vcia_disk_index_request(void);
+    frf_vcia_disk_index_request();
+}
+
 static void hook_line(void *u, int y, int page, const uint32_t *line)
 {
     (void)u;
@@ -898,7 +907,8 @@ int aga_glue_init(uint8_t *chipram_va, uint32_t size, uint8_t *fb_va, uintptr_t 
        line costs frames - and I have the numbers: the copy 902 skipped
        instead of 19 (Jim Power), the fingerprints alone - 0.5 ms a frame -
        457, with the Pi cool (Pi 3 A+, 2026-10-11). */
-    aga_hooks_t h = { hook_ext_read, hook_ext_write, hook_ipl, hook_frame, NULL, aga_is_pi3() ? NULL : hook_line };
+    aga_hooks_t h = { hook_ext_read, hook_ext_write, hook_ipl, hook_frame,
+                      NULL, aga_is_pi3() ? NULL : hook_line, hook_disk_index };
     aga_set_hooks(aga, &h);
     aga_lock_v = 0;
     aga_audio_init(chip_va, size);
@@ -3310,7 +3320,7 @@ int aga_disk_slot_insert(int drive,int slot)
         !aga_disk_slot_available(slot)) return 0;
     if(aga_disk_drive_dirty(drive))return -2;
     lock();
-    int rc=aga_disk_insert(aga,drive,dsk_slot[slot],dsk_slot_size[slot],1);
+    int rc=aga_disk_swap(aga,drive,dsk_slot[slot],dsk_slot_size[slot],1);
     unlock();
     __atomic_store_n(&frf_disk_present[drive],(uint8_t)(rc==0),__ATOMIC_RELEASE);
     if(rc) {
@@ -3534,7 +3544,7 @@ int aga_disk_command(unsigned cmd)
             kprintf("[AGA] DF%d replacement refused: unsaved ADF writes\n",n);
             return 0;
         }
-        lock(); int r = aga_disk_insert(aga, n, src, size, wprot); unlock();
+        lock(); int r = aga_disk_swap(aga, n, src, size, wprot); unlock();
         __atomic_store_n(&frf_disk_present[n],(uint8_t)(r==0),__ATOMIC_RELEASE);
         if (n == 0 && r == 0) {
             if (!dsk_slot[0]) dsk_slot[0] = calloc(1, 1802240);
@@ -3568,6 +3578,12 @@ void aga_machine_reset(void)
     for (int i = 0; i < 4; i++) aga_custom_wput(aga, 0x1F4 + 2 * i, win[i]);
     aga_custom_wput(aga, 0x1F2, ctrl);        /* sačuvaj fullscreen/windowed izbor */
     unlock();
+#ifdef FRF_VIRTUAL_AGA
+    /* A guest RESET instruction / ColdReboot also revokes old P96 HDMI
+     * ownership; not only the new USB soft-reset combinations. */
+    aga_program_rtg_yield=0;
+    aga_video_guest_pal_reset_request();
+#endif
     key_ctrl = 0;
     kprintf("[AGA] machine reset on the virtual chipset (ctrl %04x)\n", ctrl);
 }

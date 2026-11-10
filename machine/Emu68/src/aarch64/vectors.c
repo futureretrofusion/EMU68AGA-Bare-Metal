@@ -457,6 +457,13 @@ static uint32_t frf_kbd_drop;
 static volatile uint32_t frf_osd_hotkey_requests,frf_osd_hotkey_seen;
 /* Cross-core guest reset requests: CPU1 HID / core0 OSD -> core0 MainLoop.
  * This never reboots the Raspberry Pi itself. */
+/* CIA-B /FLAG from virtual floppy INDEX or change edge. These can
+ * originate with chipset lock held on core 3. Publish atomically only. */
+static volatile uint32_t frf_disk_index_requests;
+void frf_vcia_disk_index_request(void)
+{
+    __atomic_add_fetch(&frf_disk_index_requests,1u,__ATOMIC_RELEASE);
+}
 static volatile uint32_t frf_guest_reset_requests;
 void frf_vcia_guest_soft_reset_request(void)
 {
@@ -628,6 +635,8 @@ void frf_vcia_guest_soft_reset_hardware(void)
     /* Internal OVL must become ROM even if the game mapped chip RAM at 0. */
     frf_vcia_overlay_recalc_locked();
     frf_vcia_unlock();
+    /* The chipset RESET also requests PAL HDMI on the video worker,
+     * covering this hotkey and guest 68k RESET/ColdReboot alike. */
     aga_machine_reset();  /* never while holding CIA lock */
     extern void aga_osd_soft_reset(void);
     aga_osd_soft_reset();
@@ -802,6 +811,14 @@ void frf_vcia_service(void)
     if(__atomic_load_n(&aga_osd_pend,__ATOMIC_ACQUIRE))aga_osd_run();
     uint64_t now = frf_cntvct(), freq = frf_cntfrq();
     frf_vcia_lock();
+
+    /* A disk INDEX signal is CIA-B FLAG, ICR bit 4. Do not call back
+     * into virtual CIA while holding AGA's chipset lock. */
+    if (__atomic_exchange_n(&frf_disk_index_requests,0u,
+                             __ATOMIC_ACQ_REL)) {
+        frf_ciab.icr |= 0x10u;
+        frf_vcia_publish_irq_locked(&frf_ciab,0);
+    }
 
     /* WHDLoad takeover cleanup, deferred out of the AGA register hook so
        lock ordering remains CIA -> AGA everywhere. */
