@@ -272,8 +272,11 @@ void aga_disk_cia_prb(aga_t *a, uint8_t prb)
         int sel_bit = 0x08 << i;
         int sel = !(prb & sel_bit), was_sel = !(old & sel_bit);
 #ifdef FRF_VIRTUAL_AGA
-        /* DF0 exists without media. Other DF drives remain absent. */
-        if (sel && !dr->inserted && i != 0) continue;
+        /* RC12: both drives are physically present in our virtual Amiga
+         * even when empty. Kickstart probes external DF1 while the motor
+         * is stopped, before a user loads any ADF; treating an empty DF1
+         * as nonexistent prevents trackdisk from registering the drive.
+         * Presence and inserted media are separate properties. */
 #else
         if (sel && !dr->inserted) continue;
 #endif
