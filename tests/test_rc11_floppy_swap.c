@@ -17,6 +17,21 @@ int main(void) {
     a->dsk=calloc(1,sizeof(disk_t));
     assert(a->dsk);
     a->hooks.disk_index=index_hook;
+#ifdef FRF_VIRTUAL_AGA
+    /* RC12: an EMPTY DF1 is already physically connected. Kickstart
+     * probes /RDY drive ID before any ADF has been inserted. */
+    assert(aga_disk_active(a));
+    dsk_reset(a);
+    aga_disk_cia_prb(a,0xef); /* DF1 selected, motor off */
+    assert(a->dsk->selected==1);
+    uint8_t id_bits=0xffu;
+    assert(aga_disk_cia_pra(a,&id_bits));
+    assert((id_bits & 0x20u)==0u); /* 3.5" DD drive ID */
+    assert((id_bits & 0x04u)==0u); /* /CHNG: no media */
+    assert((id_bits & 0x08u)==0u); /* /WPROT: empty */
+    assert(!aga_disk_inserted(a,1)); /* drive exists without disk */
+    aga_disk_cia_prb(a,0xff); /* reset drive selection */
+#endif
     /* Only a few nonzero blocks needed for media identity. */
     uint8_t *disk1=calloc(1,901120),*disk2=calloc(1,901120);
     assert(disk1 && disk2);
@@ -43,6 +58,17 @@ int main(void) {
     /* DF1 can be selected while DF0 remains spinning. Both rotate and
      * the selected drive is used for Paula DMA input. */
     assert(aga_disk_insert(a,1,disk1,901120,1)==0);
+#ifdef FRF_VIRTUAL_AGA
+    /* Media inserted later must be available to the already-present DF1. */
+    dsk_reset(a);
+    aga_disk_cia_prb(a,0x6f); /* select DF1, motor starts */
+    uint8_t ready=0xffu;
+    assert(a->dsk->selected==1 && a->dsk->drv[1].motor);
+    assert(aga_disk_cia_pra(a,&ready));
+    assert((ready & 0x20u)==0); /* /RDY low on spinning inserted DF1 */
+    dsk_reset(a); /* restore for old two-motor rotation regression */
+    aga_disk_cia_prb(a,0x77); /* DF0 motor on */
+#endif
     aga_disk_cia_prb(a,0xff); /* deselect, DF0 keeps spinning */
     aga_disk_cia_prb(a,0x6f); /* MTR=0 SEL1=0, latch DF1 motor */
     assert(a->dsk->selected==1);

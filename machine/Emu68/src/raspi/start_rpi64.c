@@ -380,9 +380,9 @@ static void frf_post_draw(void)
 #ifdef FRF_USB_NATIVE_DWC2
 #ifdef FRF_USB_TINYUSB
 #ifdef FRF_USB_DIAG_HOLD
-    post_text(x+10,y+25,"FRF 1.121 / RC11",cyan);
+    post_text(x+10,y+25,"FRF 1.121 / RC12",cyan);
 #else
-    post_text(x+10,y+25,"FRF 1.121 / RC11",cyan);
+    post_text(x+10,y+25,"FRF 1.121 / RC12",cyan);
 #endif
 #else
     post_text(x+10,y+25,"NATIVE USB V2 / CORE1",cyan);
@@ -923,7 +923,7 @@ void display_logo()
 
     /* Calculate text coordinate for version string */
     text_y = (fb_height - 16 - 5) / 16;
-    text_x = (fb_width - strlen("FRF EMU68AGA Bare Metal v1.121 RC11") * 8 - 1) / 8;
+    text_x = (fb_width - strlen("FRF EMU68AGA Bare Metal v1.121 RC12") * 8 - 1) / 8;
 
 #if defined(PISTORM_ANY_MODEL)
     struct EmuLogo *pistormlogo = rle_decode(logo_pistorm, logo_pistorm_len);
@@ -1045,7 +1045,7 @@ void display_logo()
 #endif
 #endif
     /* Print EMu68 version number and git sha. */
-    kprintf_pc(__putc, NULL, "FRF EMU68AGA Bare Metal v1.121 RC11");
+    kprintf_pc(__putc, NULL, "FRF EMU68AGA Bare Metal v1.121 RC12");
     
     /* Reset test coordinates for further text printing (e.g. buptest) */
     text_x = 0;
