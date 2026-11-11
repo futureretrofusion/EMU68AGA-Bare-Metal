@@ -2178,14 +2178,12 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
                 precision = 4;
         }
 
+        (void)precision;
+
         FPU_FetchData(ctx, &fp_src, opcode, opcode2, &ext_count, 0);
         fp_dst = RA_MapFPURegisterForWrite(ctx, fp_dst);
 
         EMIT(ctx, fabsd(fp_dst, fp_src));
-
-        /* FSxxx: 68040 zaokružuje rezultat na jednostruku preciznost, kao što radi FSMOVE */
-        if (precision == 4)
-            EMIT(ctx, fcvtsd(fp_dst, fp_dst), fcvtds(fp_dst, fp_dst));
 
         RA_FreeFPURegister(ctx, fp_src);
 
@@ -2220,14 +2218,12 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
                 precision = 4;
         }
 
+        (void)precision;
+
         FPU_FetchData(ctx, &fp_src, opcode, opcode2, &ext_count, 0);
         fp_dst = RA_MapFPURegister(ctx, fp_dst);
 
         EMIT(ctx, faddd(fp_dst, fp_dst, fp_src));
-
-        /* FSxxx: 68040 zaokružuje rezultat na jednostruku preciznost, kao što radi FSMOVE */
-        if (precision == 4)
-            EMIT(ctx, fcvtsd(fp_dst, fp_dst), fcvtds(fp_dst, fp_dst));
 
         RA_SetDirtyFPURegister(ctx, fp_dst);
 
@@ -2854,23 +2850,11 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
         }
         uint8_t fp_src = 0xff;
         uint8_t fp_dst = (opcode2 >> 7) & 7;
-        uint8_t precision = 0;
-
-        if (opcode2 & 0x0040) {
-            if (opcode2 & 0x0004)
-                precision = 8;
-            else
-                precision = 4;
-        }
 
         FPU_FetchData(ctx, &fp_src, opcode, opcode2, &ext_count, 0);
         fp_dst = RA_MapFPURegister(ctx, fp_dst);
 
         EMIT(ctx, fdivd(fp_dst, fp_dst, fp_src));
-
-        /* FSxxx: 68040 zaokružuje rezultat na jednostruku preciznost, kao što radi FSMOVE */
-        if (precision == 4)
-            EMIT(ctx, fcvtsd(fp_dst, fp_dst), fcvtds(fp_dst, fp_dst));
 
         RA_SetDirtyFPURegister(ctx, fp_dst);
 
@@ -4654,14 +4638,12 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
                 precision = 4;
         }
 
+        (void)precision;
+
         FPU_FetchData(ctx, &fp_src, opcode, opcode2, &ext_count, 0);
         fp_dst = RA_MapFPURegister(ctx, fp_dst);
 
         EMIT(ctx, fmuld(fp_dst, fp_dst, fp_src));
-
-        /* FSxxx: 68040 zaokružuje rezultat na jednostruku preciznost, kao što radi FSMOVE */
-        if (precision == 4)
-            EMIT(ctx, fcvtsd(fp_dst, fp_dst), fcvtds(fp_dst, fp_dst));
 
         RA_SetDirtyFPURegister(ctx, fp_dst);
 
@@ -4732,14 +4714,12 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
                 precision = 4;
         }
 
+        (void)precision;
+
         FPU_FetchData(ctx, &fp_src, opcode, opcode2, &ext_count, 0);
         fp_dst = RA_MapFPURegisterForWrite(ctx, fp_dst);
 
         EMIT(ctx, fnegd(fp_dst, fp_src));
-
-        /* FSxxx: 68040 zaokružuje rezultat na jednostruku preciznost, kao što radi FSMOVE */
-        if (precision == 4)
-            EMIT(ctx, fcvtsd(fp_dst, fp_dst), fcvtds(fp_dst, fp_dst));
 
         RA_FreeFPURegister(ctx, fp_src);
 
@@ -4977,14 +4957,12 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
                 precision = 4;
         }
 
+        (void)precision;
+
         FPU_FetchData(ctx, &fp_src, opcode, opcode2, &ext_count, 0);
         fp_dst = RA_MapFPURegisterForWrite(ctx, fp_dst);
 
         EMIT(ctx, fsqrtd(fp_dst, fp_src));
-
-        /* FSxxx: 68040 zaokružuje rezultat na jednostruku preciznost, kao što radi FSMOVE */
-        if (precision == 4)
-            EMIT(ctx, fcvtsd(fp_dst, fp_dst), fcvtds(fp_dst, fp_dst));
 
         RA_FreeFPURegister(ctx, fp_src);
 
@@ -5018,14 +4996,12 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
                 precision = 4;
         }
 
+        (void)precision;
+
         FPU_FetchData(ctx, &fp_src, opcode, opcode2, &ext_count, 0);
         fp_dst = RA_MapFPURegister(ctx, fp_dst);
 
         EMIT(ctx, fsubd(fp_dst, fp_dst, fp_src));
-
-        /* FSxxx: 68040 zaokružuje rezultat na jednostruku preciznost, kao što radi FSMOVE */
-        if (precision == 4)
-            EMIT(ctx, fcvtsd(fp_dst, fp_dst), fcvtds(fp_dst, fp_dst));
 
         RA_SetDirtyFPURegister(ctx, fp_dst);
 
@@ -5347,82 +5323,6 @@ uint32_t EMIT_lineF(struct TranslatorContext *ctx)
         ctx->tc_M68kCodePtr += 3;
         insn_consumed = 1;
         EMIT_AdvancePC(ctx, 6);
-    }
-    /* CACHE DMA RANGE: održavanje data cachea nad [An, An+Dn) u jednom prolazu,
-     * korakom stvarne veličine cache linea i zatvoreno jednim završnim DSB-om.
-     * Bez početne barijere: ARMv8 poreda DC-by-VA operaciju programskim redom prema
-     * ranijim loadovima/storeovima u Normal cacheable memoriju unutar istog retka
-     * (ARM ARM, "Ordering and completion of data and instruction cache
-     * instructions"), što su upravo storeovi koje ovaj raspon održava — ista
-     * logika kao Linux arm64 dcache_by_line_op. Naslijeđeni CINV/CPUSH
-     * handleri ispod zadržavaju svoj početni dsb.
-     *
-     * Kodiranje: SCOPE (4:3) je 00, rezervirano i nedopušteno na stvarnom 68040.
-     *   Operacijska riječ  1111 0100 CC P 00 nnn
-     *     CC  (7:6) cache polje, mora biti 01 (data). 00/10/11 s ovim scopeom
-     *               ne dosežu nijedan handler i uzimaju Line-F vektor
-     *     P   (5)   0 = CINV  -> invalidiraj        (dc ivac)
-     *               1 = CPUSH -> očisti+invalidiraj (dc civac), ili s N postavljenim
-     *                            samo očisti, linija ostaje valjana (dc cvac)
-     *     nnn (2:0) An = bazna adresa
-     *   Riječ ekstenzije  0 ddd s N S 000000000
-     *     ddd (14:12) Dn = duljina u bajtovima
-     *     s   (11)    0 = word duljina, 1 = long duljina
-     *     N   (10)    no-invalidate (smisleno samo s CPUSH)
-     *     S   (9)     no-sync: potisni završni DSB. Grupiraj izdavanjem N
-     *                 raspona sa S postavljenim, zatim zatvori jednom non-S operacijom ili
-     *                 m68k NOP-om (goli dsb sy). Raspon nulte duljine ne emitira
-     *                 baš ništa, pa nikad ne djeluje kao barijera.
-     *
-     * CINV je oštra primitiva: na EL1 sam s HCR_EL2.VM == 0, pa 
-     * dc ivac doista odbacuje. Petlja održava cijele linije, pa pozivatelj
-     * mora posjedovati svaku liniju koju raspon dotiče — djelomična završna linija gubi sve što
-     * je susjed tamo zaprljao. Pozivatelji koji to ne mogu obećati moraju prvo
-     * očistiti dvije završne linije, što radi 68040.libraryin CachePostDMA.
-     *
-     * Samo data cache, prevedeni kod je netaknut, pa se prijevod nastavlja. */
-    else if ((opcode & 0xff00) == 0xf400 && (opcode & 0x0018) == 0 && (opcode & 0x00c0) == 0x40)
-    {
-        extern int dcache_mask_bits;
-        uint8_t reg_An = RA_MapM68kRegister(ctx, 8 + (opcode & 7));
-        uint8_t reg_len = RA_MapM68kRegister(ctx, (opcode2 >> 12) & 7);  /* Dn = duljina */
-        uint8_t base = RA_AllocARMRegister(ctx);
-        uint8_t end = RA_AllocARMRegister(ctx);
-        uint8_t len = reg_len;
-        int no_sync = (opcode2 & 0x0200) != 0;  /* S: pozivatelj grupira, sam zatvara barijeru */
-
-        /* word duljina: koristi samo donjih 16 bitova bez klobberanja Dn */
-        if (!(opcode2 & 0x0800)) {
-            len = RA_AllocARMRegister(ctx);
-            EMIT(ctx, uxth(len, reg_len));
-        }
-
-        /* raspon nulte duljine ne održava nijednu liniju (cbz preskače sve ispod) */
-        EMIT(ctx, cbz(len, no_sync ? 7 : 8));
-        EMIT(ctx,
-            add_reg(end, reg_An, len, LSL, 0),              /* end  = An + len       */
-            bic_immed(base, reg_An, dcache_mask_bits, 0));  /* base = An & ~(line-1)  */
-        if (!(opcode & 0x20))                               /* CINV  -> invalidiraj  */
-            EMIT(ctx, dc_ivac(base));
-        else if (opcode2 & 0x0400)                          /* CPUSH+NI -> očisti    */
-            EMIT(ctx, dc_cvac(base));
-        else                                                /* CPUSH -> očisti+inval */
-            EMIT(ctx, dc_civac(base));
-        EMIT(ctx,
-            add_immed(base, base, 1 << dcache_mask_bits),   /* base += veličina linije */
-            cmp_reg(base, end, LSL, 0),
-            b_cc(A64_CC_CC, -3));                           /* petlja dok je base < end */
-        if (!no_sync)
-            EMIT(ctx, dsb_sy());                            /* vidljivo DMA masteru   */
-
-        if (len != reg_len)
-            RA_FreeARMRegister(ctx, len);
-        RA_FreeARMRegister(ctx, base);
-        RA_FreeARMRegister(ctx, end);
-
-        ctx->tc_M68kCodePtr += 2;
-        insn_consumed = 1;
-        EMIT_AdvancePC(ctx, 4);
     }
     /* CINV */
     else if ((opcode & 0xff20) == 0xf400 && (opcode & 0x0018) != 0)

@@ -1,4 +1,4 @@
-/* AGA-STORM — video izlaz kroz VideoCore HVS (VC6: Pi 4 / CM4).
+/* AGA-PISTORM - video output through the VideoCore HVS (VC6: Pi 4 / CM4).
  * SPDX-License-Identifier: GPL-2.0-only
  *
  * Scan the AGA frame as an HVS plane on the same display the P96 VideoCore
@@ -25,7 +25,7 @@ extern uintptr_t mmu_virt2phys(uintptr_t virt);
 extern void arm_flush_cache(uintptr_t addr, uint32_t len);
 extern void arm_dcache_invalidate(uintptr_t addr, uint32_t len);
 
-#define LE32(x) __builtin_bswap32(x)            /* Emu68 vrti ARM u big-endian */
+#define LE32(x) __builtin_bswap32(x)            /* Emu68 runs the ARM big-endian */
 
 /* ---- HVS ------------------------------------------------------------------ */
 #define ARM_PERIIOBASE      0xF2000000UL
@@ -40,7 +40,7 @@ static int       hvs_gen = 6;
 static uintptr_t dlist_base = DLIST_BASE_VC6;
 #define REG_DISPLIST1       (HVS_BASE + 0x24)
 #define REG_DISPSTAT1       (HVS_BASE + 0x58)
-#define REG_DISPLACT1       (HVS_BASE + 0x34)   /* lista koju HVS skenira SADA (latchana iz DISPLIST1 na početku framea) */
+#define REG_DISPLACT1       (HVS_BASE + 0x34)   /* the list the HVS is scanning NOW (latched from DISPLIST1 at frame start) */
 
 /* Where my two lists and the scaling kernel sit in the dlist RAM. These were
    constants once - measured free one day, hardcoded the next. They were not
@@ -135,7 +135,7 @@ static const uint32_t *cur_kernel_h = kernel_words, *cur_kernel_v = kernel_words
    factor, and the area kernel for its step where it is not (aga_sharp.h,
    sharp_fit below) - every Amiga pixel as wide and as tall as the next */
 static uint32_t kernel_area_h[SHARP_KERNEL_WORDS], kernel_area_v[SHARP_KERNEL_WORDS];
-static uint32_t area_step_h, area_step_v;   /* za što su napravljeni; 0 ništa */
+static uint32_t area_step_h, area_step_v;   /* what they were made for; 0 none */
 static int cur_look = 1;
 
 static inline uint32_t reg_rd(uintptr_t a)          { return LE32(*(volatile uint32_t *)a); }
@@ -178,7 +178,7 @@ static void hex_put(char *d, uint32_t v, int digits);  /* with the map, below */
 static void dl_misread(uint32_t w, uint32_t reads)
 {
     uint32_t n = __atomic_add_fetch(&dl_misreads, 1, __ATOMIC_RELAXED);
-    if (n > 8) return;                  /* log je za rijetke linije */
+    if (n > 8) return;                  /* the log is for rare lines */
     char line[96];
     int k = 0;
     const char *t = "[AGA] HVS: dlist word ";
@@ -235,7 +235,7 @@ uint32_t aga_dl_inuse;      /* words that were non-zero when borrowed */
 uint32_t aga_dl_free_at;    /* start of the longest free run in the dlist RAM */
 uint32_t aga_dl_free_len;   /* and how long it is - both published to agastat */
 
-static void dl_survey(void);    /* definirano niže; zove se iz dl_borrow */
+static void dl_survey(void);    /* defined below; called from dl_borrow */
 
 static void dl_borrow(void)
 {
@@ -253,8 +253,8 @@ static void dl_borrow(void)
     dl_borrow_first = LIST_A;
     uint32_t used = 0;
     for (uint32_t i = 0; i < DL_BORROW_WORDS; i++) {
-        /* dl_return ovo vraća nakon igre: jedno čitanje koje je vratilo drugi
-           word ostalo bi u RAM-u (dl_rd, 2026-10-10) */
+        /* dl_return writes this back after the game: one read that
+           returned another word would stay in the RAM (dl_rd, 2026-10-10) */
         dl_backup[i] = dl_rd(dl_borrow_first + i);
         if (dl_backup[i]) used++;
     }
@@ -293,10 +293,9 @@ static void dl_borrow(void)
 static void dl_survey(void)
 {
     uint32_t best_at = 0, best_len = 0, run_at = 0, run = 0;
-    /* dl_rd, ne jedno čitanje: word u upotrebi koji se jednom pročitao kao
-       nula stavio bi moje liste na njega. Dva čitanja po wordu gdje je išlo
-       jedno - oko 3600 čitanja više, jednom po igri na prvom frameu
-       (dl_borrow). */
+    /* dl_rd, not one read: a word in use that read as zero once would put
+       my lists on it. Two reads a word where one did - about 3600 more
+       reads, once per game at the first frame (dl_borrow). */
     for (uint32_t i = DL_SURVEY_FLOOR; i < DL_RAM_WORDS; i++) {
         if (dl_rd(i) == 0) {
             if (!run) run_at = i;
@@ -330,18 +329,18 @@ static void dl_return(void)
    counters from `base`: LIST PLANES CTL POS0 IMAGE PAL. */
 static void ptr_probe(uint32_t list, int base)
 {
-    if (hvs_gen != 6) return;            /* samo VC6 layout; diagnostic */
+    if (hvs_gen != 6) return;            /* VC6 layout only; diagnostic */
     uint32_t planes = 0, ctl2 = 0, pos0 = 0, image = 0, pal = 0;
     uint32_t o = list;
     for (int n = 0; n < 8 && o + 6 < DL_RAM_WORDS; n++) {
         uint32_t ctl = dl_peek(o);
         if (ctl == LIST_END) {
-            pal = dl_peek(o + 2);           /* terminator, boja 0, boja 1 */
+            pal = dl_peek(o + 2);           /* terminator, colour 0, colour 1 */
             break;
         }
         uint32_t words = (ctl >> 24) & 0x3f;
         if (!(ctl & CTL_VALID) || words == 0) break;
-        if (++planes == 2) {                /* plane 2 je pointer */
+        if (++planes == 2) {                /* plane 2 is the pointer */
             ctl2  = ctl;
             pos0  = dl_peek(o + 1);
             image = dl_peek(o + 6);
@@ -356,93 +355,66 @@ static void ptr_probe(uint32_t list, int base)
     aga_diag_set(base + 5, pal);
 }
 
-/* ---- mailbox (koristi se samo pri initu, na coreu 0) ----------------------- */
+/* ---- mailbox (only used at init, on core 0) ------------------------------- */
 #define MBOX_BASE           (ARM_PERIIOBASE + 0xB880)
 #define MBOX_READ           (*(volatile uint32_t *)(MBOX_BASE + 0x00))
 #define MBOX_STATUS         (*(volatile uint32_t *)(MBOX_BASE + 0x18))
 #define MBOX_WRITE          (*(volatile uint32_t *)(MBOX_BASE + 0x20))
 #define MBOX_FULL           0x80000000u
 #define MBOX_EMPTY          0x40000000u
-/* 128 bajtova na 64-byte granici: dva cijela cache linea u kojima ne živi
-   ništa drugo. Bio je aligned(16), jebote, pa su se lineovi u kojima sjedi
-   mogli dijeliti sa susjednim staticima, a susjeda kojeg drugi core upiše
-   između cleana i firmwareovog odgovora ponovno zaprlja line sa STARIM
-   requestom u njemu - vraćenim pri evictionu, preko odgovora. */
-/* U low memory od 1.121: Emu68 premješta svoj kernel na vrh RAM-a, a na Pi
-   s više od 1 GB (CM4 na 0x7a7c2440) buffer među mojim staticima je iza
-   onoga u što firmware piše - vrati adresu i ostavi odgovor nenapisan, pa je
-   temperatura na CM4 čitala 0 dok je display size, pitan prije premještanja,
-   stigao. Emu68 vlastiti FBReq živi na phys 0x1000-0x11ff; moji uzimaju
-   0x1c00 i 0x1c80 u tom pageu, po jedan 64-byte-aligned 128-byte blok (req
-   ovdje, hud_req za core 3). */
-static uint32_t req_storage[32] __attribute__((aligned(64)));
-static uint32_t hud_storage[32] __attribute__((aligned(64)));
-#define MBOX_LOW(off)  ((off)==0x1c00 ? req_storage : hud_storage)
-#define MBOX_BUF_BYTES 128
-static uint32_t *const req = MBOX_LOW(0x1c00);
+/* 128 bytes on a 64-byte boundary: two whole cache lines with nothing else
+   in them. Was aligned(16), so the lines could be shared with neighbouring
+   statics, and a neighbour dirtied by another core between the clean and
+   the firmware's answer writes the line back on eviction - OLD request over
+   the answer. Took a while to see that bastard. */
+static uint32_t req[32] __attribute__((aligned(64)));
 
 static inline uint64_t mbox_now(void) { uint64_t t; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(t)); return t; }
 
-/* Jedan property-channel poziv. Čeka MOJ odgovor: firmware vraća adresu
-   buffera koju je dobio, a odgovor za buffer nekog drugog pozivatelja
-   (ostavljen u queueu ili stigao prvi) nije moj da se na njemu zaustavim.
-   Prva verzija pucala je na svaki channel-8 odgovor i onda čitala buffer na
-   koji firmware još nije odgovorio: temperature read pri svakom ulasku i
-   izlasku iz sandboxa vraćao se s response codeom 0, na obje ploče, cijelo
-   vrijeme, dok je poziv pri video initu slučajno radio. Ograničeno na 100 ms
-   da firmware koji nikad ne odgovori ne može zaglaviti pozivatelja. */
-/* Od 1.121 pita i core 3 (OSD monitor line, vlastiti buffer), pa moji
-   pozivi idu naizmjence: svaki bi odgovor onoga drugog odbacio kao foreign.
-   wait 0: odustani odmah kad je neki moj u tijeku. */
-static volatile int mbox_busy;
-
-static int mbox_call_on(uint32_t *b, uint32_t bytes, int wait)
+/* One property-channel call. Wait for MY answer: firmware hands back the
+   buffer address it was given, and a reply for another caller's buffer
+   (left in the queue or arriving first) is not mine to stop at. First
+   version broke on any channel-8 reply and read a buffer not answered yet:
+   the temperature read at every sandbox entry/leave came back code 0 on
+   both boards all along, while the video-init call happened to work. Bound
+   at 100 ms so a dead firmware cannot hang the caller. */
+static int mbox_call(void)
 {
-    while (__atomic_test_and_set(&mbox_busy, __ATOMIC_ACQUIRE)) {
-        if (!wait) return -1;
-        __asm__ volatile("yield");
-    }
-    int rc = -1;
-    uintptr_t phys = mmu_virt2phys((uintptr_t)b);
+    uintptr_t phys = mmu_virt2phys((uintptr_t)req);
     uint32_t addr = (uint32_t)(phys & ~0xFu);
     uint64_t f; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(f));
     uint64_t end = mbox_now() + f / 10;
-    arm_flush_cache((uintptr_t)b, bytes);
-    while (LE32(MBOX_STATUS) & MBOX_FULL) if (mbox_now() > end) { aga_diag_inc(AGA_D_MBOX_TIMEOUTS); goto out; }
+    arm_flush_cache((uintptr_t)req, sizeof req);
+    while (LE32(MBOX_STATUS) & MBOX_FULL) if (mbox_now() > end) { aga_diag_inc(AGA_D_MBOX_TIMEOUTS); return -1; }
     MBOX_WRITE = LE32(addr | 8);
     for (;;) {
         while (LE32(MBOX_STATUS) & MBOX_EMPTY)
-            if (mbox_now() > end) { aga_diag_inc(AGA_D_MBOX_TIMEOUTS); goto out; }
+            if (mbox_now() > end) { aga_diag_inc(AGA_D_MBOX_TIMEOUTS); return -1; }
         uint32_t r = LE32(MBOX_READ);
         if ((r & 0xF) == 8 && (r & ~0xFu) == addr) break;
         aga_diag_inc(AGA_D_MBOX_FOREIGN);
     }
-    arm_dcache_invalidate((uintptr_t)b, bytes);
-    rc = (LE32(b[1]) == 0x80000000u) ? 0 : -1;
-out:
-    __atomic_clear(&mbox_busy, __ATOMIC_RELEASE);
-    return rc;
+    arm_dcache_invalidate((uintptr_t)req, sizeof req);
+    return (LE32(req[1]) == 0x80000000u) ? 0 : -1;
 }
 
-static int mbox_call(void) { return mbox_call_on(req, MBOX_BUF_BYTES, 1); }
-
-/* Firmwareov pogled na SoC: temperatura (milistupnjevi) i GET_THROTTLED
-   bitovi - 0 under-voltage sada, 1 frekvencija ograničena sada, 2 throttled
-   sada, 3 soft temperature limit sada; bitovi 16-19 isto od boota. Neovisno
-   o video putu, pa radi i na Pi 3. */
+/* Firmware's view of the SoC: temperature (millidegrees) and the
+   GET_THROTTLED bits - 0 under-voltage now, 1 frequency capped now, 2
+   throttled now, 3 soft temp limit now; bits 16-19 same since boot.
+   Nothing to do with the video path, so a Pi 3 can use it too. */
 int aga_soc_status(uint32_t *temp_mc, uint32_t *throttled)
 {
     int c = 1;
     req[c++] = 0;
     req[c++] = LE32(0x30006); req[c++] = LE32(8); req[c++] = 0;   /* GET_TEMPERATURE id 0 */
     int tpos = c; req[c++] = 0; req[c++] = 0;
-    req[c++] = LE32(0x30046); req[c++] = LE32(4); req[c++] = 0;   /* GET_THROTTLED, 0 = ne čisti */
+    req[c++] = LE32(0x30046); req[c++] = LE32(4); req[c++] = 0;   /* GET_THROTTLED, 0 = do not clear */
     int fpos = c; req[c++] = 0;
     req[c++] = 0;
     req[0] = LE32(c << 2);
     mbox_call();
     aga_diag_inc(AGA_D_SOC_CALLS);
-    aga_diag_set(AGA_D_SOC_CODE, LE32(req[1]));   /* $80000000 = firmware je odgovorio */
+    aga_diag_set(AGA_D_SOC_CODE, LE32(req[1]));   /* $80000000 = the firmware answered */
     if (LE32(req[1]) != 0x80000000u) return -1;
     *temp_mc = LE32(req[tpos + 1]);
     *throttled = LE32(req[fpos]);
@@ -484,7 +456,6 @@ static void fit(void);
 static void crop_state(void);       /* the custom crop, AGA_D_CROP (below) */
 static void snap_take(void);        /* the last game's picture kept (below) */
 static void hsync_restore(void);    /* HDMI sync: the mode's own porch again (below) */
-static void hsync_park(void);       /* 1.118: park adjusted porch for next game */
 static uint32_t  saved_list;        /* DISPLIST1 as found before the takeover */
 
 /* Map the dlist RAM into the diag log: every run of non-zero words as
@@ -517,7 +488,7 @@ static void dl_map_log(const char *tag)
     line[n] = 0;
     aga_diag_log(line);
 }
-/* osam wordova liste, za isti log */
+/* eight words of a list, for the same log */
 static void dl_words_log(const char *tag, uint32_t at)
 {
     char line[120];
@@ -595,8 +566,8 @@ void aga_hvs_service(void)
         __atomic_store_n(&watch_next, now + f / 50, __ATOMIC_RELEASE);
     }
 }
-static uint32_t  cur_list;          /* LIST_A/LIST_B kad je moja live, inače 0 */
-static uint32_t  ptr0_word;         /* dlist word index PTR0 moje plane */
+static uint32_t  cur_list;          /* LIST_A/LIST_B when mine is live, else 0 */
+static uint32_t  ptr0_word;         /* dlist word index of my plane's PTR0 */
 static int       video_ok;
 #if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
 static frf_rtg_handoff frf_rtg_display;
@@ -632,7 +603,7 @@ int aga_video_init_at(uint8_t *fbmem_va, uintptr_t fbmem_phys)
     }
     if (AGA_PI3_BUILD && AGA_PROBES_ON) dl_map_log("[AGA] dlist@boot");
 
-    /* fizička veličina displaya */
+    /* physical display size */
     int c = 1;
     req[c++] = 0;
     req[c++] = LE32(0x40003); req[c++] = LE32(8); req[c++] = 0;
@@ -660,7 +631,7 @@ int aga_video_init_at(uint8_t *fbmem_va, uintptr_t fbmem_phys)
 #endif
 
     video_ok = 1;
-    crop_state();                       /* bit 0: Custom shvaćen */
+    crop_state();                       /* bit 0: Custom understood */
     kprintf("[AGA] HVS: display %dx%d, AGA plane %dx%d at %d,%d (scale %08x/%08x), fb %p\n",
             disp_w, disp_h, dst_w, dst_h, dst_x, dst_y, scale_x, scale_y, (void *)fb_phys);
     return 0;
@@ -703,17 +674,8 @@ static uint32_t src_rows = AGA_OUT_H, src_pitch = AGA_OUT_W * 4;
    left, in shape, centred. */
 static int scale_mode;
 static int border_x, border_y;
-static int scan_pct, lscan_pct;    /* the scanlines (below), for Whole lines */
-static int nscan_pct = -1;  /* v1.118 NTSC scanlines: -1 inherits PAL setting */
-static int scan_pct_now(void)
-{
-    return frame_woven ? lscan_pct : (frame_ntsc && nscan_pct >= 0) ? nscan_pct : scan_pct;
-}
-
-static int scan_shape;  /* 0 Even, 1 Crisp, 2 Whole, 4 Beam */
-static int scan_top;    /* 0 bottom, 1 top */
-#define SHAPE_WHOLE(x) ((x)==2 || (x)==4)
-#define SHAPE_BEAM(x) ((x)==4)
+static int scan_level, lscan_level;    /* the scanlines (below), for Whole lines */
+static int scan_shape;                 /* 0 Even (the default), 1 Crisp, 2 Whole lines */
 static void set_source(void);
 static void fit(void)
 {
@@ -724,7 +686,7 @@ static void fit(void)
     } else {
         static const uint16_t shape[8][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
                                               { 16, 9 }, { 16, 10 }, { 21, 9 }, { 32, 9 } };
-        uint64_t sw = (uint64_t)crop_w * (scale_mode == 3 ? 500 : frame_ntsc ? 430 : 520), sh = (uint64_t)crop_h * 1000;   /* oblik */
+        uint64_t sw = (uint64_t)crop_w * (scale_mode == 3 ? 500 : frame_ntsc ? 430 : 520), sh = (uint64_t)crop_h * 1000;   /* the shape */
         if (scale_mode >= 4) { sw = shape[scale_mode][0]; sh = shape[scale_mode][1]; }
         if ((uint64_t)aw * sh <= (uint64_t)ah * sw) { dst_w = aw; dst_h = (uint32_t)(aw * sh / sw); }
         else                                        { dst_h = ah; dst_w = (uint32_t)(ah * sw / sh); }
@@ -742,8 +704,8 @@ static void fit(void)
        Every line then gets the same rows, the last one dark: at 800 x 600,
        where 4:3 gives a line 2.1 rows, 2 each. Nothing when they are whole
        already (Scale integer) or fewer than 2 (no scanlines). */
-    if (SHAPE_WHOLE(scan_shape) && scan_pct_now()) {
-        uint32_t lines = (frame_woven && dst_h >= 2 * crop_h) ? 2 * crop_h : crop_h;   /* kako to set_source pokazuje */
+    if (scan_shape == 2 && (frame_woven ? lscan_level : scan_level)) {
+        uint32_t lines = (frame_woven && dst_h >= 2 * crop_h) ? 2 * crop_h : crop_h;   /* as set_source shows it */
         uint32_t n = lines ? dst_h / lines : 0;
         if (n >= 2 && n * lines != dst_h) {
             dst_w = (uint32_t)((uint64_t)dst_w * (n * lines) / dst_h);
@@ -755,7 +717,7 @@ static void fit(void)
     dst_x = (disp_w - dst_w) / 2;
     dst_y = (disp_h - dst_h) / 2;
     scale_x = (0x10000u * crop_w) / dst_w;
-    set_source();                       /* redovi koji se čitaju, pa i vertikalni step */
+    set_source();                       /* the rows read, and so the vertical step */
 }
 
 /* 0: whole 800 x 286 overscan frame, 1: 720 x 272 (what a TV shows), 2:
@@ -785,7 +747,7 @@ _Static_assert(CROP_FRAME_W == AGA_OUT_W && CROP_ROWS_PAL == AGA_OUT_H, "aga_cro
 static uint16_t cut[2][4] = { CROP_DEFAULT_PAL, CROP_DEFAULT_NTSC };
 static uint32_t cut_latch;
 static volatile int crop_on;
-static volatile int last_ok, last_page, last_woven, last_row, last_ntsc;   /* zadnji prikazani frame igre (snap_take) */
+static volatile int last_ok, last_page, last_woven, last_row, last_ntsc;   /* the last game frame shown (snap_take) */
 static int snap_ok, snap_ntsc;
 static uint32_t snap_us;            /* what the last copy took, for AGA_D_CROP */
 /* 4, Auto (1.114, RGB2RTG's Crop: Auto): the game's own display window,
@@ -803,10 +765,10 @@ static void apply_crop(void)
         crop_x = (uint32_t)x; crop_y = (uint32_t)y; crop_w = (uint32_t)w; crop_h = (uint32_t)h;
     } else if (zoom_mode == 4 && autow.x0 >= 0) {
         int rows = frame_ntsc ? 237 : AGA_OUT_H, y0 = autow.y0, y1 = autow.y1;
-        if (y1 > rows - 1) y1 = rows - 1;       /* PAL window, a NTSC frame od tada */
+        if (y1 > rows - 1) y1 = rows - 1;       /* a PAL window, an NTSC frame since */
         if (y0 > rows - 64) y0 = rows - 64;
         if (y1 < y0 + 63) y1 = y0 + 63;
-        int cx, cw;                             /* nikad uže od standardnog screena */
+        int cx, cw;                             /* never narrower than the standard screen */
         crop_auto_span(autow.x0, autow.x1, &cx, &cw);
         crop_x = (uint32_t)cx; crop_w = (uint32_t)cw;
         crop_y = (uint32_t)y0; crop_h = (uint32_t)(y1 - y0 + 1);
@@ -845,8 +807,8 @@ static void sharp_fit(void)
     if (cur_look != 0) return;
     const uint32_t *h = kernel_nearest, *v = kernel_nearest;
     int made = 0;
-    /* kernel koji padne svoju provjeru (sharp_kernel_ok) ne koristi se:
-       nearest umjesto njega, neujednačeni pikseli ali bez tamnih redova */
+    /* a kernel that fails its own check (sharp_kernel_ok) is not used:
+       nearest instead, uneven pixels but no dark rows */
     static int bad_logged;
     if (sharp_uneven(scale_x)) {
         if (area_step_h != scale_x) { sharp_area_kernel(scale_x, kernel_area_h); area_step_h = scale_x; made = 1; }
@@ -915,8 +877,8 @@ void aga_video_cut_store(int slot)
     }
 }
 
-/* Jednom po frameu iz chipset loopa (core 3), nakon aga_video_set_frame:
-   display window koji je core vidio na linijama framea sa slikom */
+/* Once a frame from the chipset loop (core 3), after aga_video_set_frame:
+   the display window the core saw on the frame's lines with a picture */
 void aga_video_auto_window(int ok, int x0, int x1, int y0, int y1)
 {
     if (!crop_auto_track(&autow, frame_ntsc ? 237 : AGA_OUT_H, ok, x0, x1, y0, y1)) return;
@@ -925,7 +887,7 @@ void aga_video_auto_window(int ok, int x0, int x1, int y0, int y1)
     if (zoom_mode == 4 && !crop_on) apply_crop();
 }
 
-/* $57nn / $56nn: desno / dolje, u hires pikselima / linijama, signed */
+/* $57nn / $56nn: right / down, in hires pixels / lines, signed */
 void aga_video_set_pos_x(int x) { pos_x = x; apply_crop(); calib_refresh(); }
 void aga_video_set_pos_y(int y) { pos_y = y; apply_crop(); calib_refresh(); }
 
@@ -937,14 +899,14 @@ void aga_video_set_look(int look)
     cur_look = look;
     cur_kernel_v = look == 0 ? kernel_nearest : kernel_words;
     cur_kernel_h = look == 0 ? kernel_nearest : look == 2 ? kernel_tv : kernel_words;
-    sharp_fit();                        /* Sharp: area kerneli gdje su stepovi neujednačeni */
-    /* samo dok su wordovi moji: na desktopu pripadaju RTG driveru, a dl_borrow
-       upiše odabrane kernele kad igra preuzme */
+    sharp_fit();                        /* Sharp: the area kernels where the steps are uneven */
+    /* only while the words are mine: on the desktop they belong to the RTG
+       driver, and dl_borrow writes the chosen kernels when a game takes over */
     if (video_ok && dl_borrowed) write_kernels();
 }
 void aga_video_set_sharp(int on) { aga_video_set_look(on ? 0 : 1); }
 
-/* $597S: scale, 0 4:3 / 1 integer / 2 fill (fit, gore) */
+/* $597S: scale, 0 4:3 / 1 integer / 2 fill (fit, above) */
 void aga_video_set_scale(int mode)
 {
     scale_mode = (mode >= 0 && mode <= 7) ? mode : 0;
@@ -953,7 +915,7 @@ void aga_video_set_scale(int mode)
     calib_refresh();
 }
 
-/* $59Bn / $59Cn: TV border poprijeko / po visini, 0-10% (fit, gore) */
+/* $59Bn / $59Cn: the TV border across / down, 0-10% (fit, above) */
 void aga_video_set_border(int down, int pct)
 {
     pct = pct < 0 ? 0 : pct > 10 ? 10 : pct;
@@ -980,7 +942,7 @@ _Static_assert(3 * FB_BYTES <= SCAN_OFF, "the scanline image would overlap the t
 #define CTL_SCL(s) ((((uint32_t)(s)) << 5) | (((uint32_t)(s)) << 8))   /* both planes' scaling mode */
 #define SCL_H_PPF_V_NONE 4
 static const uint8_t scan_alpha[5] = { 0, 64, 128, 192, 255 };
-static uint32_t mask_rows, mask_src, mask_level, mask_shape;   /* za što je slika u memoriji napisana */
+static uint32_t mask_rows, mask_src, mask_level, mask_shape;   /* what the image in memory was written for */
 
 /* The last game's picture for the crop screen, above the scanline image and
    below the HDMI sound ring. Each frame shown is marked (last_*, present),
@@ -1013,7 +975,7 @@ _Static_assert(3 * FB_BYTES <= SCAN_OFF, "scanline scratch overlaps third frameb
 _Static_assert(SCAN_OFF + 4096u * SCAN_W * 4 <= MASK_OFF, "scanline scratch overlaps CRT mask");
 _Static_assert(MASK_OFF + MASK_W_MAX * 4 <= SNAP_OFF, "the CRT mask's row would reach the snapshot");
 static int grille_level;
-static uint32_t grille_w, grille_h, grille_lv;   /* za što je red u memoriji napisan */
+static uint32_t grille_w, grille_h, grille_lv;   /* what the row in memory was written for */
 
 void aga_video_set_mask(int level)
 {
@@ -1022,14 +984,14 @@ void aga_video_set_mask(int level)
     calib_refresh();
 }
 
-/* Grilleov red za ovu geometriju, upisan kad već nije; 0 = sada ništa.
-   Njegovi stupci se broje od lijevog ruba slike. */
+/* The grille's row for this geometry, written when it is not already; 0 =
+   none now. Its columns count from the picture's left edge. */
 static int grille_ready(void)
 {
     if (!grille_level || dst_w > MASK_W_MAX || !dst_w) return 0;
     if (grille_w == dst_w && grille_h == disp_h && grille_lv == (uint32_t)grille_level) return 1;
     uint32_t *row = (uint32_t *)(fb_va + MASK_OFF);
-    uint32_t a = (uint32_t)scan_alpha[grille_level] << 24;     /* crno; bajtovi A,R,G,B kao frameovi */
+    uint32_t a = (uint32_t)scan_alpha[grille_level] << 24;     /* black; bytes A,R,G,B like the frames */
     uint32_t period = disp_h > 1440 ? 6 : 3, dark = period / 3;
     for (uint32_t x = 0; x < dst_w; x++)
         row[x] = (x % period) >= period - dark ? a : 0;
@@ -1037,25 +999,25 @@ static int grille_ready(void)
     return 1;
 }
 
-/* Maskin plane na wordu o, preko slike: neskaliran (bez scalera, bez
-   kernela), svaka linija iz tog jednog reda. Vraća word nakon njega. */
+/* The mask's plane at word o, over the picture: unscaled (no scaler, no
+   kernel), every line from the one row. Returns the word after it. */
 #define CTL_UNITY_VC4 (1UL << 4)
 #define CTL_UNITY_VC6 (1UL << 15)
 static uint32_t mask_plane(uint32_t o)
 {
-    uint32_t start = o++;                        /* njegov control word zadnji, kao slikin */
+    uint32_t start = o++;                        /* its control word last, like the picture's */
     if (hvs_gen == 4) {
         dl_wr(o++, VC4_POS0(dst_x, dst_y));
-        dl_wr(o++, (dst_w & 0xfff) | ((dst_h & 0xfff) << 16));          /* POS2: veličina, alpha po pikselu */
+        dl_wr(o++, (dst_w & 0xfff) | ((dst_h & 0xfff) << 16));          /* POS2: size, alpha per pixel */
     } else {
         dl_wr(o++, POS0_X(dst_x) | POS0_Y(dst_y));
-        dl_wr(o++, POS2_ALPHA(0xfff));                                   /* alpha po pikselu */
+        dl_wr(o++, POS2_ALPHA(0xfff));                                   /* alpha per pixel */
         dl_wr(o++, POS2_H(dst_h) | POS2_W(dst_w));
     }
     dl_wr(o++, 0xdeadbeefUL);                                            /* POS3 ctx (HVS) */
     dl_wr(o++, 0xc0000000UL | (uint32_t)(fb_phys + MASK_OFF));
     dl_wr(o++, 0xdeadbeefUL);                                            /* PTRCTX0 (HVS) */
-    dl_wr(o++, 0);                                                       /* pitch 0: svaka linija isti red */
+    dl_wr(o++, 0);                                                       /* pitch 0: every line the same row */
     dl_wr(start, CTL_VALID | CTL_WORDS(o - start) | (hvs_gen == 4 ? CTL_UNITY_VC4 : CTL_UNITY_VC6)
                  | CTL_ALPHA_EXPAND | CTL_RGB_EXPAND | CTL_FORMAT(FMT_RGBA8888)
                  | CTL_PIXEL_ORDER(hvs_gen == 4 ? ORDER_VC4_ARGB_BYTES : ORDER_BGRA));
@@ -1064,7 +1026,7 @@ static uint32_t mask_plane(uint32_t o)
 
 void aga_video_set_scanlines(int level)
 {
-    scan_pct = (level >= 0 && level <= 4) ? level * 25 : 0;
+    scan_level = (level >= 0 && level <= 4) ? level : 0;
     apply_crop();                       /* Whole lines fits the picture to them */
     calib_refresh();
 }
@@ -1074,7 +1036,7 @@ void aga_video_set_scanlines(int level)
    each one where the display is tall enough - off (0) suits most */
 void aga_video_set_laced_scanlines(int level)
 {
-    lscan_pct = (level >= 0 && level <= 4) ? level * 25 : 0;
+    lscan_level = (level >= 0 && level <= 4) ? level : 0;
     apply_crop();
 }
 
@@ -1087,30 +1049,9 @@ void aga_video_set_laced_scanlines(int level)
                     row taller than others (up to 1.115 the only one)
      2 Whole lines  picture fitted to a whole number of rows a line (fit), a
                     little smaller, its shape kept: clean at low resolutions */
-void aga_video_set_ntsc_scanlines(int v)
-{
-    nscan_pct = (v >= 1 && v <= 5) ? (v - 1) * 25 : -1;
-    apply_crop();
-    calib_refresh();
-}
-
-/* 1.119 Pi 3 HVS selective port: scanline strength in 1% steps. */
-static int scan_select;
-void aga_video_scan_select(int what) { scan_select = what; }
-void aga_video_scan_value(int v)
-{
-    int pct = v < 0 ? 0 : (v > 100 ? 100 : v);
-    if (scan_select == 0) scan_pct = pct;
-    else if (scan_select == 1) lscan_pct = pct;
-    else if (scan_select == 2) nscan_pct = v > 100 ? -1 : pct;
-    else if (scan_select == 3) scan_top = (v == 1) ? 1 : 0;
-    else return; /* frame blend, Pi4 V3D, CRT fields, fill: not yet supported */
-    apply_crop();
-    calib_refresh();
-}
 void aga_video_set_scan_shape(int shape)
 {
-    scan_shape = (shape >= 0 && shape <= 4 && shape != 3) ? shape : 0;
+    scan_shape = (shape >= 0 && shape <= 2) ? shape : 0;
     apply_crop();
     calib_refresh();
 }
@@ -1118,23 +1059,18 @@ void aga_video_set_scan_shape(int shape)
 /* The image for this geometry, written if not already there; 0 = none now.
    Lines are the rows the plane reads: one Amiga line each, or one woven row
    each on an interlaced screen. */
-/* Beam's profile: (1 + cos(2 pi j / 64)) / 2 of 255 for j 0-32, half a line
-   from its edge to its middle (the other half mirrors it) */
-static const uint8_t beam_w[33] = {
-    255, 254, 253, 250, 245, 240, 234, 226, 218, 208, 198, 188, 176, 165, 152, 140,
-    128, 115, 103, 90, 79, 67, 57, 47, 37, 29, 21, 15, 10, 5, 2, 1, 0 };
-static uint8_t scan_row[4096];         /* scan_ready tamnoća za svaki display red */
 static int scan_ready(void)
 {
-    int pct = scan_pct_now();
+    int level = frame_woven ? lscan_level : scan_level;
     uint32_t lines = src_rows;
-    uint32_t shape = (uint32_t)scan_shape | (uint32_t)scan_top << 4;
-    if (!pct || dst_h < 2 * lines || dst_h > sizeof scan_row) return 0;
-    if ((uint64_t)SCAN_OFF + (uint64_t)dst_h * SCAN_W * 4 > SNAP_OFF) return 0;   /* snapshot crop screena je gore */
-    if (mask_rows == dst_h && mask_src == lines && mask_level == (uint32_t)pct && mask_shape == shape)
+    if (!level || dst_h < 2 * lines) return 0;
+    if ((uint64_t)SCAN_OFF + (uint64_t)dst_h * SCAN_W * 4 > SNAP_OFF) return 0;   /* the crop screen's snapshot is above */
+    if (mask_rows == dst_h && mask_src == lines && mask_level == (uint32_t)level && mask_shape == (uint32_t)scan_shape)
         return 1;
-    uint32_t alpha = ((uint32_t)pct * 255 + 50) / 100;      /* crno; bajtovi A,R,G,B kao frameovi */
+    uint32_t *m = (uint32_t *)(fb_va + SCAN_OFF);
+    uint32_t alpha = scan_alpha[level];                     /* black; bytes A,R,G,B like the frames */
     for (uint32_t r = 0; r < dst_h; r++) {
+        uint32_t v = 0;
         if (scan_shape == 0) {
             /* Even, counted in 1/dst_h of a line: row r covers [r * lines,
                r * lines + lines), the gap of the line it starts in the last
@@ -1143,46 +1079,15 @@ static int scan_ready(void)
             uint32_t lo = r * lines, hi = lo + lines;
             uint32_t end = (lo / dst_h + 1) * dst_h, gap = end - lines;
             uint32_t s0 = lo > gap ? lo : gap, e0 = hi < end ? hi : end;
-            scan_row[r] = (uint8_t)(e0 > s0 ? (alpha * (e0 - s0) + lines / 2) / lines : 0);
+            if (e0 > s0) v = ((alpha * (e0 - s0) + lines / 2) / lines) << 24;
         } else {
-            scan_row[r] = 0;
+            uint32_t line = ((2 * r + 1) * lines) / (2 * dst_h);
+            uint32_t next = ((2 * r + 3) * lines) / (2 * dst_h);
+            if (next != line || r + 1 == dst_h) v = alpha << 24;   /* a line's last row */
         }
-    }
-    if (scan_shape != 0) {
-        /* line by line, its rows as the scaler shows them (a row belongs to
-           the line its middle falls in) */
-        for (uint32_t r = 0; r < dst_h; ) {
-            uint32_t k = ((2 * r + 1) * lines) / (2 * dst_h), r0 = r;
-            while (r < dst_h && ((2 * r + 1) * lines) / (2 * dst_h) == k) r++;
-            uint32_t h = r - r0;
-            if (SHAPE_BEAM(scan_shape) && h >= 3) {
-                /* the cosine at each row's middle, (2i + 1) / 2h of the
-                   line, its edge rows at the full strength */
-                uint32_t e = beam_w[(32 + h / 2) / h];
-                for (uint32_t i = 0; i < h; i++) {
-                    uint32_t j = ((2 * i + 1) * 32 + h / 2) / h;
-                    if (j > 32) j = 64 - j;
-                    scan_row[r0 + i] = (uint8_t)(e ? alpha * beam_w[j] / e : alpha);
-                }
-            } else {
-                /* Crisp: the line's last row - as dark for the line as one
-                   row is for a line of average height, so a 3-row line of
-                   4:3's 3.78 is no darker than a 4-row one (the same row at
-                   every whole step); what passes 255 goes on the row above */
-                uint32_t want = (alpha * h * lines + dst_h / 2) / dst_h;
-                scan_row[r - 1] = (uint8_t)(want > 255 ? 255 : want);
-                if (want > 255 && h >= 2) scan_row[r - 2] = (uint8_t)(want - 255 > 255 ? 255 : want - 255);
-            }
-        }
-    }
-    /* Top: slika naopako - svaki gap na početku svoje linije (CRT fields
-       zadržava Bottomov, pomaknut sa slikom umjesto toga: show) */
-    uint32_t *m = (uint32_t *)(fb_va + SCAN_OFF);
-    for (uint32_t r = 0; r < dst_h; r++) {
-        uint32_t v = (uint32_t)scan_row[scan_top == 1 ? dst_h - 1 - r : r] << 24;
         for (int x = 0; x < SCAN_W; x++) *m++ = v;
     }
-    mask_rows = dst_h; mask_src = lines; mask_level = (uint32_t)pct; mask_shape = shape;
+    mask_rows = dst_h; mask_src = lines; mask_level = (uint32_t)level; mask_shape = (uint32_t)scan_shape;
     return 1;
 }
 
@@ -1194,7 +1099,7 @@ static uint32_t scan_plane(uint32_t o)
     if (hvs_gen == 4) {
         dl_wr(o++, VC4_POS0(dst_x, dst_y));
         dl_wr(o++, VC4_POS1(dst_w, dst_h));
-        dl_wr(o++, (SCAN_W & 0xfff) | ((dst_h & 0xfff) << 16));        /* POS2: veličina sourcea, alpha po pikselu */
+        dl_wr(o++, (SCAN_W & 0xfff) | ((dst_h & 0xfff) << 16));        /* POS2: source size, alpha per pixel */
     } else {
         dl_wr(o++, POS0_X(dst_x) | POS0_Y(dst_y));
         dl_wr(o++, POS2_ALPHA(0xfff));                                   /* alpha per pixel */
@@ -1205,8 +1110,8 @@ static uint32_t scan_plane(uint32_t o)
     dl_wr(o++, 0xc0000000UL | (uint32_t)(fb_phys + SCAN_OFF));
     dl_wr(o++, 0xdeadbeefUL);                                            /* PTRCTX0 (HVS) */
     dl_wr(o++, SCAN_W * 4);                                              /* pitch */
-    dl_wr(o++, ((((uint32_t)SCAN_W << 16) / dst_w) << 8) | PPF_SCALER | PPF_PHASE);   /* poprijeko */
-    for (int i = 0; i < 4; i++) dl_wr(o++, KERNEL_WORD);                /* bilo koji: redovi su ravni */
+    dl_wr(o++, ((((uint32_t)SCAN_W << 16) / dst_w) << 8) | PPF_SCALER | PPF_PHASE);   /* across */
+    for (int i = 0; i < 4; i++) dl_wr(o++, KERNEL_WORD);                /* any: the rows are flat */
     dl_wr(start, CTL_VALID | CTL_WORDS(o - start) | CTL_ALPHA_EXPAND | CTL_RGB_EXPAND
                  | CTL_FORMAT(FMT_RGBA8888) | CTL_PIXEL_ORDER(hvs_gen == 4 ? ORDER_VC4_ARGB_BYTES : ORDER_BGRA)
                  | CTL_SCL(SCL_H_PPF_V_NONE));
@@ -1237,21 +1142,21 @@ static void build_list(uint32_t block, uintptr_t frame_phys)
     } else {
         BLW(POS0_X(dst_x) | POS0_Y(dst_y), 1);                           /* POS0 */
         BLW(POS2_ALPHA_FIXED | POS2_ALPHA(0xfff), 1);                    /* POS1 (alpha, VC6) */
-        BLW(POS1_H(dst_h) | POS1_W(dst_w), 1);                           /* skalirana veličina odredišta */
-        BLW(POS2_H(src_rows) | POS2_W(crop_w), 1);                       /* veličina sourcea */
+        BLW(POS1_H(dst_h) | POS1_W(dst_w), 1);                           /* scaled destination size */
+        BLW(POS2_H(src_rows) | POS2_W(crop_w), 1);                       /* source size */
     }
     BLW(0xdeadbeefUL, 0);                                            /* POS3 ctx (HVS) */
     ptr0_word = o;
-    BLW(0xc0000000UL | (uint32_t)(frame_phys + crop_off), 0);        /* PTR0: prikazani dio */
+    BLW(0xc0000000UL | (uint32_t)(frame_phys + crop_off), 0);        /* PTR0: the shown part */
     BLW(0xdeadbeefUL, 0);                                            /* PTRCTX0 (HVS) */
     BLW(src_pitch, 1);                                               /* pitch: a field alone skips rows */
     BLW(0, 1);                                                       /* LBM base: the only plane */
     BLW((scale_x << 8) | PPF_SCALER | PPF_PHASE, 1);                 /* PPF0 horizontal */
     BLW((scale_y << 8) | PPF_SCALER | PPF_PHASE, 1);                 /* PPF1 vertical */
     BLW(0, 0);                                                       /* scratch (HVS) */
-    BLW(KERNEL_WORD, 1);                            /* kerneli: HPPF plane 0 (poprijeko) */
-    BLW(KERNEL_WORD + KERNEL_WORDS, 1);             /* VPPF plane 0 (po visini) */
-    BLW(KERNEL_WORD, 1);                            /* plane 1, RGB ih ne koristi */
+    BLW(KERNEL_WORD, 1);                            /* kernels: HPPF plane 0 (across) */
+    BLW(KERNEL_WORD + KERNEL_WORDS, 1);             /* VPPF plane 0 (down) */
+    BLW(KERNEL_WORD, 1);                            /* plane 1's, unused by RGB */
     BLW(KERNEL_WORD + KERNEL_WORDS, 1);
     #undef BLW
     bl_n = o - block - 1;
@@ -1266,7 +1171,7 @@ static void build_list(uint32_t block, uintptr_t frame_phys)
 }
 
 
-/* Dužina plane liste u wordovima (0 ako ne izgleda kao jedna). */
+/* Length of a plane list in words (0 if it does not look like one). */
 static uint32_t list_len(uint32_t start)
 {
     uint32_t n = 0;
@@ -1302,7 +1207,7 @@ static void base_plane_geometry(uint32_t start, int *ox, int *oy, uint32_t *sx, 
         return;
     }
     *ox = pos0 & 0x2fff; *oy = (pos0 >> 16) & 0x2fff;
-    if (ctl & (1UL << 15)) {                         /* UNITY: POS0, POS1(alpha), POS2(veličina) */
+    if (ctl & (1UL << 15)) {                         /* UNITY: POS0, POS1(alpha), POS2(size) */
         uint32_t pos2 = dl_rd(start + 3);
         *modew = pos2 & 0x3fff;
     } else {                                         /* scaled: POS0, POS1(alpha), POS1(dst), POS2(src) */
@@ -1313,7 +1218,7 @@ static void base_plane_geometry(uint32_t start, int *ox, int *oy, uint32_t *sx, 
     }
 }
 
-/* Windowed: cijeli frame u windowu - woven framea njegovo vlastito field */
+/* Windowed: the whole frame in the window - of a woven frame its own field */
 static uint32_t win_off(void) { return frame_woven ? (uint32_t)frame_row * AGA_OUT_W * 4 : 0; }
 
 /* Windowed: copy the live RTG list, insert my plane after its first (so the
@@ -1327,7 +1232,7 @@ static void build_windowed_list(uint32_t block, uint32_t base, uintptr_t frame_p
     int ox, oy; uint32_t sx, sy, modew;
     base_plane_geometry(base, &ox, &oy, &sx, &sy, &modew);
     uint32_t first = (dl_rd(base) >> 24) & 0x3f;
-    /* window rectangle u display pikselima */
+    /* window rectangle in display pixels */
     int dx = ox + (int)(((int64_t)wx * sx) >> 16);
     int dy = oy + (int)(((int64_t)wy * sy) >> 16);
     int dw = (int)(((int64_t)ww * sx) >> 16);
@@ -1357,36 +1262,28 @@ static void build_windowed_list(uint32_t block, uint32_t base, uintptr_t frame_p
     }
     dl_wr(o++, 0xdeadbeefUL);
     ptr0_word = o;
-    /* woven frame: njegov vlastiti field, svaki drugi red (win_off, present) */
+    /* a woven frame: its own field, every other row (win_off, present) */
     dl_wr(o++, 0xc0000000UL | (uint32_t)(frame_phys + win_off()));
     dl_wr(o++, 0xdeadbeefUL);
     dl_wr(o++, AGA_OUT_W * 4 * (frame_woven ? 2 : 1));
-    dl_wr(o++, 8 * modew + 1024);                       /* LBM: nakon RTG plane i njezina mouse pointera */
+    dl_wr(o++, 8 * modew + 1024);                       /* LBM: after the RTG plane and its mouse pointer */
     dl_wr(o++, (scx << 8) | PPF_SCALER | PPF_PHASE);
     dl_wr(o++, (scy << 8) | PPF_SCALER | PPF_PHASE);
     dl_wr(o++, 0);
-    dl_wr(o++, KERNEL_WORD); dl_wr(o++, KERNEL_WORD + KERNEL_WORDS);    /* poprijeko, po visini (kao build_list) */
+    dl_wr(o++, KERNEL_WORD); dl_wr(o++, KERNEL_WORD + KERNEL_WORDS);    /* across, down (as build_list) */
     dl_wr(o++, KERNEL_WORD); dl_wr(o++, KERNEL_WORD + KERNEL_WORDS);
     dl_wr(plane, CTL_VALID | CTL_WORDS(o - plane) | CTL_ALPHA_EXPAND | CTL_RGB_EXPAND
                | CTL_FORMAT(FMT_RGBA8888) | CTL_PIXEL_ORDER(hvs_gen == 4 ? ORDER_VC4_ARGB_BYTES : ORDER_BGRA));
-    for (uint32_t i = first; i < n; i++) dl_wr(o++, dl_rd(base + i));     /* mouse pointer, overlayevi */
+    for (uint32_t i = first; i < n; i++) dl_wr(o++, dl_rd(base + i));     /* mouse pointer, overlays */
     dl_wr(o++, LIST_END);
 }
 
 static int win_mode, win_x, win_y, win_w, win_h;
 static int cur_is_windowed, cur_x, cur_y, cur_w, cur_h;
 static int cur_black;       /* live list = empty one (RGB port only) */
-/* FRF standalone runs native AGA without PiStorm's sandbox flag.
- * OSD input is valid whenever a real native AGA framebuffer is being
- * presented, independent of whether agaboot entered a sandbox. */
-static volatile uint32_t frf_osd_native_video_active;
-int aga_osd_keyboard_active(void)
-{
-    return __atomic_load_n(&frf_osd_native_video_active,__ATOMIC_ACQUIRE)!=0u;
-}
-
-/* Native game output owns HDMI until an explicit P96/ASL yield.
-   Unexpected P96 page flips during native activity must not stall presents. */
+/* FRF RUN/P96 guard: if P96 installs an external list before the Amiga-side
+   monitor observes the screen change, give it a few presents of grace. */
+static unsigned program_external_grace;
 
 /* v0.8.4: the diagnostic HUD is part of FINAL FRAME COMPOSITION, not an
    asynchronous write to a page that may already be on HDMI.  show_frame()
@@ -1394,16 +1291,12 @@ int aga_osd_keyboard_active(void)
    page is not being scanned, and immediately before queuing the alternate
    display list for the next HDMI frame boundary. */
 static void ovl_draw(uint32_t *dst);
-static void osd_render(uint32_t *dst, int woven);
-static int osd_enabled(void);
 static void hud_compose(uintptr_t frame_phys)
 {
     if (frame_phys < fb_phys || frame_phys >= fb_phys + 3u * FB_BYTES) return;
     uintptr_t off = frame_phys - fb_phys;
     if (off % FB_BYTES) return;
-    uint32_t *dst=(uint32_t *)(fb_va + off);
-    osd_render(dst,frame_woven);
-    if(!frame_woven)ovl_draw(dst);
+    ovl_draw((uint32_t *)(fb_va + off));
 }
 
 static void show_frame(uintptr_t frame_phys, int compose_hud)
@@ -1411,9 +1304,10 @@ static void show_frame(uintptr_t frame_phys, int compose_hud)
     uint32_t live = reg_rd(REG_DISPLIST1);
     if (aga_program_mode && cur_list &&
         live != LIST_A && live != LIST_B && !aga_program_rtg_yield) {
-        /* P96 may flip its desktop list in the background of a native
-           game. Remember that list for return, but do not display it. */
         saved_list = live;
+        if (program_external_grace++ < 3u) return;
+    } else {
+        program_external_grace = 0u;
     }
     int same_geometry = cur_is_windowed == win_mode && cur_x == win_x && cur_y == win_y && cur_w == win_w && cur_h == win_h
                         && cur_zoom_gen == zoom_gen;
@@ -1457,7 +1351,7 @@ static void show_frame(uintptr_t frame_phys, int compose_hud)
     }
     /* someone else's list is live: remember it to hand back / build on */
     if (live != LIST_A && live != LIST_B) saved_list = live;
-    if (hvs_gen == 4) {                       /* VC6 pointer probe counters su ovdje slobodni */
+    if (hvs_gen == 4) {                       /* the VC6 pointer probe's counters are free here */
         aga_diag_set(AGA_D_PTR_IN_LIST, saved_list);
         aga_diag_set(AGA_D_PTR_IN_PLANES, list_len(saved_list));
         aga_diag_set(AGA_D_PTR_IN_CTL, dl_peek(saved_list));
@@ -1564,7 +1458,7 @@ void aga_video_hide(void)
     if (!video_ok) return;
     snap_take();            /* the game's last picture, before the next session draws over the pages */
     crop_auto_reset(&autow);    /* the next game's window is its own */
-    hsync_park();               /* v1.118: leave stable adjusted porch for next game */
+    hsync_restore();            /* HDMI sync: the mode's own porch for the desktop */
     if (zoom_mode == 4) apply_crop();
     hide();
 }
@@ -1576,493 +1470,12 @@ void aga_video_probe_pointer(void)
 {
     if (video_ok) ptr_probe(reg_rd(REG_DISPLIST1), AGA_D_PTR_NOW_LIST);
 }
-volatile int aga_overlay_idle = 0;   /* pokaži overlay na praznoj plane dok sandbox miruje */
+volatile int aga_overlay_idle = 0;   /* show the overlay on a blank plane while the sandbox idles */
 
-/* Zove se iz chipset loopa (core 3) jednom po završenom frameu. */
+/* Called from the chipset loop (core 3) once per completed frame. */
 void aga_video_set_window(int mode, int x, int y, int w, int h)
 {
     win_mode = mode; win_x = x; win_y = y; win_w = w; win_h = h;
-}
-
-/* ---- OSD i monitor line (1.121) -------------------------------------------
- * Ctrl + Alt + Help u igri (ili u System wide) otvara mali menu preko slike:
- * RTG Image postavke koje mijenjaju kako igra izgleda, live, bez AmigaOS-a -
- * kernel vidi tipke kako ih igra čita iz CIA-A serial registra (aga_glue.c
- * aga_cia_read, core 0) i zadržava ih od igre dok je menu otvoren. Up/Down
- * bira liniju, Left/Right je mijenja, Return na "Save for this game" zamoli
- * agaboot da sačuva sliku kao tu igrinu (čita se kroz aga_diag.c SEL_OSD kad
- * igra završi), Esc ili Help zatvara. Postavke se mijenjaju kroz iste
- * funkcije kao agabootovi control wordovi, pa sljedeća igra opet počinje sa
- * svojom slikom, osim ako je ova sačuvana.
- *
- * Monitor line: SoC temperatura i frameovi prikazani u sekundi, gore desno,
- * zeleno, žuto pri firmwareovom soft temperature limitu, crveno dok je
- * throttled ili under-voltage. Firmwareove brojke, čita ih core 3 svake dvije
- * sekunde s vlastitim bufferom; samo monitor, ništa se njime ne mijenja.
- *
- * Crta se u frame kao debug znamenke: font piksel je dva hires stupca po
- * jednoj liniji (dva reda woven framea), unutar dijela framea na ekranu.
- * Font je moj vlastiti 5 x 7. */
-static const char osd_chars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ %:.-<>/()";
-static const uint8_t osd_font[][7] = {
-    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},   /* 0 1 */
-    {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, {0x1F,0x02,0x04,0x02,0x01,0x11,0x0E},   /* 2 3 */
-    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E},   /* 4 5 */
-    {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},   /* 6 7 */
-    {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C},   /* 8 9 */
-    {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}, {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E},   /* A B */
-    {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E}, {0x1C,0x12,0x11,0x11,0x11,0x12,0x1C},   /* C D */
-    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}, {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10},   /* E F */
-    {0x0E,0x11,0x10,0x17,0x11,0x11,0x0F}, {0x11,0x11,0x11,0x1F,0x11,0x11,0x11},   /* G H */
-    {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}, {0x07,0x02,0x02,0x02,0x02,0x12,0x0C},   /* I J */
-    {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, {0x10,0x10,0x10,0x10,0x10,0x10,0x1F},   /* K L */
-    {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}, {0x11,0x11,0x19,0x15,0x13,0x11,0x11},   /* M N */
-    {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10},   /* O P */
-    {0x0E,0x11,0x11,0x11,0x15,0x12,0x0D}, {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11},   /* Q R */
-    {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}, {0x1F,0x04,0x04,0x04,0x04,0x04,0x04},   /* S T */
-    {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}, {0x11,0x11,0x11,0x11,0x11,0x0A,0x04},   /* U V */
-    {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}, {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11},   /* W X */
-    {0x11,0x11,0x11,0x0A,0x04,0x04,0x04}, {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F},   /* Y Z */
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, {0x18,0x19,0x02,0x04,0x08,0x13,0x03},   /* razmak % */
-    {0x00,0x0C,0x0C,0x00,0x0C,0x0C,0x00}, {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C},   /* : . */
-    {0x00,0x00,0x00,0x1F,0x00,0x00,0x00}, {0x02,0x04,0x08,0x10,0x08,0x04,0x02},   /* - < */
-    {0x08,0x04,0x02,0x01,0x02,0x04,0x08}, {0x00,0x01,0x02,0x04,0x08,0x10,0x00},   /* > / */
-    {0x02,0x04,0x08,0x08,0x08,0x04,0x02}, {0x08,0x04,0x02,0x02,0x02,0x04,0x08},   /* ( ) */
-};
-
-/* kamo crtež ide: frame (ili oba pagea woven jednog), njegovi redovi,
-   redovi po liniji, i dio njega na ekranu */
-struct osd_fb { uint32_t *d; int rows, ry, x0, y0, w, h; };
-
-static void osd_fill(const struct osd_fb *f, int x, int y, int w, int h, uint32_t col)
-{
-    y *= f->ry; h *= f->ry;
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > AGA_OUT_W) w = AGA_OUT_W - x;
-    if (y + h > f->rows) h = f->rows - y;
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++)
-            f->d[(y + j) * AGA_OUT_W + x + i] = col;
-}
-
-static int osd_glyph(char c)
-{
-    if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-    for (int i = 0; osd_chars[i]; i++) if (osd_chars[i] == c) return i;
-    return 36;                                     /* razmak */
-}
-
-#define OSD_CW 12      /* character cell: 6 font piksela od 2 stupca */
-#define OSD_CH 9       /* ...i 9 linija, 7 njih glyph */
-
-static void osd_text(const struct osd_fb *f, int x, int y, const char *s, uint32_t col)
-{
-    for (; *s; s++, x += OSD_CW) {
-        const uint8_t *g = osd_font[osd_glyph(*s)];
-        for (int r = 0; r < 7; r++)
-            for (int c = 0; c < 5; c++)
-                if (g[r] & (0x10 >> c)) osd_fill(f, x + 2 * c, y + r, 2, 1, col);
-    }
-}
-
-static int osd_len(const char *s) { int n = 0; while (s[n]) n++; return n; }
-
-/* broj kao tekst, bez biblioteke */
-static char *osd_num(char *p, int v)
-{
-    char t[12];
-    int n = 0;
-    if (v < 0) { *p++ = '-'; v = -v; }
-    do { t[n++] = (char)('0' + v % 10); v /= 10; } while (v && n < 11);
-    while (n) *p++ = t[--n];
-    *p = 0;
-    return p;
-}
-
-/* ---- što menu pokazuje i mijenja (core 0 mijenja, core 3 crta) ---- */
-extern void aga_tone_get(int *bright, int *gamma, int *weave);   /* aga_glue.c */
-static volatile int osd_open, osd_row, osd_saved, hud_on;
-/* kako se OSD otvara ($5288 + mode, agaboot OSD, Boot settings): 0 nikako,
-   1 Ctrl + Alt + Help, 2 to ili USB padov Select (default), 3 to ili
-   stickovi načini - dvije tipke držane, fire + Up Down Up Down, što
-   shoot-'em-up radi sam od sebe, pa se traže */
-static volatile int osd_mode = 2;
-static volatile int osd_save_req;              /* "Save for this game": agaboot ga čuva (SEL_OSD) */
-static void osd_set_open(int on);              /* niže: otvaranje skriva i port 1 od igre */
-
-enum { OI_SCAN, OI_SHAPE, OI_MASK, OI_LOOK, OI_SIZE, OI_SCALE, OI_BRIGHT, OI_GAMMA, OI_FLICKER,
-       OI_HUD, OI_SAVE, OI_CLOSE, OI_N };
-static const char *const osd_label[OI_N] = {
-    "SCANLINES", "SHAPE", "CRT MASK", "LOOK", "SIZE", "SCALE", "BRIGHTNESS", "GAMMA",
-    "FLICKER FIXER", "MONITOR", "SAVE FOR THIS GAME", "CLOSE",
-};
-/* Size (RTG Imageov): koliko se framea pokazuje - FULL zadržava igrin
-   border, pa ga Fill i dalje pokazuje oko slike; 640x256 ili Auto ispune
-   ekran samom igrom */
-static const char *const size_names[5] = { "FULL", "720X272", "640X256", "CUSTOM", "AUTO" };
-static const char *const look_names[3]  = { "SHARP", "SMOOTH", "TV" };
-static const char *const shape_names[6] = { "EVEN", "CRISP", "WHOLE", "WHOLE FILL", "BEAM", "BEAM FILL" };
-static const char *const scale_names[8] = { "4:3", "INTEGER", "FILL", "5:4", "16:9", "16:10", "21:9", "32:9" };
-static const char *const gamma_names[3] = { "EXACT", "CRT", "LIGHTER" };
-static const int bright_pct[5] = { 100, 110, 120, 135, 150 };
-
-static int osd_value(int item)
-{
-    int b, g, w;
-    aga_tone_get(&b, &g, &w);
-    switch (item) {
-    case OI_SCAN:    return scan_pct;
-    case OI_SHAPE:   return scan_shape;
-    case OI_MASK:    return grille_level;
-    case OI_LOOK:    return cur_look;
-    case OI_SIZE:    return zoom_mode;
-    case OI_SCALE:   return scale_mode;
-    case OI_BRIGHT:  return b;
-    case OI_GAMMA:   return g;
-    case OI_FLICKER: return w;
-    case OI_HUD:     return hud_on;
-    }
-    return 0;
-}
-
-static void osd_value_text(int item, char *buf)
-{
-    int v = osd_value(item);
-    const char *s = 0;
-    switch (item) {
-    case OI_SCAN:
-        if (!v) { s = "OFF"; break; }
-        { char *p = osd_num(buf, v); p[0] = '%'; p[1] = 0; }
-        return;
-    case OI_MASK:
-        if (!v) { s = "OFF"; break; }
-        { char *p = osd_num(buf, 25 * v); p[0] = '%'; p[1] = 0; }
-        return;
-    case OI_SHAPE:   s = shape_names[v >= 0 && v < 6 ? v : 0]; break;
-    case OI_LOOK:    s = look_names[v >= 0 && v < 3 ? v : 1]; break;
-    case OI_SIZE:    s = size_names[v >= 0 && v < 5 ? v : 0]; break;
-    case OI_SCALE:   s = scale_names[v & 7]; break;
-    case OI_BRIGHT:  { char *p = osd_num(buf, bright_pct[v >= 0 && v < 5 ? v : 0]); p[0] = '%'; p[1] = 0; } return;
-    case OI_GAMMA:   s = gamma_names[v >= 0 && v < 3 ? v : 0]; break;
-    case OI_FLICKER: case OI_HUD: s = v ? "ON" : "OFF"; break;
-    case OI_SAVE:    s = osd_saved ? "OK" : ""; break;               /* sačuvano kad igra završi */
-    default:         s = ""; break;
-    }
-    int i = 0;
-    while (s[i]) { buf[i] = s[i]; i++; }
-    buf[i] = 0;
-}
-
-/* Left (-1) / Right (+1) na liniji: isto kao agabootov control word */
-static void osd_change(int item, int dir)
-{
-    int v = osd_value(item);
-    switch (item) {
-    case OI_SCAN: {
-        int step = (v + (dir > 0 ? 0 : 24)) / 25 + dir;          /* na sljedeći step od 25% */
-        aga_video_scan_select(0);
-        aga_video_scan_value(step < 0 ? 0 : step > 4 ? 100 : 25 * step);
-        break;
-    }
-    case OI_SHAPE:   aga_video_set_scan_shape((v + dir + 3) % 3); break;   /* Even, Crisp, Whole */
-    case OI_MASK:    aga_video_set_mask(v + dir < 0 ? 0 : v + dir > 4 ? 4 : v + dir); break;
-    case OI_LOOK:    aga_video_set_look((v + dir + 3) % 3); break;
-    case OI_SIZE:    aga_video_set_zoom((v + dir + 5) % 5); break;
-    case OI_SCALE:   aga_video_set_scale((v + dir + 8) % 8); break;
-    case OI_BRIGHT:  aga_brightness(v + dir < 0 ? 0 : v + dir > 4 ? 4 : v + dir); break;
-    case OI_GAMMA:   aga_gamma((v + dir + 3) % 3); break;
-    case OI_FLICKER: aga_flickerfix(!v); break;
-    case OI_HUD:     hud_on = !v; break;
-    default: return;
-    }
-    osd_saved = 0;
-}
-
-/* aga_glue.c, core 0: tipka koju je igra pročitala, Amiga key code i
-   up/down. 1 = menu ju je uzeo - igra ju ne smije vidjeti. */
-/* Invoked on AGA CPU from the direct HID hotkey request. */
-static volatile uint32_t frf_osd_open_count,frf_osd_render_count;
-static volatile uint32_t frf_osd_key_calls,frf_osd_last_key;
-extern volatile uint32_t frf_osd_input_emitted,frf_osd_input_drained;
-extern volatile uint32_t frf_osd_last_emitted,frf_osd_last_drained;
-extern volatile uint32_t frf_osd_hotkey_accepted;
-extern void frf_native_usb_keyboard_stats(uint32_t out[5]);
-void aga_osd_shortcut(void)
-{
-    int new_state=!__atomic_load_n(&osd_open,__ATOMIC_ACQUIRE);
-    osd_set_open(new_state);
-    frf_osd_open_count++;
-    kprintf("[FRF OSD] toggle=%u state=%d mode=%d\n",
-            frf_osd_open_count,new_state,(int)osd_mode);
-}
-int aga_osd_key(int code, int up)
-{
-    __atomic_add_fetch(&frf_osd_key_calls,1u,__ATOMIC_RELAXED);
-    __atomic_store_n(&frf_osd_last_key,(uint32_t)(code | (up?0x80:0)),__ATOMIC_RELAXED);
-    static int lctrl, lalt, lshift;
-    if (code == 0x63) { lctrl = !up; return 0; }  /* Left Ctrl only; RCtrl translated afterward */
-    if (code == 0x64) { lalt = !up; return 0; }    /* Left Alt only */
-    if (code == 0x65) return 0;                   /* Right Alt is not a shortcut modifier */
-    if (code == 0x60) { lshift = !up; return 0; }
-    if (code == 0x61 || code == 0x66 || code == 0x67) return 0;   /* Shift, Amiga */
-    if (!osd_open) {
-        if (code == 0x7e && !up && lctrl && (lalt || lshift) && osd_mode >= 1) { /* LCtrl + LAlt/LShift + F12 */
-            osd_set_open(1);
-            return 1;
-        }
-        return 0;
-    }
-    if (up) return 1;
-    switch (code) {
-    case 0x4C: osd_row = (osd_row + OI_N - 1) % OI_N; break;     /* Up */
-    case 0x4D: osd_row = (osd_row + 1) % OI_N; break;            /* Down */
-    case 0x4F: osd_change(osd_row, -1); break;                   /* Left */
-    case 0x4E: osd_change(osd_row, +1); break;                   /* Right */
-    case 0x44: case 0x43: case 0x40:                             /* Return, Enter, Space */
-        if (osd_row == OI_SAVE) { osd_save_req = 1; osd_saved = 1; }
-        else if (osd_row == OI_CLOSE) osd_open = 0;
-        else osd_change(osd_row, +1);
-        break;
-    case 0x45: case 0x7e: osd_open = 0; break;                   /* Esc or F12 */
-    }
-    return 1;
-}
-
-/* ---- pad i joystick (1.121) -------------------------------------------------
- * aga_pad.c samplea port 1 svakih 8 ms otprilike kako ga igra čita - DB9
- * stick, njegov fire i druga tipka, A314-ov i Pi-jev USB pad - i predaje što
- * je pritisnuto. Zatvoren: USB padov Select otvara menu, ili fire i druga
- * tipka držani zajedno dvije sekunde (stickov način; padovi crveni i plavi
- * također), ili fire držan dok stick ide Up, Down, Up, Down unutar dvije
- * sekunde (stick s jednom tipkom). Otvoren: smjerovi pomiču i mijenjaju
- * (držani se ponavljaju), fire / crveni bira kao Return, druga tipka / plavi
- * ili Select zatvara. Port 1 se igri čita kao ništa pritisnuto dok je menu
- * otvoren, i nakon što se zatvori dok se sve ne pusti.
- *
- * Sample se uzima unutar chipsetova locka (JOY1DAT read), a slikini setteri
- * uzimaju taj lock, pa promjena čeka sljedeći 68k I/O read izvan njega
- * (aga_osd_run, vectors.c). */
-volatile int aga_osd_hide;                     /* port 1 neutralan za igru (aga_pad.c) */
-volatile int aga_osd_pend;                     /* promjena čeka aga_osd_run */
-static volatile int osd_pend_item, osd_pend_dir;
-static int osd_in_last, osd_wait_release;
-static uint64_t osd_both_from, osd_rep_at, osd_closed_at;
-static int osd_flick;                          /* fire držan: Up Down Up Down dosad gurnuto, 0-4 */
-static uint64_t osd_flick_from;
-
-static void osd_set_open(int on)
-{
-    osd_open = on;
-    if (on) { osd_saved = 0; aga_osd_hide = 1; }
-    else { aga_osd_hide = 0; osd_wait_release = 0; }
-}
-
-static void osd_queue(int item, int dir)
-{
-    if (__atomic_load_n(&aga_osd_pend, __ATOMIC_ACQUIRE)) return;   /* jedno po jedno */
-    osd_pend_item = item;
-    osd_pend_dir = dir;
-    __atomic_store_n(&aga_osd_pend, 1, __ATOMIC_RELEASE);
-}
-
-/* vectors.c, core 0, izvan locka: promjena koju je pad tražio */
-void aga_osd_run(void)
-{
-    if (!__atomic_exchange_n(&aga_osd_pend, 0, __ATOMIC_ACQ_REL)) return;
-    osd_change(osd_pend_item, osd_pend_dir);
-}
-
-/* aga_pad.c, core 0: što port 1 sada ima pritisnuto (OSDI_*, aga_glue.h) */
-void aga_osd_input(int in)
-{
-    uint64_t now = mbox_now(), f;
-    __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(f));
-    int prev = osd_in_last, edge = in & ~prev;
-    osd_in_last = in;
-    if (!osd_open && !osd_mode) {                /* isključeno: nema ulaza, igra ima sve */
-        osd_both_from = 0;
-        osd_flick = 0;
-        aga_osd_hide = 0;
-        return;
-    }
-    if (!osd_open) {
-        if ((edge & OSDI_SEL) && osd_mode >= 2) { osd_set_open(1); osd_wait_release = 1; osd_both_from = 0; return; }
-        if (osd_mode < 3) osd_both_from = 0, osd_flick = 0;   /* stickovi načini nisu traženi */
-        else if ((in & OSDI_BOTH) == OSDI_BOTH) {
-            if (!osd_both_from) osd_both_from = now;
-            else if (now - osd_both_from >= 2 * f) {
-                osd_set_open(1);
-                osd_wait_release = 1;            /* dvije tipke su još dolje */
-                osd_both_from = 0;
-            }
-        } else osd_both_from = 0;
-        /* fire držan, stick Up, Down, Up, Down unutar dvije sekunde: način za
-           stick čija druga tipka ne stiže do mene */
-        if (!(in & OSDI_A) || osd_mode < 3) osd_flick = 0;
-        else if (edge & (OSDI_UP | OSDI_DOWN)) {
-            int want = (osd_flick & 1) ? OSDI_DOWN : OSDI_UP;
-            if (osd_flick && now - osd_flick_from > 2 * f) osd_flick = 0, want = OSDI_UP;
-            if (edge & want) {
-                if (!osd_flick) osd_flick_from = now;
-                if (++osd_flick == 4) {
-                    osd_flick = 0;
-                    osd_set_open(1);
-                    osd_wait_release = 1;        /* fire je još dolje */
-                    return;
-                }
-            } else if (edge & OSDI_UP) { osd_flick = 1; osd_flick_from = now; }
-            else osd_flick = 0;
-        }
-        if (aga_osd_hide) {                      /* zatvoren: sve pušteno, ili najviše sekunda */
-            if (!osd_closed_at) osd_closed_at = now;
-            if (!in || now - osd_closed_at > f) { aga_osd_hide = 0; osd_closed_at = 0; }
-        }
-        return;
-    }
-    aga_osd_hide = 1;
-    if (osd_wait_release) {                      /* što ga je otvorilo, prvo pušteno */
-        if (in & (OSDI_A | OSDI_B | OSDI_SEL)) return;
-        osd_wait_release = 0;
-        edge = in;
-    }
-    int act = edge, dirs = in & 15;
-    if (edge & 15) osd_rep_at = now + f * 2 / 5;            /* držan smjer ponavlja nakon 0.4 s */
-    else if (dirs && now >= osd_rep_at) { act |= dirs; osd_rep_at = now + f * 3 / 20; }   /* ...svakih 0.15 s */
-    if (act & OSDI_UP)    osd_row = (osd_row + OI_N - 1) % OI_N;
-    if (act & OSDI_DOWN)  osd_row = (osd_row + 1) % OI_N;
-    if (act & OSDI_LEFT)  osd_queue(osd_row, -1);
-    if (act & OSDI_RIGHT) osd_queue(osd_row, +1);
-    if (act & OSDI_A) {
-        if (osd_row == OI_SAVE) { osd_save_req = 1; osd_saved = 1; }
-        else if (osd_row == OI_CLOSE) osd_set_open(0);
-        else osd_queue(osd_row, +1);
-    }
-    if (act & (OSDI_B | OSDI_SEL)) osd_set_open(0);
-}
-
-/* $5284 / $5285: monitor line off / on (agaboot HUD); $5286: save request
-   pročitan i obavljen (agaboot, pri izlasku); $5288-$528B (8-11): kako se
-   OSD otvara (osd_mode) - off ga zatvara i ne ostavlja način da se otvori */
-void aga_osd_command(int v)
-{
-    if (v == 0 || v == 1) hud_on = v;
-    if (v == 2) osd_save_req = 0;
-    if (v >= 8 && v <= 11) {
-        osd_mode = v & 3;
-        if (!osd_mode) { osd_open = 0; hud_on = 0; }
-    }
-}
-
-/* aga_diag.c SEL_OSD: word 0 flags (bit 0 save zatražen, bit 1 monitor
-   uključen, bit 2 menu otvoren), pa scanlines %, shape, mask, look, scale,
-   brightness, gamma, flicker fixer */
-uint16_t aga_osd_info(int i)
-{
-    if (i == 0) return (uint16_t)((osd_save_req ? 1 : 0) | (hud_on ? 2 : 0) | (osd_open ? 4 : 0) | 8);   /* 8: word 9 je veličina */
-    static const uint8_t item[10] = { 0, OI_SCAN, OI_SHAPE, OI_MASK, OI_LOOK, OI_SCALE,
-                                      OI_BRIGHT, OI_GAMMA, OI_FLICKER, OI_SIZE };
-    if (i >= 1 && i <= 9) return (uint16_t)osd_value(item[i]);
-    return 0;
-}
-
-/* ---- monitorove brojke (core 3, svake dvije sekunde dok je uključen) ---- */
-static uint32_t *const hud_req = MBOX_LOW(0x1c80);     /* low memory, kao req */
-static int hud_temp = -1, hud_fps = -1;
-static uint32_t hud_thr;
-static uint64_t hud_next, hud_fps_from;
-static uint32_t hud_frames;
-static int mbox_call_on(uint32_t *b, uint32_t bytes, int wait);
-
-static void hud_sample(void)
-{
-    uint64_t now = mbox_now(), f;
-    __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(f));
-    hud_frames++;
-    if (!hud_fps_from) { hud_fps_from = now; hud_frames = 0; }
-    if (now - hud_fps_from >= f) {
-        hud_fps = (int)((uint64_t)hud_frames * f / (now - hud_fps_from));
-        hud_fps_from = now;
-        hud_frames = 0;
-    }
-    if (now < hud_next) return;
-    hud_next = now + 2 * f;
-    int c = 1;
-    hud_req[c++] = 0;
-    hud_req[c++] = LE32(0x30006); hud_req[c++] = LE32(8); hud_req[c++] = 0;   /* GET_TEMPERATURE */
-    int tpos = c; hud_req[c++] = 0; hud_req[c++] = 0;
-    hud_req[c++] = LE32(0x30046); hud_req[c++] = LE32(4); hud_req[c++] = 0;   /* GET_THROTTLED */
-    int fpos = c; hud_req[c++] = 0;
-    hud_req[c++] = 0;
-    hud_req[0] = LE32(c << 2);
-    if (mbox_call_on(hud_req, MBOX_BUF_BYTES, 0) == 0) {           /* ne čeka drugog pozivatelja */
-        hud_temp = (int)((LE32(hud_req[tpos + 1]) + 500) / 1000);
-        hud_thr = LE32(hud_req[fpos]);
-    }
-}
-
-static void hud_draw(const struct osd_fb *f)
-{
-    char t[24], *p = t;
-    if (hud_temp >= 0) { p = osd_num(p, hud_temp); *p++ = 'C'; *p++ = ' '; }
-    if (hud_fps >= 0) { p = osd_num(p, hud_fps); *p++ = 'F'; *p++ = 'P'; *p++ = 'S'; }
-    *p = 0;
-    if (!t[0]) return;
-    uint32_t col = (hud_thr & 0x7) ? 0xFFFF4040u : (hud_thr & 0x8) ? 0xFFFFD040u : 0xFF60FF60u;
-    int w = osd_len(t) * OSD_CW, x = f->x0 + f->w - w - 10, y = f->y0 + 4;
-    osd_fill(f, x - 4, y - 2, w + 6, OSD_CH + 2, 0xFF000000u);
-    osd_text(f, x, y, t, col);
-}
-
-static void osd_draw(const struct osd_fb *f)
-{
-    const uint32_t bg = 0xFF101828u, frame = 0xFF8090B0u, label = 0xFFC0C8D8u,
-                   value = 0xFFFFD060u, hi_bg = 0xFF304878u, title = 0xFFFFFFFFu;
-    int w = 32 * OSD_CW + 16, h = (OI_N + 3) * OSD_CH + 10;
-    int x = f->x0 + (f->w - w) / 2, y = f->y0 + (f->h - h) / 2;
-    if (x < f->x0) x = f->x0;
-    if (y < f->y0) y = f->y0;
-    osd_fill(f, x - 2, y - 2, w + 4, h + 4, frame);
-    osd_fill(f, x, y, w, h, bg);
-    osd_text(f, x + 8, y + 4, "AGA-STORM PICTURE", title);
-    int row = osd_row;
-    for (int i = 0; i < OI_N; i++) {
-        int ly = y + 4 + (i + 2) * OSD_CH;
-        char v[24];
-        if (i == row) osd_fill(f, x + 4, ly - 1, w - 8, OSD_CH, hi_bg);
-        osd_text(f, x + 8, ly, osd_label[i], label);
-        osd_value_text(i, v);
-        if (v[0]) {
-            int vx = x + w - 8 - osd_len(v) * OSD_CW;
-            osd_text(f, vx, ly, v, value);
-        }
-    }
-}
-
-/* Allow overlay composition even without debug HUD enabled. */
-static int osd_enabled(void)
-{
-    return __atomic_load_n(&osd_open,__ATOMIC_ACQUIRE) ||
-           __atomic_load_n(&hud_on,__ATOMIC_ACQUIRE);
-}
-/* aga_video_present, core 3: menu i monitor preko ovog framea */
-static void osd_render(uint32_t *dst, int woven)
-{
-    if (hud_on) hud_sample();
-    else hud_fps_from = 0;
-    if (!osd_open && !hud_on) return;
-    if(osd_open && frf_osd_render_count++ < 3u)
-        kprintf("[FRF OSD] draw=%u fb=%p mode=%d\n",
-                frf_osd_render_count,dst,(int)osd_mode);
-    struct osd_fb f;
-    f.d = dst;
-    f.ry = woven ? 2 : 1;
-    f.rows = woven ? 2 * AGA_OUT_H : AGA_OUT_H;
-    f.x0 = (int)crop_x; f.y0 = (int)crop_y;
-    f.w = (int)crop_w;  f.h = (int)crop_h;
-    if (f.w <= 0 || f.h <= 0) { f.x0 = f.y0 = 0; f.w = AGA_OUT_W; f.h = AGA_OUT_H; }
-    if (hud_on) hud_draw(&f);
-    if (osd_open) osd_draw(&f);
 }
 
 /* ---- debug overlay --------------------------------------------------------
@@ -2084,30 +1497,41 @@ static volatile int      ovl_on = 0;       /* always off at power-on */
 void aga_video_overlay(int row, uint32_t v) { if ((unsigned)row < OVL_ROWS) ovl_val[row] = v; }
 void aga_video_overlay_allow(int on)
 {
+#ifdef FRF_RELEASE_QUIET
+    (void)on;
+    ovl_allowed = 0;
+    ovl_on = 0;
+#else
     ovl_allowed = on ? 1 : 0;
     if (!ovl_allowed) ovl_on = 0;
+#endif
 }
 void aga_video_overlay_enable(int on)
 {
+#ifdef FRF_RELEASE_QUIET
+    (void)on;
+    ovl_on = 0;
+#else
     ovl_on = (ovl_allowed && on) ? 1 : 0;
+#endif
 }
 
-/* bit 0..6 = segmenti a,b,c,d,e,f,g */
+/* bit 0..6 = segments a,b,c,d,e,f,g */
 static const uint8_t seg7[16] = {
     0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07,
     0x7F, 0x6F, 0x77, 0x7C, 0x39, 0x5E, 0x79, 0x71,
 };
 
-#define DW 10          /* širina digit cella  */
-#define DH 18          /* visina digit cella */
-#define DT 2           /* debljina segmenta */
+#define DW 10          /* digit cell width  */
+#define DH 18          /* digit cell height */
+#define DT 2           /* segment thickness */
 
 static void ovl_fill(uint32_t *dst, int x, int y, int w, int h, uint32_t col)
 {
     if (x < 0 || y < 0 || x + w > AGA_OUT_W || y + h > AGA_OUT_H) return;
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++)
-            dst[(y + j) * AGA_OUT_W + (x + i)] = col;      /* native, kao coreovi pikseli */
+            dst[(y + j) * AGA_OUT_W + (x + i)] = col;      /* native, like the core's pixels */
 }
 
 static void ovl_digit(uint32_t *dst, int x, int y, int d, uint32_t col)
@@ -2122,17 +1546,201 @@ static void ovl_digit(uint32_t *dst, int x, int y, int d, uint32_t col)
     if (s & 0x40) ovl_fill(dst, x + DT,      y + DT + half,         DW - 2 * DT, DT,   col); /* g */
 }
 
+/* R87: small, high-contrast row numbers 00..0B next to all 12 HUD
+   measurements, without sacrificing a digit of the 32-bit hex value. */
+static const uint8_t ovl_3x5[16][5] = {
+    {7,5,5,5,7}, {2,6,2,2,7}, {7,1,7,4,7}, {7,1,7,1,7},
+    {5,5,7,1,1}, {7,4,7,1,7}, {7,4,7,5,7}, {7,1,1,1,1},
+    {7,5,7,5,7}, {7,5,7,1,7}, {7,5,7,5,5}, {6,5,6,5,6},
+    {7,4,4,4,7}, {6,5,5,5,6}, {7,4,7,4,7}, {7,4,7,4,4}
+};
+static void ovl_small_hex(uint32_t *dst,int x,int y,int d,uint32_t col)
+{
+    for(int j=0;j<5;j++) for(int i=0;i<3;i++)
+        if(ovl_3x5[d&15][j] & (4u >> i))
+            ovl_fill(dst,x+i,y+j,1,1,col);
+}
+/* R94 live SYSTEM POST: port of Pi3's Topaz-framed POST concept from
+ * start_rpi64.c into the Pi4 AGA HVS composition.  Unlike the Pi3
+ * boot-splash POST, the CPU3 HUD can continue updating after the Amiga
+ * has taken ownership of its video RAM. The draw occurs in an HVS
+ * back-buffer, never in live guest chip RAM or the Pi4 boot framebuffer.
+ * The 12 raw HEX rows at the left stay visible for diagnostics. */
+#if defined(FRF_PI4_USB_HUD)
+extern const uint32_t topaz8_charloc[];
+extern const uint8_t topaz8_chardata[];
+extern volatile uint8_t frf_usb_boot_ready;
+extern volatile uint32_t frf_r76_usb_keyboard_count,frf_r76_usb_mouse_count,frf_r76_usb_gamepad_count;
+extern volatile uint32_t frf_r89_native_count;
+extern volatile uint32_t frf_r94_usb_connected_mask,frf_r94_usb_live_mask;
+extern volatile uint32_t frf_r94_port_vidpid[4],frf_r94_port_classproto[4];
+extern volatile uint32_t frf_r94_last_unhandled_vidpid,frf_r94_last_unhandled_classproto;
+extern volatile uint32_t frf_r94_last_seen_vidpid;
+extern volatile uint32_t frf_r94_hotplug_connects,frf_r94_hotplug_disconnects;
+extern volatile uint32_t frf_r94_hotplug_failures;
+extern volatile uint32_t frf_native_usb_pad_reports,frf_native_usb_key_reports,frf_native_usb_mouse_reports;
+extern volatile uint32_t frf_r91_pad_status,frf_r91_pad_candidate,frf_r91_pad_ready;
+extern volatile uint32_t frf_r92_recovery_state[4],frf_r92_pad_hid_index;
+extern volatile uint32_t frf_native_usb_arm_reset_count;
+extern volatile uint32_t frf_r83_downstream_step[8];
+extern volatile uint32_t frf_r95_addr_cc[4],frf_r95_addr_attempts[4];
+extern volatile uint32_t frf_r95_port_speed[4],frf_r95_last_slot[4];
+extern volatile uint32_t frf_r95_addr_rescued_mask,frf_r95_addr_failed_mask;
+extern volatile uint32_t frf_r96_switch_init_stage,frf_r96_switch_init_ack;
+extern volatile uint32_t frf_r96_switch_init_errors,frf_r96_switch_input_rx;
+extern volatile uint32_t frf_r96_switch_out_config,frf_r96_switch_tx_ok;
+extern volatile uint32_t frf_r96_switch_tx_fail,frf_r96_switch_last_rx;
+extern volatile uint32_t frf_r97_hub_count,frf_r97_ext_stage;
+extern volatile uint32_t frf_r97_ext_error,frf_r97_ext_child_count;
+extern volatile uint32_t frf_r97_ext_connected_mask,frf_r97_ext_live_mask;
+extern volatile uint32_t frf_r97_ext_hub_vidpid;
+extern volatile uint32_t frf_r98_root_addr_cc[4],frf_r98_root_enable_cc[4];
+extern volatile uint32_t frf_r98_root_speed[4],frf_r98_root_slot[4];
+extern volatile uint32_t frf_r98_root_attempts[4],frf_r98_root_stage[4];
+extern volatile uint32_t frf_r98_root_last_status[4],frf_r98_root_power_cycles;
+extern volatile uint32_t frf_r99_root_status,frf_r99_root_change;
+extern volatile uint32_t frf_r99_root_poll_ok,frf_r99_root_poll_fail;
+extern volatile uint32_t frf_r99_root_link_lost,frf_r99_live_link;
+extern volatile uint32_t frf_r99_last_hid_error_cc,frf_r99_hid_error_count;
+extern volatile uint32_t frf_r99_ring_swaps,frf_r99_stale_events;
+extern volatile uint32_t frf_r99_hid_recovered_total,frf_r99_hid_last_age_seconds;
+#define R94_POST_BG 0xFF081014u
+#define R94_POST_WHITE 0xFFE0E8E0u
+#define R94_POST_GREEN 0xFF42E898u
+#define R94_POST_AMBER 0xFFFFC04Au
+#define R94_POST_CYAN 0xFF59CFFFu
+static void r94_post_char(uint32_t *dst,int x,int y,char c,uint32_t col)
+{
+    if((unsigned char)c<32u || (unsigned char)c>=127u ||
+       x<0 || y<0 || x+8>AGA_OUT_W || y+16>AGA_OUT_H)return;
+    uint32_t loc=(topaz8_charloc[(unsigned char)c-32u]>>16)>>3;
+    const uint8_t *glyph=&topaz8_chardata[loc];
+    for(int yy=0;yy<16;yy++) {
+        uint8_t bits=*glyph;
+        uint32_t *row=dst+(y+yy)*AGA_OUT_W+x;
+        for(int xx=0;xx<8;xx++)
+            if(bits & (0x80u>>xx))row[xx]=col;
+        if(yy&1)glyph+=192;
+    }
+}
+static void r94_post_text(uint32_t *dst,int x,int y,const char *s,uint32_t col)
+{
+    if(!s)return;
+    while(*s && x+8<=AGA_OUT_W) {
+        r94_post_char(dst,x,y,*s++,col);
+        x+=8;
+    }
+}
+static void r94_post_hex(uint32_t *dst,int x,int y,uint32_t v,
+                         unsigned digits,uint32_t col)
+{
+    static const char dig[]="0123456789ABCDEF";
+    if(digits>8u)digits=8u;
+    char txt[9];
+    for(unsigned i=0;i<digits;i++) {
+        txt[digits-i-1u]=dig[v&15u];v>>=4;
+    }
+    txt[digits]=0;
+    r94_post_text(dst,x,y,txt,col);
+}
+static void r94_post_dec(uint32_t *dst,int x,int y,uint32_t v,uint32_t col)
+{
+    char a[4];
+    if(v>99u)v=99u;
+    a[0]=(char)('0'+v/10u);
+    a[1]=(char)('0'+v%10u);
+    a[2]=0;
+    r94_post_text(dst,x,y,a,col);
+}
+static void r94_post_panel(uint32_t *dst)
+{
+    const int w=310,x=AGA_OUT_W-w-7,y=8,h=269;
+    const uint32_t count_kb=frf_r76_usb_keyboard_count;
+    const uint32_t count_mouse=frf_r76_usb_mouse_count;
+    const uint32_t count_gamepad=frf_r76_usb_gamepad_count;
+    const int ready=frf_usb_boot_ready!=0u;
+    const uint32_t green=R94_POST_GREEN,amber=R94_POST_AMBER,
+                   white=R94_POST_WHITE,cyan=R94_POST_CYAN;
+    ovl_fill(dst,x,y,w,h,R94_POST_BG);
+    ovl_fill(dst,x,y,w,2,cyan);
+    ovl_fill(dst,x,y,2,h,cyan);
+    ovl_fill(dst,x+w-2,y,2,h,cyan);
+    ovl_fill(dst,x,y+h-2,w,2,cyan);
+    r94_post_text(dst,x+9,y+5,"EMU68AGA  SYSTEM POST",white);
+    r94_post_text(dst,x+9,y+24,"PI4 VL805 / ARM-NATIVE USB",cyan);
+    ovl_fill(dst,x+8,y+44,w-16,1,0xFF32526Bu);
+    r94_post_text(dst,x+9,y+49,"USB HOST:",white);
+    r94_post_text(dst,x+121,y+49,ready?"ONLINE":"STARTING",ready?green:amber);
+    r94_post_text(dst,x+9,y+67,"KEYBOARD:",white);
+    r94_post_dec(dst,x+121,y+67,count_kb,count_kb?green:amber);
+    r94_post_text(dst,x+164,y+67,"MOUSE:",white);
+    r94_post_dec(dst,x+246,y+67,count_mouse,count_mouse?green:amber);
+    r94_post_text(dst,x+9,y+85,"GAMEPAD:",white);
+    r94_post_dec(dst,x+121,y+85,count_gamepad,count_gamepad?green:amber);
+    r94_post_text(dst,x+164,y+85,"HID:",white);
+    r94_post_dec(dst,x+246,y+85,frf_r89_native_count,
+                 frf_r89_native_count?green:amber);
+    r94_post_text(dst,x+9,y+103,"UPSTREAM LINK:",white);
+    if(!frf_r99_root_poll_ok)
+        r94_post_text(dst,x+186,y+103,"CHECK",amber);
+    else
+        r94_post_text(dst,x+186,y+103,frf_r99_live_link?"UP":"LOST",
+                      frf_r99_live_link?green:amber);
+    r94_post_text(dst,x+9,y+121,"HUB PORT STATE:",white);
+    r94_post_hex(dst,x+177,y+121,frf_r99_root_status,4,cyan);
+    r94_post_text(dst,x+239,y+121,"CH:",white);
+    r94_post_hex(dst,x+271,y+121,frf_r99_root_change,2,amber);
+    r94_post_text(dst,x+9,y+139,"DEVICE VID:PID",white);
+    r94_post_hex(dst,x+9,y+157,frf_r94_last_seen_vidpid,8,cyan);
+    r94_post_text(dst,x+164,y+157,"P3:",white);
+    r94_post_hex(dst,x+196,y+157,frf_r98_root_stage[2],2,amber);
+    r94_post_text(dst,x+220,y+157,"CC:",white);
+    r94_post_hex(dst,x+252,y+157,frf_r98_root_addr_cc[2],2,
+                 frf_r98_root_addr_cc[2]==1u?green:amber);
+    r94_post_text(dst,x+9,y+177,"UNHANDLED:",amber);
+    r94_post_hex(dst,x+106,y+177,frf_r94_last_unhandled_vidpid,8,
+                 frf_r94_last_unhandled_vidpid?amber:green);
+    r94_post_text(dst,x+9,y+195,"PAD READY:",white);
+    r94_post_dec(dst,x+121,y+195,frf_r91_pad_ready,
+                 frf_r91_pad_ready?green:amber);
+    r94_post_text(dst,x+167,y+195,"RX:",white);
+    r94_post_hex(dst,x+207,y+195,frf_native_usb_pad_reports,4,cyan);
+    r94_post_text(dst,x+9,y+213,"EXT HUBS:",white);
+    r94_post_dec(dst,x+121,y+213,frf_r97_hub_count,
+                 frf_r97_hub_count?green:amber);
+    r94_post_text(dst,x+164,y+213,"E:",white);
+    r94_post_hex(dst,x+188,y+213,frf_r97_ext_error,2,amber);
+    r94_post_text(dst,x+221,y+213,"L:",white);
+    r94_post_hex(dst,x+244,y+213,frf_r97_ext_live_mask,2,cyan);
+    r94_post_text(dst,x+9,y+231,"HID ERR:",white);
+    r94_post_hex(dst,x+106,y+231,frf_r99_hid_error_count,4,amber);
+    r94_post_text(dst,x+170,y+231,"REC:",white);
+    r94_post_hex(dst,x+218,y+231,frf_r99_hid_recovered_total,4,cyan);
+    r94_post_text(dst,x+9,y+249,"LAST CC:",cyan);
+    r94_post_hex(dst,x+106,y+249,frf_r99_last_hid_error_cc,2,amber);
+    r94_post_text(dst,x+142,y+249,"RING:",cyan);
+    r94_post_hex(dst,x+204,y+249,frf_r99_ring_swaps,2,cyan);
+    r94_post_text(dst,x+238,y+249,"AGE:",cyan);
+    r94_post_hex(dst,x+277,y+249,frf_r99_hid_last_age_seconds,2,cyan);
+}
+#endif
+
 static void ovl_draw(uint32_t *dst)
 {
-    const int x0 = 8, y0 = 8, pitch = DH + 6;
-    ovl_fill(dst, x0 - 4, y0 - 4, 8 * (DW + 2) + 8, OVL_ROWS * pitch + 8, 0xFF000000u);
+    const int x0 = 17, y0 = 8, pitch = DH + 6;
+    ovl_fill(dst, 0, y0 - 4, x0 + 8 * (DW + 2) + 4, OVL_ROWS * pitch + 8, 0xFF000000u);
     for (int r = 0; r < OVL_ROWS; r++) {
         uint32_t v = ovl_val[r];
-        /* red 0 je najvažniji, pa nek se istakne */
+        /* cyan row index labels left, original full green values right */
+        ovl_small_hex(dst,3,y0+r*pitch+7,(r >> 4)&15,0xFF80FFFFu);
+        ovl_small_hex(dst,8,y0+r*pitch+7,r&15,0xFF80FFFFu);
         uint32_t col = 0xFF000000u | (r == 0 ? 0x00FF6060u : 0x0000FF00u);
         for (int d = 0; d < 8; d++)
             ovl_digit(dst, x0 + d * (DW + 2), y0 + r * pitch, (v >> ((7 - d) * 4)) & 0xF, col);
     }
+#if defined(FRF_PI4_USB_HUD)
+    r94_post_panel(dst);
+#endif
 }
 
 /* ---- the Position screen ------------------------------------------------------
@@ -2157,14 +1765,14 @@ static volatile int calib_on;
 static void cal_hline(uint32_t *d, int x0, int x1, int y, uint32_t c) { ovl_fill(d, x0, y, x1 - x0 + 1, 1, c); }
 static void cal_vline(uint32_t *d, int x, int y0, int y1, uint32_t c) { ovl_fill(d, x, y0, 1, y1 - y0 + 1, c); }
 
-/* sign i do tri znamenke, desno poravnato u četiri cella */
+/* sign and up to three digits, right-aligned in four cells */
 static void cal_number(uint32_t *d, int x, int y, int v, uint32_t col)
 {
     int a = v < 0 ? -v : v, half = (DH - 3 * DT) / 2;
     if (a > 999) a = 999;
     if (v) {
         ovl_fill(d, x + DT, y + DT + half, DW - 2 * DT, DT, col);                   /* minus: segment g */
-        if (v > 0) ovl_fill(d, x + DW / 2 - DT / 2, y + DT + half / 2, DT, half + DT, col);   /* plus: i jedna uspravna */
+        if (v > 0) ovl_fill(d, x + DW / 2 - DT / 2, y + DT + half / 2, DT, half + DT, col);   /* plus: and an upright */
     }
     for (int i = 3; i >= 1; i--) {
         ovl_digit(d, x + i * (DW + 2), y, a % 10, col);
@@ -2181,19 +1789,19 @@ static void calib_pattern(uint32_t *d)
     ovl_fill(d, CAL_X0, CAL_Y0, CAL_W, CAL_H, black);
     for (int x = 32; x < CAL_W; x += 32) cal_vline(d, CAL_X0 + x, CAL_Y0, CAL_Y0 + CAL_H - 1, grid);
     for (int y = 32; y < CAL_H; y += 32) cal_hline(d, CAL_X0, CAL_X0 + CAL_W - 1, CAL_Y0 + y, grid);
-    for (int k = 0; k < 2; k++) {                  /* border standardnog područja, dva piksela */
+    for (int k = 0; k < 2; k++) {                  /* the standard area's border, two pixels */
         cal_hline(d, CAL_X0 + k, CAL_X0 + CAL_W - 1 - k, CAL_Y0 + k, white);
         cal_hline(d, CAL_X0 + k, CAL_X0 + CAL_W - 1 - k, CAL_Y0 + CAL_H - 1 - k, white);
         cal_vline(d, CAL_X0 + k, CAL_Y0 + k, CAL_Y0 + CAL_H - 1 - k, white);
         cal_vline(d, CAL_X0 + CAL_W - 1 - k, CAL_Y0 + k, CAL_Y0 + CAL_H - 1 - k, white);
     }
-    for (int k = 0; k < 4; k++) {                  /* kutne oznake, osam piksela unutra */
+    for (int k = 0; k < 4; k++) {                  /* corner marks, eight pixels in */
         int cx = CAL_X0 + ((k & 1) ? CAL_W - 9 : 8), cy = CAL_Y0 + ((k & 2) ? CAL_H - 9 : 8);
         int hx = (k & 1) ? cx - 40 : cx, vy = (k & 2) ? cy - 20 : cy;
         cal_hline(d, hx, hx + 40, cy, orange);
         cal_vline(d, cx, vy, vy + 20, orange);
     }
-    cal_hline(d, CAL_X0 + 300, CAL_X0 + 340, CAL_Y0 + CAL_H / 2, orange);          /* centar */
+    cal_hline(d, CAL_X0 + 300, CAL_X0 + 340, CAL_Y0 + CAL_H / 2, orange);          /* the centre */
     cal_vline(d, CAL_X0 + 320, CAL_Y0 + CAL_H / 2 - 20, CAL_Y0 + CAL_H / 2 + 20, orange);
 }
 
@@ -2201,8 +1809,8 @@ static void calib_draw(uint32_t *d)
 {
     const uint32_t black = 0xFF000000u, white = 0xFFFFFFFFu, orange = 0xFFFF9900u;
     calib_pattern(d);
-    /* offseti, kako ih agaboot kaže: strelica desno i njezin broj, strelica
-       dolje i njezin broj, na crnom da ih grid ne presijeca */
+    /* the offsets, as agaboot says them: an arrow right and its number, an
+       arrow down and its number, on black so the grid does not cross them */
     int y = CAL_Y0 + 80, x = CAL_X0 + 320 - 80, mid = y + DH / 2;
     ovl_fill(d, x - 8, y - 6, 176, DH + 12, black);
     cal_hline(d, x, x + 12, mid, white);
@@ -2238,20 +1846,20 @@ static void snap_take(void)
     crop_state();
 }
 
-/* ---- crop screen --------------------------------------------------------------
- * agabootov Crop... (RTG Image, Size Custom): slika zadnje igre - ili, kad
- * se nijedan standard nije rezao od kad je Pi startao, pattern Position
- * screena - odrezana na rubove koji se postavljaju, kako će je igra
- * pokazati. Broj svakog ruba sjedi uz njega; onaj koji tipke pomiču je
- * narančast, s trakom duž sebe. $5880 + E3(s) ga digne (aga_crop.h) ili
- * označi drugi rub, $5930 ga završi kako završava Position. Samo desktop,
- * kao Position: sa sandboxom gore agaboot reže live sliku umjesto toga. */
+/* ---- the crop screen ----------------------------------------------------------
+ * agaboot's Crop... (RTG Image, Size Custom): the last game's picture - or,
+ * with none of the standard being cut since the Pi started, the Position
+ * screen's pattern - cut to the edges being set, as the game will show. Each
+ * edge's number sits by it; the one the keys move is orange, with a bar
+ * along it. $5880 + E3(s) puts it up (aga_crop.h) or marks another edge,
+ * $5930 ends it as it ends Position. Desktop only, like Position: with the
+ * sandbox up agaboot cuts the live picture instead. */
 static int crop_std, crop_edge;
 
-/* AGA_D_CROP, za agaboot: bit 0 kernel reže Custom rubove, bit 1 crop
-   screen pokazuje sliku zadnje igre, bit 2 frame koji se reže je NTSC, bit 3
-   postoji slika zadnje igre za pokazati, bit 4 ona je NTSC; bitovi 16-31
-   mikrosekunde koje je kopija zadnje slike uzela */
+/* AGA_D_CROP, for agaboot: bit 0 the kernel cuts Custom edges, bit 1 the
+   crop screen shows the last game's picture, bit 2 the frame being cut is
+   NTSC, bit 3 there is a last game picture to show, bit 4 it is NTSC; bits
+   16-31 the microseconds the last picture's copy took */
 static void crop_state(void)
 {
     int have = snap_ok || last_ok, hn = last_ok ? last_ntsc : snap_ntsc;
@@ -2259,7 +1867,7 @@ static void crop_state(void)
                              | (have ? 8u : 0u) | ((have && hn) ? 16u : 0u) | (snap_us << 16));
 }
 
-/* do tri znamenke, desno poravnato, na crnom */
+/* up to three digits, right-aligned, on black */
 static void crop_number(uint32_t *d, int x, int y, int v, uint32_t col)
 {
     ovl_fill(d, x - 4, y - 4, 3 * (DW + 2) + 6, DH + 8, 0xFF000000u);
@@ -2278,7 +1886,7 @@ static void crop_marks(uint32_t *d)
     int v[4]  = { x, y, AGA_OUT_W - x - w, rows - y - h };
     int nx[4] = { x + 10, x + (w - nw) / 2, x + w - 10 - nw, x + (w - nw) / 2 };
     int ny[4] = { y + (h - DH) / 2, y + 10, y + (h - DH) / 2, y + h - 10 - DH };
-    switch (crop_edge) {                         /* traka, unutar ruba */
+    switch (crop_edge) {                         /* the bar, inside the edge */
     case CUT_L: ovl_fill(d, x, y, 4, h, orange); break;
     case CUT_T: ovl_fill(d, x, y, w, 2, orange); break;
     case CUT_R: ovl_fill(d, x + w - 4, y, 4, h, orange); break;
@@ -2298,7 +1906,7 @@ static void crop_show(void)
     } else {
         calib_pattern(d);
     }
-    frame_woven = 0;                    /* jedan page, standarda koji se reže */
+    frame_woven = 0;                    /* one page, of the standard being cut */
     frame_row = 0;
     frame_ntsc = crop_std;
     apply_crop();
@@ -2379,20 +1987,19 @@ static void calib_refresh(void)
 #define PV_VERTA     0x14
 #define PV_VERTB     0x18
 static volatile int hsync_on;
-static uint32_t frame_len; /* last emulated frame's actual colour-clock length */
 static int pv_state;                    /* 0 not looked at, 1 good, -1 not to be written */
 static int pv_have;                     /* vfp0/vactive0 are the mode's own */
 static uint32_t pv_vfp0, pv_vactive0;
 static int pv_k;                        /* porch lines over the mode's own, in force */
 static uint64_t pv_look;                /* the next look at the PixelValve */
-static struct hsync hs = { .prev = -1, .ph16 = -1 };
+static struct hsync hs = { -1, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0 };
 
 static uint64_t cnt_freq(void) { uint64_t f; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(f)); return f ? f : 1; }
 
 static int pv_check(void)
 {
     uint32_t vc = reg_rd(PV_BASE + PV_V_CONTROL), va = reg_rd(PV_BASE + PV_VERTA), vb = reg_rd(PV_BASE + PV_VERTB);
-    if (!pv_have || (vb & 0xffff) != pv_vactive0) {        /* prvi pogled, ili novi mode */
+    if (!pv_have || (vb & 0xffff) != pv_vactive0) {        /* the first look, or a new mode */
         pv_vfp0 = vb >> 16;
         pv_vactive0 = vb & 0xffff;
         pv_have = 1;
@@ -2413,8 +2020,8 @@ static void hsync_report(int phase)
     aga_diag_set(AGA_D_HDMI_SYNC_SLIPS, hs.slips);
 }
 
-/* porch na `k` linija preko modeovih vlastitih, kad je HVS duboko unutar
-   slike - čekajući do frame za to (wait 0: samo ako je sada) */
+/* the porch to `k` lines over the mode's own, once the HVS is well inside
+   the picture - waiting up to a frame for it (wait 0: only if it is now) */
 static int pv_write(int k, int wait)
 {
     uint64_t end = cnt_now() + cnt_freq() / 40;
@@ -2429,7 +2036,7 @@ static int pv_write(int k, int wait)
     }
 }
 
-/* opet modeov vlastiti porch (isključeno, sandbox napušten) */
+/* the mode's own porch again (switched off, the sandbox left) */
 static void hsync_restore(void)
 {
     if (pv_have && pv_state == 1 && pv_k) pv_write(0, 1);
@@ -2437,25 +2044,7 @@ static void hsync_restore(void)
     hsync_report(-1);
 }
 
-/* A stable, in-range sync porch may stay in place during desktop
-   handoff: the next 50.2Hz game avoids six display timing writes.
-   Out-of-reach or remeasuring modes go back to the original porch. */
-static void hsync_park(void)
-{
-    if (hsync_on && pv_have && pv_state == 1 && hs.reach == 1 && hs.steady) {
-        hs.prev = -1;
-        hsync_report(-1);
-        return;
-    }
-    hsync_restore();
-}
-
-void aga_video_set_frame_len(uint32_t cck)
-{
-    frame_len = cck;
-}
-
-/* svaki prikazani frame (core 3, nakon show) */
+/* each frame shown (core 3, after show) */
 static void hsync_frame(void)
 {
     if (!hsync_on) return;
@@ -2467,7 +2056,6 @@ static void hsync_frame(void)
     if (pv_state != 1) { hsync_report(-1); return; }
     uint32_t line = reg_rd(REG_DISPSTAT1) & 0xfff;
     int phase = line + 2 < pv_vactive0 ? (int)line : -1;
-    hsync_len(&hs, frame_len);
     int want = hsync_step(&hs, phase, (int)pv_vactive0, pv_k);
     if (want > pv_k + 1) want = pv_k + 1;
     if (want < pv_k - 1) want = pv_k - 1;
@@ -2475,7 +2063,7 @@ static void hsync_frame(void)
     hsync_report(phase);
 }
 
-/* $5891 on / $5890 off (agaboot RTG Image, HDMI sync) - core 0, trap */
+/* $5891 on / $5890 off (agaboot RTG Image, HDMI sync) - core 0, the trap */
 void aga_video_hdmi_sync(int on)
 {
     if (!video_ok) return;
@@ -2545,8 +2133,6 @@ static void hvs_check(void)
 
 void aga_video_present(const uint32_t *frame, int native_active)
 {
-    /* Native output state is not the sandbox state in standalone mode. */
-    __atomic_store_n(&frf_osd_native_video_active,0u,__ATOMIC_RELEASE);
     if (!video_ok) return;
 #if defined(FRF_VIRTUAL_AGA) && defined(FRF_RTG_HANDOFF)
     /* P96 VideoCore.card writes DISPLIST1 independently on the 68k.
@@ -2613,7 +2199,6 @@ void aga_video_present(const uint32_t *frame, int native_active)
         return;
     }
 
-    __atomic_store_n(&frf_osd_native_video_active,1u,__ATOMIC_RELEASE);
     /* Core rendered this frame straight into one of my three pages (see
        aga_set_framebuffers3): no copy, and the pages are uncached, so no
        flush either. Used to be 900 KB read, 900 KB written, 900 KB of cache
@@ -2632,7 +2217,7 @@ void aga_video_present(const uint32_t *frame, int native_active)
         rgb = (const uint32_t *)(fb_va + (uintptr_t)frame_row * AGA_OUT_W * 4);
         rgb_pitch = 2 * AGA_OUT_W;
     }
-    /* slika crop screena, dok je ništa ne prekriva (snap_take) */
+    /* the crop screen's picture, while nothing draws over it (snap_take) */
     last_page = page;
     last_woven = frame_woven;
     last_row = frame_row;
@@ -2648,20 +2233,20 @@ void aga_video_present(const uint32_t *frame, int native_active)
         return;
     }
     if (aga_rgbout_hdmi_off()) {
-        /* igra samo na RGB portu: frame ipak ide coreu 1 */
+        /* the game on the RGB port only: the frame still goes to core 1 */
         show_black();
         fb_page = page;
         aga_rgbout_frame(rgb, rgb_pitch, frame_woven ? -1 : page);
         return;
     }
-    show_frame(fb_phys + (uintptr_t)page * FB_BYTES, (ovl_on && !frame_woven) || osd_enabled());
+    show_frame(fb_phys + (uintptr_t)page * FB_BYTES, ovl_on && !frame_woven);
     fb_page = page;
     {
         static uint32_t check_n;
         if (++check_n % 50 == 0) hvs_check();
     }
     hsync_frame();
-    aga_rgbout_frame(rgb, rgb_pitch, frame_woven ? -1 : page);   /* i na RGB port kao HAM6, kad ga igra ima uključenog (core 1) */
+    aga_rgbout_frame(rgb, rgb_pitch, frame_woven ? -1 : page);   /* and to the RGB port as HAM6, when a game has it on (core 1) */
 }
 
 /* ---- mode switch: reboot the Pi, optionally with the firmware's one-shot
@@ -2678,7 +2263,7 @@ void aga_video_present(const uint32_t *frame, int native_active)
 static void pi_reset(void)
 {
     unsigned int r = LE32(*PM_RSTS);
-    r &= ~0xfffffaaau;                       /* boot s particije 0 */
+    r &= ~0xfffffaaau;                       /* boot from partition 0 */
     *PM_RSTS = LE32(PM_WDOG_MAGIC | r);
     *PM_WDOG = LE32(PM_WDOG_MAGIC | 10);
     *PM_RSTC = LE32(PM_WDOG_MAGIC | PM_RSTC_FULLRST);

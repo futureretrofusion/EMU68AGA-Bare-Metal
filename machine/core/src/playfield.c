@@ -1,30 +1,30 @@
-/* AGA-STORM — bitplane DMA dohvaćanje i crtanje redaka (Alice/Lisa playfield).
+/* AGA-PISTORM - bitplane DMA fetch and line rendering (Alice/Lisa playfield).
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * UAE-ov model retka: fetch jedinice, početak dohvaćanja, slijed ravnina i delay
- * pomak, zatim jedan prolaz crtanja po retku preko dohvaćenih planar podataka i
- * promjena registara zabilježenih tijekom retka. Iz UAE/WinUAE, mnogo toga
- * u starijem obliku sačuvanom u E-UAE custom.c i drawing.c:
- *   kopirano    tablice fetchunits/fetchstarts/fm_maxplanes,
- *               expand_fmodes, calcdiw (calchdiw i DIWHIGH maska, prvo
- *               napisano po E-UAE calcdiw, s njegovim pravilom za DDFSTOP
- *               iza kraja retka), delay pomak
- *               (compute_delay_offset, compute_toscr_delay_1), BSCAN2
- *               izbor modula (getbplmod), dual playfield bit split
+ * UAE's line model: fetch units, fetch start, plane sequence and delay
+ * offset, then one rendering pass per line over the fetched planar data and
+ * the register changes recorded during the line. From UAE/WinUAE, much of it
+ * in the older form kept in E-UAE's custom.c and drawing.c:
+ *   copied      the fetchunits/fetchstarts/fm_maxplanes tables,
+ *               expand_fmodes, calcdiw (calchdiw and the DIWHIGH mask, first
+ *               written after E-UAE's calcdiw, with its rule for a DDFSTOP
+ *               past the end of the line), the delay offset
+ *               (compute_delay_offset, compute_toscr_delay_1), the BSCAN2
+ *               modulo choice (getbplmod), the dual playfield bit split
  *               (gen_pfield_tables)
- *   prevedeno   upis colour registra (update_color, COLOR_WRITE),
- *               BPLxPT..FMODE handleri, HAM6/HAM8 (decode_ham_pixel_aga),
- *               CLXCON maske (expand_colmask)
- *   podaci      redoslijed ravnina (bpl_sequence_8/4/2), tablica sudara
- *               sprite na sprite (E-UAE sprclx), HARD_DDF_START
- *   model       petlja dohvaćanja (pokreću je okno, BPLEN i DDFSTRT
- *               sami, svaki slot prema BPLCON0 broju ravnina, kao WinUAE
- *               bprun i bplcon0_planes_limit), test bitplane slota,
- *               DDF stop na ili prije početka, renderer popisa promjena
- *               (do_color_changes), dual playfield, EHB, BPLCON4
- *               sprite boje, sudari (denise_collide_sprites)
- * Gdje dohvaćanje počinje i kada promjene registara stupaju na snagu,
- * kalibrirano je prema WinUAE DMA zapisima.
+ *   translated  the colour register write (update_color, COLOR_WRITE), the
+ *               BPLxPT..FMODE handlers, HAM6/HAM8 (decode_ham_pixel_aga),
+ *               the CLXCON masks (expand_colmask)
+ *   data        the plane order (bpl_sequence_8/4/2), the sprite-to-sprite
+ *               collision table (E-UAE's sprclx), HARD_DDF_START
+ *   model       the fetch loop (started by the window, BPLEN and DDFSTRT
+ *               alone, each slot against BPLCON0's plane count, as WinUAE's
+ *               bprun and bplcon0_planes_limit), the bitplane slot test,
+ *               the DDF stop at or before the start, the change-list
+ *               renderer (do_color_changes), dual playfield, EHB, BPLCON4
+ *               sprite colours, collisions (denise_collide_sprites)
+ * Where the fetch starts, and when register changes take effect, were
+ * calibrated against WinUAE's DMA records.
  *   WinUAE custom.cpp:  Copyright 1995-2002 Bernd Schmidt,
  *     Copyright 1995 Alessandro Bissacco, Copyright 2000-2025 Toni Wilen
  *   WinUAE drawing.cpp: Copyright 1995-2000 Bernd Schmidt,
@@ -33,8 +33,8 @@
  *     Copyright 1995 Alessandro Bissacco, Copyright 2000-2004 Toni Wilen
  *   E-UAE drawing.c:    Copyright 1995-2000 Bernd Schmidt,
  *     Copyright 1995 Alessandro Bissacco, Copyright 2000,2001 Toni Wilen
- * Promijenjeno u odnosu na UAE/WinUAE kod za AGA-STORM 2026.
- * UAE i WinUAE su GPL, kao i ova datoteka.
+ * Changed from the UAE/WinUAE code for AGA-PISTORM in 2026.
+ * UAE and WinUAE are GPL, like this file.
  */
 #include <string.h>
 #ifdef PFDBG
@@ -45,16 +45,16 @@
 
 #define HARD_DDF_START 0x18
 #define HARD_DDF_STOP  0xD8
-/* Bitplane DMA počinje DDF_OFFSET colour clocks nakon DDFSTRT podudaranja (WinUAE
-   DMA zapisi pokazuju prvi fetch blok na DDFSTRT+4). Blok koji se dovrši
-   na hposu h prikazuje se od hardverskog lores piksela h*2 + DISP_OFFSET. DIW
-   vrijednosti registara uspoređuju se s hardverskim koordinatama minus DIW_HW_OFFSET (UAE:
-   DIW_DDF_OFFSET 9 s fetchom na DDFSTRT daje istu sliku). */
+/* Bitplane DMA starts DDF_OFFSET colour clocks after the DDFSTRT match (WinUAE
+   DMA records show the first fetch block at DDFSTRT+4). A block that completes
+   at hpos h is displayed from hardware lores pixel h*2 + DISP_OFFSET. DIW register
+   values are compared against hardware coordinates minus DIW_HW_OFFSET (UAE:
+   DIW_DDF_OFFSET 9 with fetch at DDFSTRT gives the same picture). */
 #define DDF_OFFSET     4
-/* BPLCON0 upis stiže do bitplane DMA ovoliko colour clocks nakon
-   copperovog slota: WinUAE ga pipelineira 2 ciklusa (BPLCON0_delayed), a njegovi DMA
-   zapisi pokazuju posljednje dohvaćanje starog broja ravnina 3 colour clocka nakon
-   copperovog upisa (od RGB2RTG d888409). */
+/* A BPLCON0 write reaches the bitplane DMA this many colour clocks after the
+   copper's slot: WinUAE pipelines it 2 cycles (BPLCON0_delayed), and its DMA
+   records show the old plane count's last fetch 3 colour clocks after the
+   copper's write (from RGB2RTG d888409). */
 #define BPLCON0_DMA_DELAY 4
 #define DISP_OFFSET    1
 #define DIW_HW_OFFSET  8
@@ -66,10 +66,10 @@ static const uint8_t seq8[8] = { 8, 4, 6, 2, 7, 3, 5, 1 };
 static const uint8_t seq4[4] = { 4, 2, 3, 1 };
 static const uint8_t seq2[2] = { 2, 1 };
 
-/* ravnine koje bitplane DMA sada dohvaća: BPLCON0-ove, ili nijednu kad
-   ih je više nego što fetch mode ima slotova (WinUAE real_bitplane_number:
-   "Disable bitplane DMA if planes > available DMA slots", Sanity WOC
-   party efekt) - bez obzira je li postavljeno prije početka dohvaćanja retka ili tijekom njega */
+/* the planes the bitplane DMA fetches now: BPLCON0's, or none at all when
+   that is more than the fetch mode has slots for (WinUAE real_bitplane_number:
+   "Disable bitplane DMA if planes > available DMA slots", the Sanity WOC
+   party effect) - whether set before the line's fetch began or during it */
 static inline int fetch_planes(const playfield_t *p)
 {
     return p->planes > p->maxplanes ? 0 : p->planes;
@@ -80,15 +80,15 @@ static inline int slot_plane(int maxplanes, int cyc)
     return maxplanes == 8 ? seq8[cyc] : maxplanes == 4 ? seq4[cyc] : seq2[cyc];
 }
 
-/* snimka stanja na početku retka, po retku, koju koristi renderer. Uz
-   pojačanu svjetlinu (aga_set_brightness) line_color je paleta kroz njegovu
-   tablicu - što se pokazuje - a line_raw sama paleta, koju HAM treba:
-   HAM piksel zadržava kanale prethodnog piksela i zamjenjuje jedan, pa njegove
-   osnovne boje moraju biti stvarne, i samo se ono što izađe posvjetljuje.
-   line_ehb je što pokazuju EHB-ovi polusvijetli pikseli prvih 32 boja:
-   stvarna boja prepolovljena, kako chip radi, i tek onda posvijetljena -
-   prepolovljavanje posvijetljene činilo je polovice svijetlih boja pretamnim
-   gdje god posvjetljivanje reže (pronašao RGB2RTG, 2026-10-10). */
+/* per-line snapshot of state at line start, used by the renderer. With the
+   brightness up (aga_set_brightness) line_color is the palette through its
+   table - what is shown - and line_raw the palette itself, which HAM needs:
+   a HAM pixel keeps channels of the pixel before and replaces one, so its
+   base colours must be the real ones, and only what comes out is brightened.
+   line_ehb is what EHB's half-bright pixels of the first 32 colours show:
+   the real colour halved, as the chip does, and only then brightened -
+   halving the brightened one made bright colours' halves too dark wherever
+   the brightening clips (found by RGB2RTG, 2026-10-10). */
 static uint32_t line_color[256];
 static uint32_t line_raw[256];
 static uint32_t line_ehb[32];
@@ -103,14 +103,14 @@ static void calcdiw(playfield_t *p, int maxhpos);
 
 void pf_reset(aga_t *a)
 {
-    /* Osobnost chipseta nadživljava reset: svojstvo je igre
-       koja tek slijedi, odabrano prije ulaska u sandbox, a aga_reset() se vrti
-       kao dio ulaska. */
+    /* The chipset personality outlives a reset: it is a property of the game
+       about to run, chosen before the sandbox is entered, and aga_reset() runs
+       as part of entering. */
     int keep_ecs = a->pf.ecs_mode, keep_forced = a->pf.ecs_forced;
     playfield_t *p = &a->pf;
     memset(p, 0, sizeof *p);
-    p->bplcon4 = 0x0011;      /* osnovne boje spriteova 16 (OCS kompatibilno - staro, ali radi) */
-    p->bplcon3 = 0x0C00;      /* PF2OF = 3 (pomak 8), kao OCS dual playfield */
+    p->bplcon4 = 0x0011;      /* sprite colour bases 16 (OCS compatible) */
+    p->bplcon3 = 0x0C00;      /* PF2OF = 3 (offset 8), like OCS dual playfield */
     p->diwstrt = 0x2C81;
     p->diwstop = 0x2CC1;
     p->ddfstrt = 0x0038;
@@ -119,26 +119,26 @@ void pf_reset(aga_t *a)
     p->line_plfleft = -1;
     p->ecs_mode = keep_ecs;
     p->ecs_forced = keep_forced;
-    /* Izračunaj rubove okna iz tih zadanih vrijednosti odmah. Ostavljen do
-       prvog DIWSTRT upisa, diw_vstart ostao je 0, pa ga je prvi redak
-       framea poklopio i postavio vertikalni window flip-flop za okno
-       koje nitko nije tražio. */
+    /* Work the window edges out from those defaults right away. Left until the
+       first DIWSTRT write, diw_vstart stayed 0, and the very first line of the
+       frame then matched it and set the vertical window flip-flop for a window
+       nobody had asked for. */
     calcdiw(p, aga_short_line(a));
 }
 
-/* ECS Denise uključen ili isključen. Uključen, AGA shadow paleta (color_aga)
-   počinje kao sadašnja paleta; svaki upis boje od tada ide u obje. */
+/* ECS Denise on or off. Turned on, the AGA shadow palette (color_aga) starts
+   as the palette now; every colour write from then on goes into both. */
 void aga_set_ecs(aga_t *a, int on)
 {
     if (on && !a->pf.ecs_mode) {
         memcpy(a->color_aga, a->color, sizeof a->color_aga);
-        aga_ecs_forget_signs(a);               /* što je AGA chip vidio nije znak */
+        aga_ecs_forget_signs(a);               /* what the AGA chip saw is no sign */
     }
     a->pf.ecs_mode = !!on;
     a->pf.ecs_forced = 0;
 }
-/* Korisnikov "always ECS" (agaboot ECSGAMES ON): ECS kojeg se ecs_says_aga
-   nikad ne odriče */
+/* The user's "always ECS" (agaboot ECSGAMES ON): ECS that ecs_says_aga never
+   gives up */
 void aga_set_ecs_forced(aga_t *a, int on)
 {
     aga_set_ecs(a, on);
@@ -164,22 +164,22 @@ unsigned aga_ecs_forget_signs(aga_t *a)
     return was;
 }
 
-/* ECS Denise ipak dan AGA programu. agaboot odabire ECS za
-   igru čiji WHDLoad slave niti traži AGA niti ima AGA u imenu, a
-   Wit Premium (WHDLoad, slave "WitPremium") takav je AGA demo: učitava
-   24-bitnu paletu preko banki boja, što je ECS Denise pretvorio u
-   pojaseve pogrešnih boja (2026-10-05, korisnikov A500).
-   Potrebna su OBA znaka da se predomisli, u bilo kojem redoslijedu: AGA fetch -
-   FMODE različit od nule ili točno osam bitplanea - i AGA boja - boja
-   upisana pod LOCT-om ili u banku, ili BPLCON4. Neke ECS igre uključe
-   AGA fetch mode radi brzine i žele da im ECS boje ostanu iste; neke
-   nose zalutali LOCT bit, zbog čega ECS način i postoji; nijedna nema oboje.
-   A ECS način mijenja samo boje, pa igra bez AGA boje
-   ne treba promjenu. Ili JEDAN znak koji nijedna ECS igra ne daje: 24-bitni parovi boja
-   (pf_color_write) u dvije banke boja. Tada paleta koju bi AGA chip
-   držao - čuvana uz ECS paletu cijelo vrijeme (color_aga) - preuzima, pa
-   su i boje koje je program učitao jednom, prije nego je uključio AGA fetch,
-   ispravne. Nikad protiv korisnikovog "always ECS". */
+/* An ECS Denise given to an AGA program after all. agaboot picks ECS for a
+   game whose WHDLoad slave neither asks for AGA nor has AGA in its name, and
+   Wit Premium (WHDLoad, slave "WitPremium") is such an AGA demo: it loads a
+   24-bit palette across the colour banks, which an ECS Denise turned into
+   bands of wrong colours (2026-10-05, the user's A500).
+   It takes BOTH signs to change its mind, in either order: an AGA fetch - a
+   non-zero FMODE or exactly eight bitplanes - and an AGA colour - a colour
+   written under LOCT or into a bank, or a BPLCON4. Some ECS games turn an
+   AGA fetch mode on for speed and want their ECS colours all the same; some
+   carry a stray LOCT bit, which is why ECS mode exists; neither has both.
+   And ECS mode only ever changes the colours, so a game with no AGA colour
+   needs no change. Or ONE sign that no ECS game gives: 24-bit colour pairs
+   (pf_color_write) in two colour banks. Then the palette an AGA chip would
+   hold - kept beside the ECS one all along (color_aga) - takes over, so
+   colours the program loaded once, before it turned the AGA fetch on, are
+   right too. Never against the user's "always ECS". */
 static void ecs_says_aga(aga_t *a)
 {
     playfield_t *p = &a->pf;
@@ -188,9 +188,9 @@ static void ecs_says_aga(aga_t *a)
     p->ecs_mode = 0;
     a->ecs_upgrades++;
     memcpy(a->color, a->color_aga, sizeof a->color);
-    a->bright_dirty = 1;            /* posvijetljena paleta, na sljedećem retku */
-    spr_expand_res(a);              /* SPRES sada dolazi iz samog BPLCON3 */
-    aga_record_change(a, BPLCON3, p->bplcon3);   /* i ostatak ovog retka također */
+    a->bright_dirty = 1;            /* the brightened palette, at the next line */
+    spr_expand_res(a);              /* SPRES now comes from BPLCON3 itself */
+    aga_record_change(a, BPLCON3, p->bplcon3);   /* and the rest of this line too */
     aga_record_change(a, BPLCON4, p->bplcon4);
 }
 
@@ -205,32 +205,31 @@ static void expand_fmodes(playfield_t *p)
 
 static void calcdiw(playfield_t *p, int maxhpos)
 {
-    /* Vodoravni rubovi drže se u superhires jedinicama (4 po lores pikselu) da bi se
-       AGA sub-lores bitovi DIWHIGH mogli primijeniti; vidi WinUAE calchdiw(). */
+    /* Horizontal edges are kept in superhires units (4 per lores pixel) so the
+       AGA sub-lores bits of DIWHIGH can be applied; see WinUAE calchdiw(). */
     int hstrt = (p->diwstrt & 0xFF) << 2, hstop = (p->diwstop & 0xFF) << 2;
     int vstrt = p->diwstrt >> 8,   vstop = p->diwstop >> 8;
     if (p->diwhigh_written) {
-        /* upisani DIWHIGH maskira se prije upotrebe (WinUAE DIWHIGH()) -
-           naravno da se maskira, tko bi ga pustio sirovog */
+        /* a written DIWHIGH is masked before use (WinUAE DIWHIGH()) */
         int dh = p->diwhigh & ~(0x8000 | 0x4000 | 0x0080 | 0x0040);
         hstrt |= ((dh >> 5) & 1) << (8 + 2);
         hstop |= ((dh >> 13) & 1) << (8 + 2);
-        /* AGA rubovi okna od četvrtine lores piksela: mjerljivo pogrešni u mom
-           koordinatnom modelu (vidi docs/VALIDATION-FINDINGS.md), isključeni dok se ne kalibriraju
+        /* AGA quarter-lores window edges: measurably wrong in my coordinate
+           model (see docs/VALIDATION-FINDINGS.md), left off until calibrated
            hstrt |= (dh >> 3) & 3;
            hstop |= (dh >> 11) & 3; */
-        /* Samo V10-V8. Na AGA su bitovi 3 i 11 H0 bitovi starta i
-           stopa (samo ECS Agnus ih čita kao nedokumentirani V11 - WinUAE
-           calcvdiw); uzeti kao V11 pomicali su okno 2048 redaka niže, a
-           igra koja ih je postavila zadržala bi samo copper boje. */
+        /* V10-V8 only. On AGA bits 3 and 11 are the H0 bits of the start and
+           stop (only ECS Agnus reads them as an undocumented V11 - WinUAE
+           calcvdiw); taken as V11 they moved the window 2048 lines down, and a
+           game that set them would have kept nothing but the copper colours. */
         vstrt |= (dh & 7) << 8;
         vstop |= ((dh >> 8) & 7) << 8;
     } else {
         hstop |= 0x100 << 2;
         if ((vstop & 0x80) == 0) vstop |= 0x100;
     }
-    /* izlaz je hires, pa rubovi okna padaju na cijele hires piksele
-       (WinUAE maskira s hbmask za trenutačnu izlaznu rezoluciju) */
+    /* the output is hires, so window edges land on whole hires pixels
+       (WinUAE masks with hbmask for the current output resolution) */
     hstrt &= ~1;
     hstop &= ~1;
     p->diw_hstart = hstrt;
@@ -239,35 +238,35 @@ static void calcdiw(playfield_t *p, int maxhpos)
     p->diw_vstop = vstop;
 
     p->plfstrt = p->ddfstrt;
-    /* DDFSTOP iza kraja retka nikad se ne poklapa, pa se fetch okno ECS/AGA Agnusa
-       nikad ne zatvara: dohvaćanje svakog retka ide od tvrdog početka,
-       kao da je DDFSTRT $18 (E-UAE calcdiw: "if (ddfstop > maxhpos) plfstrt
-       = 0"; WinUAE pokazuje isto). Wit Premium PREMIUM ekran - DDFSTRT
-       $28, DDFSTOP $E8, FMODE 3 - izašao je jedan blok od 64 piksela predaleko desno
-       bez toga, posljednje slovo odrezano (2026-10-04; iz RGB2RTG
-       f2a0073). maxhpos je 0 prije prvog retka: tada $E3 PAL retka. */
+    /* A DDFSTOP past the end of the line never matches, so the ECS/AGA Agnus's
+       fetch window never closes: every line's fetch runs from the hard start,
+       as if DDFSTRT were $18 (E-UAE calcdiw: "if (ddfstop > maxhpos) plfstrt
+       = 0"; WinUAE shows it the same). Wit Premium's PREMIUM screen - DDFSTRT
+       $28, DDFSTOP $E8, FMODE 3 - came out one 64-pixel block too far right
+       without it, its last letter cut off (2026-10-04; from RGB2RTG
+       f2a0073). maxhpos is 0 before the first line: then the PAL line's $E3. */
     if (p->ddfstop > (maxhpos > 0 ? maxhpos : 0xE3)) p->plfstrt = 0;
     if (p->plfstrt < HARD_DDF_START) p->plfstrt = HARD_DDF_START;
     p->plfstop = p->ddfstop;
     if (p->plfstop > HARD_DDF_STOP) p->plfstop = HARD_DDF_STOP;
-    /* DDFSTOP na ili prije DDFSTRT poklopio se prije nego je dohvaćanje počelo - njegova
-       usporedba dolazi ciklus prije DDFSTRT-ove - i ne zaustavlja ništa: dohvaćanje
-       ide do tvrdog stopa (WinUAE DDF state machine, limit $D7).
-       Aladdin AGA logo ekrani - DDFSTRT $38, DDFSTOP upisan $0100, dakle $00,
-       FMODE 3 - imaju šest blokova od 64 piksela po retku; ja sam dohvatio jedan, a
-       isprepletena slika od 384 piksela izašla je kao uska prugasta kolona (iz
+    /* A DDFSTOP at or before DDFSTRT has matched before the fetch began - its
+       compare comes a cycle ahead of DDFSTRT's - and stops nothing: the fetch
+       runs to the hard stop (WinUAE's DDF state machine, the $D7 limit).
+       Aladdin AGA's logo screens - DDFSTRT $38, DDFSTOP written $0100, so $00,
+       FMODE 3 - are six 64-pixel blocks a line; I fetched one, and the
+       interleaved 384-pixel picture came out as a narrow striped column (from
        RGB2RTG d63b149). */
-    /* O tome odlučuju registri kako su upisani, a ne početak stisnut na $18:
-       DDFSTRT i DDFSTOP oba na ili ispod tvrdog početka - $10 i $14 -
-       poklapaju DDFSTOP prije nego dohvaćanje može početi, i redak ne dohvaća ništa
-       (WinUAE ECS/AGA DDF state machine). plfstop ispod plfstrt to kaže. */
+    /* The registers as written decide that, not the start clamped to $18: a
+       DDFSTRT and DDFSTOP both at or below the hard start - $10 and $14 -
+       match DDFSTOP before the fetch can begin, and the line fetches nothing
+       (WinUAE's ECS/AGA DDF state machine). plfstop below plfstrt says so. */
     if (p->ddfstop <= p->ddfstrt) p->plfstop = HARD_DDF_STOP;
     else if (p->ddfstop <= HARD_DDF_START) p->plfstop = -1;
 }
 
-/* Scroll odgode u native pikselima za BPLCON1 vrijednost, koristeći parametre
-   dohvaćanja retka. UAE: nedokumentirani pomak vrijedi za početke dohvaćanja koji
-   nisu poravnati s fetch jedinicom. */
+/* Scroll delays in native pixels for a BPLCON1 value, using the line's fetch
+   parameters. UAE: an undocumented offset applies for fetch starts that are
+   not aligned to the fetch unit. */
 static void delays_for(const playfield_t *p, uint16_t con1, int *d1out, int *d2out)
 {
     int fetchwidth = 16 << p->line_fm;
@@ -285,9 +284,9 @@ static void compute_delays(playfield_t *p)
     delays_for(p, p->bplcon1, &p->line_delay1, &p->line_delay2);
 }
 
-/* Što dohvaćanje retka i njegovo crtanje uzimaju od mjesta gdje je dohvaćanje počelo
-   (fetch_start_h): rezoluciju, fetch mode i scroll odgode, broj
-   ciklusa dohvaćanja do DDFSTOP-a i gdje se pokazuje prvi blok. */
+/* What the line's fetch and its drawing take from where the fetch began
+   (fetch_start_h): the resolution, fetch mode and scroll delays, the number
+   of fetch cycles to DDFSTOP, and where the first block shows. */
 static void latch_line(playfield_t *p)
 {
     p->line_res = p->res;
@@ -298,9 +297,8 @@ static void latch_line(playfield_t *p)
     int len = stop - p->plfstrt;
     len = (len + p->fetchunit - 1) & ~(p->fetchunit - 1);
     p->fetch_total = len + p->fetchunit;
-    /* prvi blok postaje vidljiv kad je ravnina 1 (dohvaćena posljednja u
-       bloku, na ciklusu maxplanes-1) dohvaćena - redoslijed nije slučajan,
-       pitajte ravninu 1 */
+    /* the first block becomes visible once plane 1 (fetched last in the
+       block, at cycle maxplanes-1) has been fetched */
     p->line_plfleft = p->fetch_start_h + p->maxplanes;
 }
 
@@ -329,21 +327,21 @@ static void latch_line(playfield_t *p)
 uint16_t pf_con3(const playfield_t *p) { return p->ecs_mode ? (uint16_t)(BPLCON3_RESET | (p->bplcon3 & BPLCON3_ECS_BITS)) : p->bplcon3; }
 uint16_t pf_con4(const playfield_t *p) { return p->ecs_mode ? BPLCON4_RESET : p->bplcon4; }
 
-/* Colour clocks od reseta, dovoljno približno (redak se računa kao 228): kada su
-   došla dva upisa 24-bitnog para, za okna niže. */
+/* Colour clocks since the reset, near enough (a line counts as 228): when a
+   24-bit pair's two writes came, for the windows below. */
 static inline uint32_t pf_now(const aga_t *a) { return a->line_no * 228u + (uint32_t)a->hpos; }
-#define PAIR_CCK      200u          /* banka 0: niski upis unutar ovoga od visokog */
-#define PAIR_CCK_BANK 912u          /* u banci: četiri retka, za loader koji upisuje svakoj
-                                       banci visoke nibble prije niskih */
+#define PAIR_CCK      200u          /* bank 0: the low write within this of the high one */
+#define PAIR_CCK_BANK 912u          /* in a bank: four lines, for a loader that writes every
+                                       bank's high nibbles before the low ones */
 
 void pf_color_write(aga_t *a, int num, uint16_t v, int hpos)
 {
     playfield_t *p = &a->pf;
     int rdram = (p->bplcon2 & BPLCON2_RDRAM) != 0;
-    if (rdram && !p->ecs_mode) return;          /* AGA Lisa umjesto toga čita */
-    if (p->ecs_mode && !rdram) {                /* (a shadow AGA paleta se ostavlja na miru) */
-        /* isti upis kako ga AGA Lisa prima, u shadow paletu
-           koju ecs_says_aga predaje: banka i LOCT koje BPLCON3 stvarno ima */
+    if (rdram && !p->ecs_mode) return;          /* an AGA Lisa reads instead */
+    if (p->ecs_mode && !rdram) {                /* (and the shadow AGA palette is left alone) */
+        /* the same write as an AGA Lisa takes it, into the shadow palette
+           ecs_says_aga hands over: the bank and LOCT BPLCON3 really has */
         uint16_t raw = p->bplcon3;
         int ai = ((raw >> 13) & 7) * 32 + num;
         uint32_t ar = (v >> 8) & 15, ag = (v >> 4) & 15, ab = v & 15, ac = a->color_aga[ai];
@@ -351,23 +349,22 @@ void pf_color_write(aga_t *a, int num, uint16_t v, int hpos)
         if (raw & BPLCON3_LOCT) { xr = (xr & 0xF0) | ar; xg = (xg & 0xF0) | ag; xb = (xb & 0xF0) | ab; }
         else                    { xr = ar | (ar << 4); xg = ag | (ag << 4); xb = ab | (ab << 4); }
         a->color_aga[ai] = (xr << 16) | (xg << 8) | xb;
-        /* 24-bitni par boja - slijed kojim AGA softver upisuje 24-bitnu
-            boju: BPLCON3 upisan s čistim LOCT-om, visoki nibble registra,
-            BPLCON3 s postavljenim LOCT-om, njegovi niski nibble, druga
-            vrijednost, sve blizu zajedno (PAIR_CCK; 32 boje banke stanu u
-            PAIR_CCK_BANK). Nijedan ECS program nema razloga za to: zalutali
-            LOCT ostaje postavljen, Chaos Engine preklop upisuje istu vrijednost
-            dvaput (uzeto na bilo koji način, ista boja), a zalutali LOCT panela
-            redak ispod gradijenta predaleko je od gradijentovog upisa (pronašao
-            review, 2026-10-05). Wit Premium (WHDLoad, bez AGA zastavice) crta
-            svoja crvena neba tako u svakom retku s FMODE 0 i jednom ili dvije
-            ravnine, pa su dva znaka došla tek pri njegovom brisanju minutu
-            kasnije, nakon što je svako nebo nacrtano kao dugine trake
-            (2026-10-05; WinUAE snimka, korisnikov A500). U banci 0 par se
-            uzima na AGA način i ništa se drugo ne mijenja. Parovi u dvije banke,
-            jedna od njih nije banka 0, paleta su učitana preko banki - znak
-            koji ecs_says_aga treba sam; jedna banka sama mogli bi biti smeće
-            bankovnih bitova iz tablice (pronašao review). */
+        /* A 24-bit colour pair - the sequence AGA software writes a 24-bit
+           colour with: BPLCON3 written with LOCT clear, the register's high
+           nibbles, BPLCON3 with LOCT set, its low nibbles, another value, all
+           close together (PAIR_CCK; a bank's 32 colours fit PAIR_CCK_BANK).
+           No ECS program has a reason to: a stray LOCT stays set, Chaos
+           Engine's toggle writes the same value twice (taken either way, the
+           same colour), and a panel's stray LOCT a line below a gradient is
+           too far from the gradient's write (found by review, 2026-10-05).
+           Wit Premium (WHDLoad, no AGA flag) draws its red skies that way on
+           every line with FMODE 0 and one or two bitplanes, so the two signs
+           came only at its wipe a minute in, after every sky had been drawn
+           as rainbow bands (2026-10-05; WinUAE capture, the user's A500).
+           In bank 0 the pair is taken the AGA way and nothing else changes.
+           Pairs in two banks, one of them not bank 0, are a palette loaded
+           across the banks - the sign ecs_says_aga needs on its own; one bank
+           alone could be junk bank bits from a table (found by review). */
         int pair = 0;
         uint32_t now = pf_now(a), win = (raw & 0xE000) ? PAIR_CCK_BANK : PAIR_CCK;
         if (raw & BPLCON3_LOCT) {
@@ -384,11 +381,11 @@ void pf_color_write(aga_t *a, int num, uint16_t v, int hpos)
             if ((p->pair_banks & 0xFE) && (p->pair_banks & (p->pair_banks - 1))) p->aga_pair_bank = 1;
         }
         if (raw & (BPLCON3_LOCT | 0xE000)) { p->aga_colour_seen = 1; ecs_says_aga(a); }
-        if (!p->ecs_mode) {                     /* upravo predano: AGA paleta ima ovaj upis */
+        if (!p->ecs_mode) {                     /* just handed over: the AGA palette has this write */
             aga_record_change(a, LC_COLOR + ai, a->color_aga[ai]);
             return;
         }
-        if (pair && !(raw & 0xE000)) {          /* banka 0: ai je num, ECS indeks */
+        if (pair && !(raw & 0xE000)) {          /* bank 0: ai is num, the ECS index */
             uint32_t val = a->color_aga[ai];
             p->aga_pairs++;
             if (val == a->color[num]) return;
@@ -412,7 +409,7 @@ void pf_color_write(aga_t *a, int num, uint16_t v, int hpos)
     if (val == cur) return;
     a->color[idx] = val;
     if (a->tone_on) a->color_b[idx] = bright_rgb(a, val);
-    aga_record_change(a, LC_COLOR + idx, val);      /* puni indeks 0..255 */
+    aga_record_change(a, LC_COLOR + idx, val);      /* the full 0..255 index */
     (void)hpos;
 }
 
@@ -449,7 +446,7 @@ void pf_write(aga_t *a, uint32_t reg, uint16_t v, int hpos)
            and fetches from here on; one that has fetched nothing yet takes
            the new resolution and fetch mode for drawing as well. */
         pf_sync(a, hpos + BPLCON0_DMA_DELAY);
-        if ((v & 0x7010) == 0x0010) {            /* sam BPU3: točno osam bitplanea */
+        if ((v & 0x7010) == 0x0010) {            /* BPU3 alone: exactly eight bitplanes */
             p->aga_fetch_seen = 1;
             ecs_says_aga(a);
         }
@@ -468,7 +465,7 @@ void pf_write(aga_t *a, uint32_t reg, uint16_t v, int hpos)
         if (p->bplcon1 == v) return;
         pf_sync(a, hpos);
         p->bplcon1 = v;
-        if (p->fetch_active) compute_delays(p);   /* stupa na snagu za sljedeće blokove */
+        if (p->fetch_active) compute_delays(p);   /* takes effect for following blocks */
         aga_record_change(a, BPLCON1, v);
         break;
     case BPLCON2:
@@ -476,10 +473,10 @@ void pf_write(aga_t *a, uint32_t reg, uint16_t v, int hpos)
         p->bplcon2 = v;
         aga_record_change(a, BPLCON2, v);
         break;
-    /* crtanje retka prima promjenu kao što bi i ECS Denise: njegov
-       početak koristi pf_con3/pf_con4, pa mora i promjena usred retka */
+    /* the line's drawing takes the change as an ECS Denise would too: its
+       start uses pf_con3/pf_con4, and so must a change in mid-line */
     case BPLCON3:
-        if (p->ecs_mode && !(v & BPLCON3_LOCT)) {  /* čak i prepisan kako je bio: početak 24-bitnog para */
+        if (p->ecs_mode && !(v & BPLCON3_LOCT)) {  /* even rewritten as it was: a 24-bit pair's start */
             p->loct_clear_seen = 1;
             p->loct_clear_when = pf_now(a);
         }
@@ -490,7 +487,7 @@ void pf_write(aga_t *a, uint32_t reg, uint16_t v, int hpos)
         break;
     case BPLCON4:
         if (p->bplcon4 == v) return;
-        if (p->ecs_mode && (v & 0xFF00)) {       /* XOR boje bitplanea: AGA boje */
+        if (p->ecs_mode && (v & 0xFF00)) {       /* a bitplane colour XOR: AGA colours */
             p->aga_colour_seen = 1;
             ecs_says_aga(a);
         }
@@ -527,7 +524,7 @@ void pf_write(aga_t *a, uint32_t reg, uint16_t v, int hpos)
         break;
     case FMODE:
         pf_sync(a, hpos);
-        if (v & 0xC00F) {                        /* širina fetcha/spritea, BSCAN2, SSCAN2 */
+        if (v & 0xC00F) {                        /* fetch/sprite width, BSCAN2, SSCAN2 */
             p->aga_fetch_seen = 1;
             ecs_says_aga(a);
         }
@@ -551,17 +548,17 @@ void pf_vsync(aga_t *a)
 void pf_start_line(aga_t *a)
 {
     playfield_t *p = &a->pf;
-    /* Vertikalni display window flip-flop i blanking koji ga skriva.
+    /* Vertical display window flip-flop, and the blanking that hides it.
      *
-     * To su dvije različite stvari i bile su jedna. Vertikalni blanking
-     * inhibira dohvaćanje, ali ne dira flip-flop: igra čiji DIWSTRT
-     * započinje okno UNUTAR blanka - Worms: The
-     * Director's Cut postavlja $0081, redak 0 - ima okno otvoreno od
-     * trenutka kad blank završi. Čišćenje flip-flopa ondje umjesto toga gubilo
-     * je jedini redak koji ga ikad postavlja, i okno je zatim ostalo zatvoreno
-     * do kraja framea, i svakog framea nakon toga: osam
-     * bitplanea, DMA uključen, pokazivači u pravu grafiku, a ni jedna riječ
-     * nije dohvaćena. Crn zaslon zauvijek. */
+     * These are two different things and were one. Vertical blanking
+     * inhibits the fetch, but it does not touch the flip-flop: a game
+     * whose DIWSTRT starts the window INSIDE the blank - Worms: The
+     * Director's Cut sets $0081, line 0 - has its window open from the
+     * moment the blank ends. Clearing the flip-flop there instead lost
+     * the only line that ever sets it, and the window then stayed shut
+     * for the rest of the frame, and every frame after it: eight
+     * bitplanes, DMA on, pointers into real graphics, and not one word
+     * fetched. A black screen for ever. */
     if (a->vpos == p->diw_vstop) p->vdiw_ff = 0;
     if (a->vpos == p->diw_vstart) p->vdiw_ff = 1;
     p->vdiw = p->vdiw_ff && a->vpos >= a->vblank_end;
@@ -578,9 +575,9 @@ void pf_start_line(aga_t *a)
     p->line_planes = 0;
     p->line_bpl1dat = 0;
     p->fetch_start_h = -1;
-    /* samo blokovi koje je posljednji redak upisao: ostali su već nula (svaki
-       redak čisti ono što je koristio, a reset je očistio sve). 8 KB po retku
-       prolazilo je kroz cache za nekoliko stotina bajtova koliko redak dohvaća. */
+    /* only the blocks the last line wrote: the rest are zero already (every
+       line clears what it used, and reset cleared the lot). 8 KB a line
+       went through the cache for the few hundred bytes a line fetches. */
     if (p->blocks_dirty > 0) {
         if (p->blocks_dirty > AGA_MAX_BLOCKS) p->blocks_dirty = AGA_MAX_BLOCKS;
         memset(p->blockdata, 0, (size_t)p->blocks_dirty * sizeof p->blockdata[0]);
@@ -588,7 +585,7 @@ void pf_start_line(aga_t *a)
     }
 
     if (a->tone_on) {
-        if (a->bright_dirty) {                   /* nova razina, ili boje postavljene oko pf_color_write */
+        if (a->bright_dirty) {                   /* a new level, or colours set around pf_color_write */
             for (int i = 0; i < 256; i++) a->color_b[i] = bright_rgb(a, a->color[i]);
             a->bright_dirty = 0;
         }
@@ -602,13 +599,13 @@ void pf_start_line(aga_t *a)
     line_bplcon3 = pf_con3(p); line_bplcon4 = pf_con4(p);
 }
 
-/* OR `nbits` bitova `data` (MSB prvi, data poravnat desno) u ravninu `plane` na bit-poziciju `pos`. */
+/* OR `nbits` bits of `data` (MSB first, data right-aligned) into plane `plane` at bit position `pos`. */
 static inline void put_bits(playfield_t *p, int plane, int pos, uint64_t data, int nbits)
 {
     if (pos < 0 || pos + nbits > AGA_PLANE_WORDS * 64) return;
     int w = pos >> 6, b = pos & 63;
-    /* postavi polje od nbits tako da njegov MSB padne na bit-poziciju `pos` računajući od MSB-a riječi w */
-    int shift = 64 - b - nbits;   /* lijevi pomak unutar riječi w */
+    /* place the nbits field so that its MSB lands at bit position `pos` counting from the MSB of word w */
+    int shift = 64 - b - nbits;   /* left shift within word w */
     if (shift >= 0) {
         p->bits[plane][w] |= data << shift;
     } else {
@@ -628,15 +625,15 @@ static void fetch_plane(aga_t *a, int plane, int block, int hpos)
     case 1:  data = chip_rd32(a, addr); p->bplpt[plane] += 4; break;
     default: data = chip_rd64(a, addr); p->bplpt[plane] += 8; break;
     }
-    if (data) a->pf_data_nonzero = 1;   /* diagnostika: je li ikad išta napunilo bitplanee */
+    if (data) a->pf_data_nonzero = 1;   /* diagnostics: did anything ever fill the bitplanes */
     if (block < AGA_MAX_BLOCKS) {
         p->blockdata[block][plane] = data;
         if (block >= p->blocks_dirty) p->blocks_dirty = block + 1;
     }
 }
 
-/* Blok je dovršen kad prođe njegov posljednji slot (ravnina 1): scroll odgoda
-   na snazi u tom trenutku vrijedi za cijeli blok (UAE beginning_of_plane_block). */
+/* A block is complete once its last slot (plane 1) has passed: the scroll delay
+   in effect at that moment applies to the whole block (UAE beginning_of_plane_block). */
 static void complete_block(playfield_t *p, int block)
 {
     if (block < AGA_MAX_BLOCKS) {
@@ -668,36 +665,36 @@ static void add_modulos(aga_t *a)
                 a->vpos, p->fetch_last_hpos, p->bpl1mod, p->bpl2mod, p->bplpt[0], p->bplpt[1]);
 #endif
     if (p->fmode & 0x4000) {
-        /* BSCAN2, AGA bitplane scan-doubling: svaka ravnina uzima ISTI
-           modulo na retku, BPL1MOD i BPL2MOD izmjenjuju se redak po redak prema
-           parnosti DIWSTRT početnog retka (WinUAE getbplmod). Uz BPL1MOD
-           postavljen na minus jedan redak, svaki redak dohvaća se dvaput - 1x2 chunky
-           ekran iz pola memorije i pola konverzije. Synergy
-           (Sector 7) vrti tako cijeli svoj intro; uzimanje neparne/parne
-           podjele ravnina umjesto toga pokazivalo je svaki izvorni redak jednom, pa je slika
-           izašla pola visine s vrijednošću sljedećeg međuspremnika memorije pod
-           sobom. */
+        /* BSCAN2, AGA bitplane scan-doubling: every plane takes the SAME
+           modulo on a line, BPL1MOD and BPL2MOD alternating line by line from
+           the parity of DIWSTRT's start line (WinUAE getbplmod). With BPL1MOD
+           set to minus one line, each line is fetched twice - a 1x2 chunky
+           screen from half the memory and half the conversion. Synergy
+           (Sector 7) runs its whole intro like that; taking the odd/even
+           plane split instead showed every source line once, so the picture
+           came out half height with the next buffer's worth of memory under
+           it. */
         int mod = (((p->diwstrt >> 8) ^ (a->vpos ^ 1)) & 1) ? p->bpl1mod : p->bpl2mod;
         for (int i = 0; i < AGA_MAX_PLANES; i++)
             if (p->mod_planes & (1u << i)) p->bplpt[i] += mod;
         return;
     }
-    /* samo ravnine dohvaćene u posljednjem bloku retka: WinUAE dodaje
-       modul ravnine s njezinim vlastitim dohvaćanjem ondje, pa ravnina koju je BPLCON0
-       usred retka isključio prije njezinog slota ne uzima ništa, a ona uključena nakon svog
-       slota također ne uzima ništa */
+    /* only the planes fetched in the line's last block: WinUAE adds a
+       plane's modulo with its own fetch there, so a plane a mid-line BPLCON0
+       switched off before its slot takes none, and one switched on after its
+       slot takes none either */
     for (int i = 0; i < AGA_MAX_PLANES; i++)
         if (p->mod_planes & (1u << i)) p->bplpt[i] += (i & 1) ? p->bpl2mod : p->bpl1mod;
 }
 
-/* Dodaj ih jednom po retku, kad je posljednje bitplane dohvaćanje retka gotovo i
-   s vrijednostima na snazi u tom trenutku - ne nakon završnih ciklusa
-   posljednjeg fetch bloka. Dijaloški okvir Reshoot Proxima 3 pušta copper
-   odmah nakon posljednjeg dohvaćanja (završava na colour clocku 195, copper
-   upisuje na 200): novi pokazivači za ravnine 1, 3, 5 i 7, i novi modulosi.
-   Dodavanje modulosa poslije primijenilo je nove na svježe upisane
-   pokazivače, pa je svaki redak ispod čitao s pogrešne adrese - šumni
-   portret, udvostručeni tekst i kolona šuma niz zaslon. */
+/* Add them once per line, when the last bitplane fetch of the line is done and
+   with the values in force at that moment - not after the trailing cycles of
+   the last fetch block. Reshoot Proxima 3's dialogue box sets the copper
+   loose right after the last fetch (it ends at colour clock 195, the copper
+   writes at 200): new pointers for planes 1, 3, 5 and 7, and new modulos.
+   Adding the modulos afterwards applied the new ones to the freshly written
+   pointers, so every line below read from the wrong address - the noisy
+   portrait, the doubled text and the column of noise down the screen. */
 static void add_modulos_once(aga_t *a)
 {
     if (a->pf.mod_added) return;
@@ -705,11 +702,11 @@ static void add_modulos_once(aga_t *a)
     add_modulos(a);
 }
 
-/* Jedan ciklus dohvaćanja retka: ravnina kojoj njegov slot pripada, ako BPLCON0
-   dopušta DMA-i da ga uzme, i dovršetak bloka na njegovom posljednjem slotu (ravnina
-   1). in_line je 0 za cikluse dovršene na kraju retka, koji
-   stvarno padaju u prve clockove sljedećeg retka: oni nisu slotovi
-   ovog retka za copper. */
+/* One cycle of the line's fetch: the plane its slot belongs to, if BPLCON0
+   lets the DMA have it, and the block's completion at its last slot (plane
+   1). in_line is 0 for the cycles finished at the end of the line, which
+   really fall in the next line's first clocks: those are not this line's
+   slots for the copper. */
 static void fetch_step(aga_t *a, int h, int in_line)
 {
     playfield_t *p = &a->pf;
@@ -731,11 +728,11 @@ static void fetch_step(aga_t *a, int h, int in_line)
     p->fetch_cycle++;
 }
 
-/* Dohvaćanje retka je gotovo: na posljednjem bloku DDFSTOP-a ili na kraju
-   retka. Dohvaćanje može nastaviti u prve cikluse sljedećeg retka (hardver
-   nastavlja DMA slotove); ta dohvaćanja samo pomiču
-   pokazivače, podaci padaju u horizontalni blanking, pa se preostali slotovi
-   posljednjeg bloka dovršavaju ovdje odmah. */
+/* The line's fetch is over: at DDFSTOP's last block, or at the end of the
+   line. Fetching may continue into the first cycles of the next line (the
+   hardware keeps the DMA slots going); those fetches only advance the
+   pointers, the data lands in horizontal blanking, so the remaining slots of
+   the last block are completed here at once. */
 static void end_fetch(aga_t *a, int h)
 {
     playfield_t *p = &a->pf;
@@ -755,24 +752,23 @@ void pf_sync(aga_t *a, int hpos)
 
     for (; h < hpos; h++) {
         if (!p->fetch_active && !p->fetch_done && h == p->plfstrt + DDF_OFFSET) {
-            /* što je od četiriju stvari koje treba redak s dohvaćanjem
-               nedostajalo - uvijek ista četiri, jebemu */
+            /* which of the four things a fetching line needs was missing */
             a->dbg_fetch[0]++;
             if (!p->vdiw) a->dbg_fetch[1]++;
             else if (!aga_dma_enabled(a, DMAF_BPLEN)) a->dbg_fetch[2]++;
             else if (p->planes <= 0) a->dbg_fetch[3]++;
             else if (p->planes > p->maxplanes) a->dbg_fetch[4]++;
             else a->dbg_fetch[5]++;
-            /* Fetch sekvencer pokreću okno, BPLEN i DDFSTRT
-               sami; broj ravnina u BPLCON0 odlučuje samo, slot po slot, koje
-               ravnine dohvaća (WinUAE: bprun bez člana ravnine, zatim
-               bplcon0_planes_limit pri svakom dohvaćanju). Redak koji počinje bez
-               ravnina i dobije ih uključene nekoliko clockova kasnije - copper
-               MOVE u BPLCON0 točno prije početka dohvaćanja ili točno nakon njega
-               - dohvaća ostatak retka; pokrenut samo s ravninama, izgubio bi
-               cijeli redak. */
+            /* The fetch sequencer starts on the window, BPLEN and DDFSTRT
+               alone; BPLCON0's plane count only decides, slot by slot, which
+               planes it fetches (WinUAE: bprun without a plane term, then
+               bplcon0_planes_limit at each fetch). A line that starts with no
+               planes and has them switched on a few clocks later - a copper
+               MOVE to BPLCON0 just ahead of the fetch start, or just after it
+               - fetches the rest of the line; started only with planes, it
+               lost the whole line. */
             if (p->vdiw && aga_dma_enabled(a, DMAF_BPLEN)) {
-                /* DDFSTOP se poklopio prije nego je dohvaćanje moglo početi (calcdiw) */
+                /* DDFSTOP matched before the fetch could begin (calcdiw) */
                 if (p->plfstop < p->plfstrt) { p->fetch_done = 1; continue; }
                 p->fetch_active = 1;
                 p->fetch_cycle = 0;
@@ -790,10 +786,10 @@ void pf_sync(aga_t *a, int hpos)
     p->fetch_last_hpos = hpos;
 }
 
-/* Je li colour clock hpos slot koji je bitplane DMA uzeo? Ono što je dohvaćanje
-   učinilo ondje, a ne što BPLCON0 kaže sada: BPLCON0 upis stiže do dohvaćanja
-   BPLCON0_DMA_DELAY clockova kasnije, a ti su slotovi već otišli
-   starom broju ravnina. */
+/* Is colour clock hpos a slot the bitplane DMA took? What the fetch did
+   there, not what BPLCON0 says now: a BPLCON0 write reaches the fetch
+   BPLCON0_DMA_DELAY clocks later, and those slots have already gone to the
+   old plane count. */
 int pf_is_bpl_slot(aga_t *a, int hpos)
 {
     playfield_t *p = &a->pf;
@@ -802,13 +798,13 @@ int pf_is_bpl_slot(aga_t *a, int hpos)
     return (int)((p->slot_used[hpos >> 6] >> (hpos & 63)) & 1);
 }
 
-/* Koliko nakon upisa na colour clocku hpos se pokazuje promjena registra, u
-   hires pikselima. BPLCON1 scroll vidi se 3 lores piksela kasnije; boja se
-   vidi na samom upisu, gdje je ta odgoda bila 2 hires od prvog commita jezgre
-   ("small pipeline delay", nikad kalibrirano) i stavljala svaku
-   boju 1 lores piksel desno od WinUAE - pojas neba Shadow of the Beast i
-   Castlevania rezultate (iz RGB2RTG, EMM #2061: 10 render promjena, svaka
-   bliža WinUAE, nijedna gora). */
+/* How long after the write at colour clock hpos a register change shows, in
+   hires pixels. BPLCON1's scroll is seen 3 lores pixels later; a colour is
+   seen at the write itself, where this delay was 2 hires from the core's
+   first commit on ("small pipeline delay", never calibrated) and put every
+   colour 1 lores pixel right of WinUAE - Shadow of the Beast's sky band, and
+   Castlevania's scores (from RGB2RTG, EMM #2061: 10 renders change, each one
+   closer to WinUAE, none worse). */
 static inline int change_delay(uint32_t reg)
 {
     if (reg == BPLCON1) return 6;
@@ -816,10 +812,10 @@ static inline int change_delay(uint32_t reg)
     return 2;
 }
 
-/* Traje li bitplane dohvaćanje retka na colour clocku hpos - cijelo
-   okno od prvog ciklusa dohvaćanja do posljednjeg, uključujući slobodne cikluse? WinUAE
-   bprun: sprite DMA ne dobiva slot dok je postavljen (spr_dma_slot). Isto
-   sustizanje kao pf_is_bpl_slot. */
+/* Is the line's bitplane fetch running at colour clock hpos - the whole
+   window from its first fetch cycle to its last, free cycles too? WinUAE's
+   bprun: sprite DMA gets no slot while it is set (spr_dma_slot). The same
+   catch-up as pf_is_bpl_slot. */
 int pf_bpl_running(aga_t *a, int hpos)
 {
     playfield_t *p = &a->pf;
@@ -828,18 +824,18 @@ int pf_bpl_running(aga_t *a, int hpos)
 }
 
 /* -------------------------------------------------------------------------- */
-/* planar -> chunky za cijeli redak, neparne i parne ravnine odvojeno (obje drže
-   svoje izvorne bit-pozicije: neparne ravnine u bitovima 0,2,4,6, parne u 1,3,5,7) */
-/* Osam piksela odjednom: bajt svake ravnine razastire se u osam bajtova
-   tablicom (bit 7 bajta, krajnji lijevi piksel, pada u prvi bajt)
-   i pomiče do bita svoje ravnine. Sedam pretraga tablice po osam piksela
-   gdje je bilo 56 koraka pomaka i maskiranja; isti bajtovi izlaze.
-   Jezgra se gradi BIG-endian (-mbig-endian): tablica se gradi preko
-   polja bajtova, pa "bajt i = piksel i" vrijedi u memoriji na oba reda bajtova, a
-   pomaci nikad ne prenose izvan bajta (0/1 pomaknuti najviše 7 bitova). Prva
-   verzija gradila ju je numerički, samo little-endian: na Pi svaka grupa od 8 piksela
-   izašla je zrcaljena - Banshee nazubljen i pomaknut, dok je PC,
-   little-endian, crtao svaki regresijski frame byte-identical. */
+/* planar -> chunky for the whole line, odd and even planes separately (both keep
+   their original bit positions: odd planes in bits 0,2,4,6, even in 1,3,5,7) */
+/* Eight pixels at a time: a byte of each plane is spread into eight bytes by
+   a table (bit 7 of the byte, the leftmost pixel, lands in the first byte)
+   and shifted up to its plane's bit. Seven table lookups per eight pixels
+   where it was 56 shift-and-mask steps; the same bytes come out.
+   The kernel is built BIG-endian (-mbig-endian): the table is built through a
+   byte array, so "byte i = pixel i" holds in memory on either byte order, and
+   the shifts never carry out of a byte (0/1 moved up at most 7 bits). The first
+   version built it numerically, little-endian only: on the Pi every 8-pixel
+   group came out mirrored - Banshee sawtoothed and shifted, while the PC,
+   little-endian, rendered every regression frame byte-identical. */
 static void planar_to_chunky(playfield_t *p, int nbits)
 {
     static uint64_t spread[256];
@@ -856,29 +852,29 @@ static void planar_to_chunky(playfield_t *p, int nbits)
     int words = (nbits + 63) >> 6;
     for (int w = 0; w < words; w++) {
         for (int k = 0; k < 8; k++) {
-            int sh = 56 - 8 * k;                       /* pikseli 8k..8k+7 riječi */
+            int sh = 56 - 8 * k;                       /* pixels 8k..8k+7 of the word */
             uint64_t vo = 0, ve = 0;
             for (int pl = 0; pl < planes; pl += 2) vo |= spread[(p->bits[pl][w] >> sh) & 0xFF] << pl;
             for (int pl = 1; pl < planes; pl += 2) ve |= spread[(p->bits[pl][w] >> sh) & 0xFF] << pl;
-            memcpy(&p->idx_odd[w * 64 + k * 8], &vo, 8);   /* bajt i = piksel 8k+i, bilo koji red bajtova */
+            memcpy(&p->idx_odd[w * 64 + k * 8], &vo, 8);   /* byte i = pixel 8k+i, either byte order */
             memcpy(&p->idx_even[w * 64 + k * 8], &ve, 8);
         }
     }
 }
 
-/* Srednja vrijednost dvaju piksela, kanal po kanal. Super-hires stavlja dva piksela u
-   svaki izlazni (hires) piksel, a zadržavanje samo prvog - WinUAE slika
-   s isključenim "Filtered low resolution" - baca pola svakog ditheringa:
-   Virtual Karting 2 miješa četiri boje unutar jednog lores piksela da ih TV
-   stopi, a njegovo tlo izašlo je kao trake dviju od njih. */
+/* The mean of two pixels, channel by channel. Super-hires puts two pixels in
+   every output (hires) pixel, and keeping only the first - WinUAE's picture
+   with "Filtered low resolution" off - throws half of every dither away:
+   Virtual Karting 2 mixes four colours inside one lores pixel for a TV to
+   blend, and its ground came out as stripes of two of them. */
 static inline uint32_t mix2(uint32_t a, uint32_t b)
 {
     return (a & b & 0xFFFFFF) + (((a ^ b) & 0xFEFEFE) >> 1);
 }
 
-/* Boja jednog playfield piksela iz njegove sirove bitplane vrijednosti - dual playfield,
-   EHB ili obično, s BPLAM - i ono što sprite prioritet treba: iste
-   odluke kao petlje render_segment, za super-hires parove. */
+/* One playfield pixel's colour from its raw bitplane value - dual playfield,
+   EHB or plain, with BPLAM - and what the sprite priority needs: the same
+   decisions as render_segment's loops, for the super-hires pairs. */
 static uint8_t dpf1_tab[256], dpf2_tab[256];
 static int dpf_tab_ready;
 static void dpf_tab_init(void)
@@ -910,7 +906,7 @@ static inline uint32_t pf_pixel(unsigned v, int dpf, int ehb, int pf2pri, int pf
     if (ehb) return (v & 0x20) ? line_ehb[(v & 31) ^ (xorv & 31)] : line_color[(v ^ xorv) & 255];
     return line_color[(v ^ xorv) & 255];
 }
-/* sprite piksel na super-hires poziciji sx preko boje c, ako pobjeđuje */
+/* the sprite pixel at super-hires position sx over colour c, if it wins */
 static inline uint32_t spr_pixel(uint32_t c, const uint8_t *spr, int sprlen, int sx, int pfv, int front_pf,
                                  int pf1p, int pf2p, int base_even, int base_odd)
 {
@@ -924,15 +920,15 @@ static inline uint32_t spr_pixel(uint32_t c, const uint8_t *spr, int sprlen, int
     return line_color[idx & 255];
 }
 
-/* Sprite redak piksel sv preko boje c, ako je njegov par sprijeda (pair <
-   thr: prag brzog puta). Sprite redak je u super-hires pikselima
-   a izlaz u hires, pa lores ili hires playfield uzima dva sprite
-   piksela na svaki izlazni piksel. Lores i hires spriteovi uvijek pune oba;
-   super-hires (BPLCON3 SPRES = 3) mogu se razlikovati, a uzimanje samo prvog
-   bacalo je pola ditheringa: menu pointer Super Stardust AGA, super-hires
-   šahovnica (jedan redak 1010..., sljedeći 0101...), izašla je kao pune linije i
-   praznine. Oba se crtaju i miješaju, kao što se miješaju parovi super-hires playfielda
-   (iz RGB2RTG 04538c4, EMM #2157). */
+/* The sprite line's pixel sv over colour c, if its pair is in front (pair <
+   thr: the fast path's threshold). The sprite line is in super-hires pixels
+   and the output in hires ones, so a lores or hires playfield takes two sprite
+   pixels to each output pixel. Lores and hires sprites always fill both;
+   super-hires ones (BPLCON3 SPRES = 3) can differ, and taking only the first
+   threw half of a dither away: Super Stardust AGA's menu pointer, a super-hires
+   checkerboard (one line 1010..., the next 0101...), came out as solid lines and
+   gaps. Both are drawn and mixed, as the super-hires playfield's pairs are
+   (from RGB2RTG 04538c4, EMM #2157). */
 static inline uint32_t spr_thr(uint32_t c, uint8_t sv, int thr, int base_even, int base_odd)
 {
     if (!sv || (sv >> 6) >= thr) return c;
@@ -941,13 +937,13 @@ static inline uint32_t spr_thr(uint32_t c, uint8_t sv, int thr, int base_even, i
     return line_color[idx & 255];
 }
 
-/* Sirova vrijednost playfield piksela, dekodirana jednom po postavci umjesto na
-   svakom pikselu - bitovi 0-7 indeks boje (BPLAM primijenjen), bit 8 EHB-ova pola
-   svjetline, bitovi 9-11 sprite parovi pokazani ispred njega (pair < ovoga).
-   Iste odluke kao opća petlja render_segment; gradi se ponovno samo kad to
-   BPLCON2/3/4 retka ili način promijene. Od RGB2RTG 0.75-dev18 (istog
-   autora): grane dual playfielda na svakom pikselu bile su trećina
-   pixel petlje Jim Powera na Pi 3. */
+/* A playfield pixel's raw value, decoded once per setting instead of at
+   every pixel - bits 0-7 the colour index (BPLAM applied), bit 8 EHB's half
+   brightness, bits 9-11 the sprite pairs shown in front of it (pair < this).
+   The same decisions as render_segment's general loop; built again only when
+   the line's BPLCON2/3/4 or the mode change it. From RGB2RTG 0.75-dev18 (by
+   the same author): dual playfield's branches at every pixel were a third of
+   Jim Power's pixel loop on a Pi 3. */
 static uint16_t pfx_tab[256];
 static int pfx_key = -1;
 static const uint16_t *pfx_table(int dpf, int ehb, int pf2pri, int pf2of, unsigned xorv, int pf1p, int pf2p)
@@ -1005,7 +1001,7 @@ static void apply_change(aga_t *a, segstate_t *s, const linechange_t *c)
     case BPLCON3: s->con3 = (uint16_t)c->value; break;
     case BPLCON4: s->con4 = (uint16_t)c->value; break;
     case DIWSTRT: case DIWSTOP: case DIWHIGH:
-        s->diw_hstart = a->pf.diw_hstart; s->diw_hstop = a->pf.diw_hstop;   /* aproksimacija: koristi konačno */
+        s->diw_hstart = a->pf.diw_hstart; s->diw_hstop = a->pf.diw_hstop;   /* approximation: use final */
         break;
     default: break;
     }
@@ -1013,15 +1009,15 @@ static void apply_change(aga_t *a, segstate_t *s, const linechange_t *c)
 
 static const int pf2of_table[8] = { 0, 2, 4, 8, 16, 32, 64, 128 };
 
-/* Detekcija sudara, po UAE (E-UAE do_sprite_collisions i
-   do_playfield_collisions; WinUAE denise_collide_sprites, s CLXCON
-   maskama kao u expand_colmask): računa se na pikselima kako se crtaju,
-   unutar prikaznog okna, pa vidi isti scroll i okno kao
-   slika. Sprite grupe: grupa g je sprite 2g, plus sprite 2g+1 ako to CLXCON
-   omogućuje. */
+/* Collision detection, after UAE (E-UAE's do_sprite_collisions and
+   do_playfield_collisions; WinUAE's denise_collide_sprites, with the CLXCON
+   masks as in expand_colmask): worked out on the pixels as they are drawn,
+   inside the display window, so it sees the same scroll and window as the
+   picture. Sprite groups: group g is sprite 2g, plus sprite 2g+1 if CLXCON
+   enables it. */
 
-/* grupe prisutne na pikselu (bit g) -> sprite-na-sprite bitovi 9..14 CLXDAT-a
-   (E-UAE sprclx tablica) */
+/* groups present at a pixel (bit g) -> sprite-to-sprite bits 9..14 of CLXDAT
+   (E-UAE's sprclx table) */
 static const uint16_t clx_sprspr[16] = {
     0, 0, 0, 0x0200, 0, 0x0400, 0x1000, 0x1600,
     0, 0x0800, 0x2000, 0x2A00, 0x4000, 0x4C00, 0x7000, 0x7E00
@@ -1043,37 +1039,37 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
     int pf2pri = s->con2 & BPLCON2_PF2PRI;
     int pf2of = pf2of_table[(s->con3 >> 10) & 7];
     unsigned xorv = (s->con4 >> 8) & 0xFF;
-    /* BPLCON4 osnovne boje spriteova, kako ih WinUAE primjenjuje (drawing.cpp):
-       visoki nibble osnova je za piksel niže numeriranog (parnog) spritea
-       para, niski nibble za više numerirani (neparni) i za
-       spojeni par. Uz reset vrijednost $11 oba su 16, zbog čega samo
-       igre koje programiraju BPLCON4 (Turrican 2: $65) razlikuju njih dvoje. */
+    /* BPLCON4 sprite colour bases, as WinUAE applies them (drawing.cpp): the
+       high nibble is the base for a pixel of the lower-numbered (even) sprite of
+       a pair, the low nibble for the higher-numbered (odd) one and for an
+       attached pair. With the reset value $11 both are 16, which is why only
+       games that program BPLCON4 (Turrican 2: $65) tell the two apart. */
     int base_even = ((s->con4 >> 4) & 15) << 4, base_odd = (s->con4 & 15) << 4;
     int vdiw = p->vdiw;
     const uint8_t *spr = a->sprline_valid ? a->sprline : NULL;
-    /* Denise pokazuje spriteove na retku tek kad je BPL1DAT na njemu upisan
-       - od bitplane DMA, ili od CPU-a ili coppera - i ponovno ih skriva
-       na početku sljedećeg retka; ECS/AGA border spriteovi (BRDSPRT) pokazuju ih sve
-       jednako (WinUAE drawing.cpp: hstart_new, bpl1dat_enable_sprites). Redak
-       bez bitplane podataka border je cijelim putem, i unutar prikaznog
-       okna. Lupus Reditus (AGA, Revision 2025) isključuje svoje ravnine za
-       posljednja dva retka svog okna dok njegovih osam spriteova od 64 piksela, s
-       VSTOP 4 pod VSTART 80, nastavljaju preko svojih podataka u kontrolne
-       riječi sljedećeg spritea: te sam riječi crtao kao red točkica u četiri grupe
-       pod slikom, što WinUAE ne crta i što reporterova Amiga
-       očito ne pokazuje (RGB2RTG 0.76 izvještaj, EMM #2162). Prije
-       prvog BPL1DAT retka koji
-       ima podatke WinUAE ih također skriva; taj dio ovdje nije modeliran. */
+    /* Denise shows sprites on a line only once BPL1DAT has been written on it
+       - by the bitplane DMA, or by the CPU or the copper - and hides them again
+       at the next line's start; ECS/AGA border sprites (BRDSPRT) show them all
+       the same (WinUAE drawing.cpp: hstart_new, bpl1dat_enable_sprites). A
+       line without bitplane data is border all along, inside the display
+       window too. Lupus Reditus (AGA, Revision 2025) turns its planes off for
+       the last two lines of its window while its eight 64-pixel sprites, with
+       VSTOP 4 under VSTART 80, run on past their data into the next sprite's
+       control words: I drew those words as a row of specks in four groups
+       under the picture, which WinUAE does not draw and the reporter's Amiga
+       apparently does not show (RGB2RTG 0.76 report, EMM #2162). Before the
+       first BPL1DAT of a line that does
+       have data WinUAE hides them too; that part is not modelled here. */
     if (!have_data && !p->line_bpl1dat && !brdsprt) spr = NULL;
     int sprlen = (int)sizeof a->sprline;
     int d1 = 0, d2 = 0;
 #ifndef SCROLL_MODEL_BLOCK
     if (have_data) delays_for(p, s->con1, &d1, &d2);
 #endif
-    /* sudari: omogućene ravnine, vrijednost koju moraju poklopiti, spriteovi koji sudjeluju */
+    /* collisions: enabled planes, the value they must match, sprites taking part */
     const uint8_t *sprm = (clx && a->sprclx_valid) ? a->sprclx : NULL;
     unsigned c_ena = 0, c_match = 0, c_emask = 0;
-    uint16_t cx = a->clxdat & 1;                      /* bit 0 već nađen ovaj frame: preskoči tu pretragu */
+    uint16_t cx = a->clxdat & 1;                      /* bit 0 already found this frame: skip that search */
     if (clx) {
         c_ena   = ((a->clxcon >> 6) & 0x3F) | (a->clxcon2 & 0xC0);
         c_match = ((a->clxcon & 0x3F) | ((a->clxcon2 & 3) << 6)) & c_ena;
@@ -1081,18 +1077,18 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
                        | ((a->clxcon >> 9) & 0x20) | ((a->clxcon >> 8) & 0x80);    /* ENSP5, ENSP7 */
     }
 
-    /* ---- brzi put: bez sudara, bez HAM-a --------------------------------
-       Isti pikseli kao opća petlja ispod, s odlukama po pikselu
-       izdignutim van: prikazno okno je raspon hx umjesto testa po
-       pikselu, lores piksel dekodira se jednom za dva izlazna piksela koja
-       pokriva, a sirova vrijednost piksela dekodira se jednim pogledom u tablicu
-       (pfx_table, 1.114). Teške razine Reshoot Proxima 3 prekoračile su 20 ms
-       frame na CM4 s ovom petljom na 40% vremena chipset jezgre.
-       Byte-identical općoj petlji; hostovi regresijski frameovi su
-       čuvar. */
+    /* ---- the fast path: no collisions, no HAM ----------------------------
+       The same pixels as the general loop below, with the per-pixel decisions
+       hoisted out: the display window is a range of hx rather than a test per
+       pixel, a lores pixel is decoded once for the two output pixels it
+       covers, and a raw pixel value is decoded by one table lookup
+       (pfx_table, 1.114). Reshoot Proxima 3's heavy levels overran the 20 ms
+       frame on a CM4 with this loop at 40% of the chipset core's time.
+       Byte-identical to the general loop; the host regression frames are the
+       guard. */
     if (!clx && !ham) {
         const int L2 = AGA_OUT_LEFT_LORES * 2;
-        int w0 = hx1, w1 = hx1;                       /* pikseli okna: [w0, w1) */
+        int w0 = hx1, w1 = hx1;                       /* the window's pixels: [w0, w1) */
         if (vdiw) {
             int A = s->diw_hstart + DIW_HW_OFFSET * 4, B = s->diw_hstop + DIW_HW_OFFSET * 4;
             w0 = (A + 1) / 2 - L2;                    /* 2*hires >= A  <=>  hires >= ceil(A/2) */
@@ -1103,7 +1099,7 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
             if (w1 < w0) w1 = w0;
         }
         uint32_t border = brdrblnk ? 0 : line_color[0];
-        for (int side = 0; side < 2; side++) {       /* border lijevo i desno od okna */
+        for (int side = 0; side < 2; side++) {       /* the border left and right of the window */
             int b0 = side ? w1 : hx0, b1 = side ? hx1 : w0;
             for (int hx = b0; hx < b1; hx++) {
                 uint32_t col = border;
@@ -1111,7 +1107,7 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
                     int sx = (L2 + hx) << 1;
                     uint8_t sv = (sx < sprlen) ? spr[sx] : 0;
                     uint8_t sv2 = (sx + 1 < sprlen) ? spr[sx + 1] : 0;
-                    col = spr_thr(border, sv, 4, base_even, base_odd);      /* u borderu se pokazuje svaki par */
+                    col = spr_thr(border, sv, 4, base_even, base_odd);      /* in the border every pair shows */
                     if (sv2 != sv)
                         col = mix2(col, spr_thr(border, sv2, 4, base_even, base_odd));
                 }
@@ -1120,14 +1116,14 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
         }
         if (res == RES_SHRES && !dpf_tab_ready) dpf_tab_init();
         const uint16_t *pfx = pfx_table(dpf, ehb, pf2pri != 0, pf2of, xorv, pf1p, pf2p);
-        /* Sprite piksel leži samo gdje je sprite redak bio upisan
-           (sprline_lo..sprline_hi), pa se okno lijevo i desno od toga
-           crta bez sprite testa i bez čuvanja prioriteta (RGB2RTG 0.75-dev13:
-           na Pi 3 test na svakom izlaznom pikselu bio je pola Jim Power
-           pixel petlje). Gdje je okno odrezano ne mijenja ni jedan piksel: lores piksel
-           se dekodira isto iz bilo kojeg od svoja dva izlazna piksela. */
+        /* A sprite pixel lies only where the sprite line was written
+           (sprline_lo..sprline_hi), so the window left and right of that is
+           drawn with no sprite test and no priority kept (RGB2RTG 0.75-dev13:
+           on a Pi 3 the test at every output pixel was half of Jim Power's
+           pixel loop). Where the window is cut changes no pixel: a lores pixel
+           decodes the same from either of its two output pixels. */
         int s0 = w1, s1 = w1;
-        if (res == RES_SHRES) { s0 = w0; s1 = w1; }   /* super-hires parovi drže svoj vlastiti test */
+        if (res == RES_SHRES) { s0 = w0; s1 = w1; }   /* the super-hires pairs keep their own test */
         else if (spr && a->sprline_hi > a->sprline_lo) {
             s0 = (a->sprline_lo + 1) / 2 - L2;        /* 2*(L2+hx) >= lo  <=>  L2+hx >= ceil(lo/2) */
             s1 = (a->sprline_hi + 1) / 2 - L2;
@@ -1139,7 +1135,7 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
         for (int part = 0; part < 3; part++) {
             int p0 = part == 0 ? w0 : part == 1 ? s0 : s1;
             int p1 = part == 0 ? s0 : part == 1 ? s1 : w1;
-            if (part != 1) {                          /* nema spritea ovdje */
+            if (part != 1) {                          /* no sprite here */
                 for (int hx = p0; hx < p1; ) {
                     int hires = L2 + hx;
                     unsigned v = 0;
@@ -1159,8 +1155,8 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
             for (int hx = p0; hx < p1; ) {
                 int hires = L2 + hx;
                 if (res == RES_SHRES) {
-                    /* dva super-hires piksela na svaki izlazni piksel: oba dekodirana u
-                       cijelosti, svaki sa svojim sprite pikselom, i izmiješana (mix2) */
+                    /* two super-hires pixels to each output pixel: both decoded in
+                       full, each with its own sprite pixel, and mixed (mix2) */
                     uint32_t c2[2];
                     for (int sub = 0; sub < 2; sub++) {
                         int sx = (hires << 1) + sub;
@@ -1188,7 +1184,7 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
                 unsigned e = pfx[v & 255];
                 uint32_t col = (e & 0x100) ? line_ehb[e & 31] : line_color[e & 255];
                 int thr = (int)(e >> 9);
-                /* lores piksel pokriva dva izlazna piksela: dekodiraj jednom, prekrij dvaput */
+                /* a lores pixel covers two output pixels: decode once, overlay twice */
                 int n = (res == 0 && !(hires & 1) && hx + 1 < p1) ? 2 : 1;
                 for (int k = 0; k < n; k++, hx++) {
                     uint32_t c = col;
@@ -1197,7 +1193,7 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
                         uint8_t sv = (sx < sprlen) ? spr[sx] : 0;
                         uint8_t sv2 = (sx + 1 < sprlen) ? spr[sx + 1] : 0;
                         c = spr_thr(col, sv, thr, base_even, base_odd);
-                        if (sv2 != sv)                    /* super-hires spriteovi: par izmiješan */
+                        if (sv2 != sv)                    /* super-hires sprites: the pair mixed */
                             c = mix2(c, spr_thr(col, sv2, thr, base_even, base_odd));
                     }
                     out[hx] = c;
@@ -1208,25 +1204,23 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
     }
 
     for (int hx = hx0; hx < hx1; hx++) {
-        int hires = AGA_OUT_LEFT_LORES * 2 + hx;      /* hires hardverska koordinata (temeljena na hpos*4) */
-        /* super-hires: dva piksela na svaki izlazni piksel, dekodirana jedan za
-           drugim (HAM boja prenosi se iz prvog u drugi)
-           i izmiješana (mix2); pretraga sudara gleda prvi, kao
-           oduvijek. Lores i hires imaju jedan prolaz, kao prije. */
+        int hires = AGA_OUT_LEFT_LORES * 2 + hx;      /* hires hardware coordinate (hpos*4 based) */
+        /* super-hires: two pixels to each output pixel, decoded one after
+           the other (a HAM colour carries from the first into the second)
+           and mixed (mix2); the collision search looks at the first, as
+           it always has. Lores and hires take one pass, as before. */
         int subs = (res == RES_SHRES) ? 2 : 1;
         uint32_t c2[2];
         for (int sub = 0; sub < subs; sub++) {
-            /* DIW vrijednosti registara pomaknute su za DIW_DDF_OFFSET-1 od
-               hardverskih koordinata (UAE) - jer zašto bi koordinate bile
-               jednostavne, fuck */
-            int sx = (hires << 1) + sub;                  /* superhires hardverska koordinata */
+            /* DIW register values are offset by DIW_DDF_OFFSET-1 from hardware coordinates (UAE) */
+            int sx = (hires << 1) + sub;                  /* superhires hardware coordinate */
             int in_window = vdiw && sx >= s->diw_hstart + DIW_HW_OFFSET * 4
                                  && sx <  s->diw_hstop  + DIW_HW_OFFSET * 4;
             uint32_t col;
-            int pfv = 0;             /* vrijednost playfield piksela za sprite prioritet */
-            int front_pf = 2;        /* koji je playfield sprijeda za prioritet (1 ili 2) */
-            unsigned v = 0;          /* sirova bitplane vrijednost, bit n = ravnina n+1 */
-            int fetched = 0;         /* piksel leži u dohvaćenim bitplane podacima */
+            int pfv = 0;             /* playfield pixel value for sprite priority */
+            int front_pf = 2;        /* which playfield is in front for priority (1 or 2) */
+            unsigned v = 0;          /* raw bitplane value, bit n = plane n+1 */
+            int fetched = 0;         /* the pixel lies in fetched bitplane data */
 
             if (in_window) {
                 if (have_data) {
@@ -1238,16 +1232,16 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
                 if (dpf) {
                     unsigned v1 = (v & 1) | ((v >> 1) & 2) | ((v >> 2) & 4) | ((v >> 3) & 8);
                     unsigned v2 = ((v >> 1) & 1) | ((v >> 2) & 2) | ((v >> 3) & 4) | ((v >> 4) & 8);
-                    /* Indeks boje gradi se prvi - vrijednost pobjedničkog playfielda,
-                        plus PF2OF kad je to playfield 2 - a BPLAM (visoki bajt BPLCON4)
-                        XOR-a se u cijeli 8-bitni rezultat nakon toga, točno kako
-                        WinUAE radi (decode_pixel_aga, CMODE_DUALPF). Vrijedi za oba
-                        playfielda i za pozadinu, pa je uz postavljen BPLAM pozadina
-                        boja BPLAM, a ne boja 0. XOR-anje samo niskih četiri bita u
-                        playfield 1 ostavilo je dijalog Reshoot Proxima 3 da crta iz
-                        boja 0-15 gdje je igra stavila paletu na 160 (BPLAM $A0
-                        za retke koje okvir pokriva): šumni portret, kolona
-                        boje niz zaslon i pogrešne boje tla. */
+                    /* The colour index is built first - the winning playfield's value,
+                       plus PF2OF when that is playfield 2 - and BPLAM (BPLCON4's high
+                       byte) is XORed into the whole 8-bit result afterwards, exactly as
+                       WinUAE does (decode_pixel_aga, CMODE_DUALPF). It applies to both
+                       playfields and to the background, so with BPLAM set the background
+                       is colour BPLAM, not colour 0. XORing only the low four bits into
+                       playfield 1 left Reshoot Proxima 3's dialogue box drawing from
+                       colours 0-15 where the game had put its palette at 160 (BPLAM $A0
+                       for the lines the box covers): a noisy portrait, a column of
+                       colour down the screen and the wrong ground colours. */
                     unsigned idx;
                     if (pf2pri) {
                         if (v2)      { idx = v2 + pf2of; pfv = v2; front_pf = 2; }
@@ -1270,7 +1264,7 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
     #endif
                 } else if (ham) {
                     pfv = v;
-                    const uint32_t *hb = a->tone_on ? line_raw : line_color;   /* stvarne boje */
+                    const uint32_t *hb = a->tone_on ? line_raw : line_color;   /* the real colours */
                     if (planes == 8) {
                         switch (v & 3) {
                         case 0: s->ham_last = hb[(v >> 2) ^ (xorv >> 2)]; break;
@@ -1301,32 +1295,32 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
                 col = brdrblnk ? 0 : line_color[0];
             }
 
-            /* spriteovi */
+            /* sprites */
             if (spr && (in_window || brdsprt)) {
                 uint32_t under = col;
                 int pv = in_window ? pfv : 0;
                 col = spr_pixel(under, spr, sprlen, sx, pv, front_pf, pf1p, pf2p, base_even, base_odd);
-                /* jedno dekodiranje po izlaznom pikselu (nije super-hires): i drugi piksel
-                   super-hires spriteova, izmiješan (spr_thr) */
+                /* one decode per output pixel (not super-hires): super-hires
+                   sprites' second pixel too, mixed (spr_thr) */
                 if (subs == 1 && sx >= 0 && sx + 1 < sprlen && spr[sx + 1] != spr[sx])
                     col = mix2(col, spr_pixel(under, spr, sprlen, sx + 1, pv, front_pf, pf1p, pf2p, base_even, base_odd));
             }
 
-            /* kad je bit 0 nađen, treba gledati samo piksele na kojima je sprite */
+            /* once bit 0 is found, only pixels with a sprite on them need looking at */
             unsigned m = (clx && sprm && sub == 0) ? (sprm[sx] & c_emask) : 0;
             if (clx && sub == 0 && in_window && (m || !(cx & 1))) {
-                unsigned g = 0;                           /* sprite grupe s pikselom ovdje */
+                unsigned g = 0;                           /* sprite groups with a pixel here */
                 if (m) {
                     m = (m | (m >> 1)) & 0x55;
                     g = (m & 1) | ((m >> 1) & 2) | ((m >> 2) & 4) | ((m >> 3) & 8);
                     cx |= clx_sprspr[g];
                 }
                 if (fetched) {
-                    /* onemogućena ravnina uvijek se poklapa, pa nijedna omogućena ravnina = uvijek */
+                    /* a disabled plane always matches, so no enabled plane = always */
                     unsigned d = (v ^ c_match) & c_ena;
                     unsigned even_ok = !(d & 0xAA), odd_ok = !(d & 0x55);
-                    if (even_ok && odd_ok) cx |= 0x0001;  /* parne na neparne bitplanee - da, čita se kako piše */
-                    if (!dpf) odd_ok &= even_ok;          /* jedan playfield: neparni bitovi trebaju sve ravnine (WinUAE) */
+                    if (even_ok && odd_ok) cx |= 0x0001;  /* even to odd bitplanes */
+                    if (!dpf) odd_ok &= even_ok;          /* one playfield: the odd bits need all planes (WinUAE) */
                     if (odd_ok)  cx |= (uint16_t)(g << 1);
                     if (even_ok) cx |= (uint16_t)(g << 5);
                 }
@@ -1341,10 +1335,10 @@ static void render_segment(aga_t *a, segstate_t *s, uint32_t *out, int hx0, int 
 void pf_finish_line(aga_t *a)
 {
     playfield_t *p = &a->pf;
-    /* Dohvaćanje koje još traje ovdje promašilo je kraj retka: VPOSW na dugom
-       NTSC retku učinio ga je kratkim nakon što je dohvaćanje već prošlo
-       novi posljednji clock. Njegov posljednji blok i modulosi duguju se
-       svejedno - dugovi se plaćaju. */
+    /* A fetch still running here missed its end of line: a VPOSW on a long
+       NTSC line made it a short one after the fetch had already gone past
+       the new last clock. Its last block and the modulos are due all the
+       same. */
     if (p->fetch_active) end_fetch(a, a->maxhpos - 1);
     int y = a->vpos - AGA_OUT_TOP;
     if (!a->cfg.render || y < 0 || y >= AGA_OUT_H) return;
@@ -1353,8 +1347,8 @@ void pf_finish_line(aga_t *a)
     int have_data = p->line_blocks > 0 && p->line_planes > 0;
     if (have_data && p->vdiw) {
         a->display_lines++;
-        /* okno u hires pikselima framea, kako ga računa brzi put
-           ispod, prije ikakvog odrezivanja na frame (Size Auto) */
+        /* the window in the frame's hires pixels, as the fast path below
+           works it out, before any clipping to the frame (Size Auto) */
         int wa = (p->diw_hstart + DIW_HW_OFFSET * 4 + 1) / 2 - AGA_OUT_LEFT_LORES * 2;
         int wb = (p->diw_hstop + DIW_HW_OFFSET * 4 + 1) / 2 - AGA_OUT_LEFT_LORES * 2;
         if (wa < a->win_x0) a->win_x0 = wa;
@@ -1362,8 +1356,8 @@ void pf_finish_line(aga_t *a)
         if (y < a->win_y0) a->win_y0 = y;
         if (y > a->win_y1) a->win_y1 = y;
     }
-    /* preskočeni frame ne crta ništa - osim ako su se sudari uključili tijekom
-       njega, jer CLXDAT računa renderer ispod */
+    /* a skipped frame draws nothing - unless collisions switched on during
+       it, since CLXDAT is computed by the renderer below */
     if (a->frame_skip && !(a->cfg.collisions || a->clx_frames > 0)) return;
     int nbits = 0, x0 = 0;
     if (have_data) {
@@ -1378,7 +1372,7 @@ void pf_finish_line(aga_t *a)
     int clx = a->cfg.collisions || a->clx_frames > 0;
     int any_sprite = 0;
     for (int i = 0; i < AGA_MAX_SPRITES; i++) if (a->spr[i].armed) { any_sprite = 1; break; }
-    /* sprite upisan tijekom retka možda se pokazao i od tada razoružao */
+    /* a sprite written during the line may have shown and been disarmed since */
     if (any_sprite || a->spr_touched) spr_build_line(a, clx); else a->sprline_valid = a->sprclx_valid = 0;
 
     segstate_t s;
@@ -1390,8 +1384,8 @@ void pf_finish_line(aga_t *a)
     int hx = 0;
     for (int i = 0; i < a->nchanges; i++) {
         const linechange_t *c = &a->changes[i];
-        /* promjena stupa na snagu na lores pikselu 2*hpos plus vlastita odgoda
-           registra (change_delay iznad) */
+        /* change takes effect at lores pixel 2*hpos plus the register's own
+           delay (change_delay above) */
         int chx = (int)c->hpos * 4 + change_delay(c->reg) - AGA_OUT_LEFT_LORES * 2;
         if (chx > AGA_OUT_W) chx = AGA_OUT_W;
         if (chx > hx) {
@@ -1401,11 +1395,11 @@ void pf_finish_line(aga_t *a)
         apply_change(a, &s, c);
     }
     if (hx < AGA_OUT_W) render_segment(a, &s, out, hx, AGA_OUT_W, have_data, x0, nbits, clx);
-    /* završeni redak, u jednom prolazu: vanjska stranica (uncached HVS memorija)
-       dobiva alpha bajt koji alpha način ravnine treba, a vlastiti frameovi
-       jezgre ostaju byte-identical s onim što host testovi uspoređuju */
+    /* the finished line, in one pass: an external page (uncached HVS memory)
+       gets the alpha byte the plane's alpha mode needs, the core's own
+       frames stay byte-identical to what the host tests compare */
     uint32_t *row;
-    if (a->weave_now)      /* tkan: dvije stranice kao jedan frame od 572 retka (aga_set_weave) */
+    if (a->weave_now)      /* woven: the two pages as one 572-row frame (aga_set_weave) */
         row = a->fb[0] + (2 * y + a->weave_row) * AGA_OUT_W;
     else
         row = a->fb[a->fb_cur] + y * AGA_OUT_W;
@@ -1413,7 +1407,7 @@ void pf_finish_line(aga_t *a)
         if (a->fb_external) { for (int i = 0; i < AGA_OUT_W; i++) row[i] = out[i] | 0xFF000000u; }
         else memcpy(row, out, sizeof a->linebuf);
         if (!twice) break;
-        /* prvi tkani frame: i redak između, ne stara slika */
+        /* the first woven frame: the row between too, not an old picture */
         row = a->fb[0] + (2 * y + (a->weave_row ^ 1)) * AGA_OUT_W;
     }
     /* the line, still in my cache, for whoever gives a damn (the RGB port) */

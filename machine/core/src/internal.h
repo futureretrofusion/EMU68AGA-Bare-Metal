@@ -1,16 +1,16 @@
-/* AGA-STORM — privatno stanje chipset jezgre.
+/* AGA-PISTORM - chipset core private state.
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * Mnoga imena slijede UAE-ova (stanje spritea, audio, fetch i copper).
- * Copper stanja i polja klasičnog su UAE coppera (E-UAE custom.c),
- * GET_PLANES je UAE-ov macro (E-UAE include/custom.h), a GET_RES slijedi
- * WinUAE include/custom.h.
+ * Many names follow UAE's (the sprite, audio, fetch and copper state). The
+ * copper states and fields are the classic UAE copper's (E-UAE custom.c),
+ * GET_PLANES is UAE's macro (E-UAE include/custom.h) and GET_RES follows
+ * WinUAE's include/custom.h.
  *   E-UAE custom.c:          Copyright 1995-2002 Bernd Schmidt,
  *     Copyright 1995 Alessandro Bissacco, Copyright 2000-2004 Toni Wilen
  *   E-UAE include/custom.h:  (c) 1995 Bernd Schmidt
  *   WinUAE include/custom.h: (c) 1995 Bernd Schmidt
- * Promijenjeno u odnosu na UAE/WinUAE kod za AGA-STORM 2026.
- * UAE i WinUAE su GPL, kao i ova datoteka.
+ * Changed from the UAE/WinUAE code for AGA-PISTORM in 2026.
+ * UAE and WinUAE are GPL, like this file.
  */
 #ifndef AGA_INTERNAL_H
 #define AGA_INTERNAL_H
@@ -19,7 +19,7 @@
 #include <string.h>
 #include "aga/chipset.h"
 
-/* ---- pristup chip RAM-u (big-endian) -------------------------------------- */
+/* ---- chip RAM access (big-endian) ---------------------------------------- */
 static inline uint16_t chip_rd16(const aga_t *a, uint32_t addr);
 static inline uint32_t chip_rd32(const aga_t *a, uint32_t addr);
 static inline uint64_t chip_rd64(const aga_t *a, uint32_t addr);
@@ -32,16 +32,16 @@ static inline void     chip_wr16(aga_t *a, uint32_t addr, uint16_t v);
 #define RES_HIRES 1
 #define RES_SHRES 2
 
-/* copper stanja */
+/* copper states */
 enum {
     COP_stop = 0,
-    COP_read1,          /* dohvati prvu riječ */
-    COP_read2,          /* dohvati drugu riječ */
-    COP_wait_in2,       /* WAIT: 2 ciklusa odgode prije usporedbe */
-    COP_wait,           /* čeka položaj zrake */
+    COP_read1,          /* fetch first word */
+    COP_read2,          /* fetch second word */
+    COP_wait_in2,       /* WAIT: 2 cycles delay before compare */
+    COP_wait,           /* waiting for beam position */
     COP_skip_in2,
-    COP_bltwait,        /* čeka blitter */
-    COP_strobe_delay,   /* COPJMP upisan: restart nakon ciklusa dohvaćanja */
+    COP_bltwait,        /* waiting for blitter */
+    COP_strobe_delay,   /* COPJMP written: restart after a fetch cycle */
 };
 
 typedef struct copper {
@@ -51,11 +51,11 @@ typedef struct copper {
     int      state;
     int      vcmp, hcmp, hmask, vmask, blitwait;
     int      danger;            /* COPCON CDANG */
-    int      enabled_line;      /* copper DMA aktivan na ovom retku */
-    int      strobe;            /* COPJMP1/2 na čekanju koji je upisao sam copper (1/2), 0 = nijedan */
-    int      strobe_count;      /* instrukcija koje još treba dovršiti prije nego stupi na snagu */
-    int      in_move;           /* cop_sync izvršava MOVE (aga_custom_wput je u tijeku) */
-    int      reload;            /* 1/2: uzmi pc iz COP1LC/COP2LC na sljedećem dohvaćanju (vblank, CPU COPJMP) */
+    int      enabled_line;      /* copper DMA active on this line */
+    int      strobe;            /* pending COPJMP1/2 written by the copper itself (1/2), 0 = none */
+    int      strobe_count;      /* instructions still to complete before it takes effect */
+    int      in_move;           /* cop_sync is executing a MOVE (aga_custom_wput in progress) */
+    int      reload;            /* 1/2: take pc from COP1LC/COP2LC at the next fetch (vblank, CPU COPJMP) */
     int      ignore_next;
     int      delay;             /* idle steps before the next access */
     int      last_hpos;         /* copper synced up to this hpos (even) */
@@ -72,38 +72,38 @@ typedef struct blitter {
     uint32_t apt, bpt, cpt, dpt;
     int16_t  amod, bmod, cmod, dmod;
     uint16_t adat, bdat, cdat, ddat;
-    uint16_t sizev, sizeh;        /* BLTSIZV vrijednost na čekanju / retci */
+    uint16_t sizev, sizeh;        /* pending BLTSIZV value / lines */
     int      busy, zero;
-    uint32_t irq_cck;       /* colour clocks do prijave završetka blita */
-    uint32_t dur_cck;       /* koliko stvarni blitter traje na ovom blitu */
-    uint32_t fin_count;     /* blitovi prijavljeni završenima (BLIT podignut) */
-    uint32_t acked_fin;     /* fin_count pri posljednjem INTREQ čišćenju BLIT-a */
-    uint32_t lost, lost_frame;  /* potvrde koje su progutale dva dovršetka */
-    uint32_t read_fin;      /* fin_count kad je CPU posljednji put čitao INTREQR */
-    int      read_valid;    /* ...i od tada nije potvrdio BLIT */
-    int      no_hold;       /* A/B testovi: bez ponovnog podizanja, točno 1.102 (čuva se kroz aga_reset) */
-    uint32_t held_count;    /* dovršeci ponovno podignuti nakon što ih je potvrda zbrisala */
+    uint32_t irq_cck;       /* colour clocks left before the blit reports finished */
+    uint32_t dur_cck;       /* how long the real blitter takes over this blit */
+    uint32_t fin_count;     /* blits reported finished (BLIT raised) */
+    uint32_t acked_fin;     /* fin_count at the last INTREQ clear of BLIT */
+    uint32_t lost, lost_frame;  /* acknowledges that swallowed two completions */
+    uint32_t read_fin;      /* fin_count when the CPU last read INTREQR */
+    int      read_valid;    /* ...and it has not acknowledged BLIT since */
+    int      no_hold;       /* A/B tests: no re-raise, exactly 1.102 (kept across aga_reset) */
+    uint32_t held_count;    /* completions raised again after an acknowledge wiped them */
     int      line_mode;
-    uint16_t bhold;               /* pred-učitani B */
-    uint16_t aold, bold;          /* prethodne riječi A i B shiftera: 0 pri pokretanju blita */
+    uint16_t bhold;               /* preloaded B */
+    uint16_t aold, bold;          /* the A and B shifters' previous words: 0 as a blit starts */
 } blitter_t;
 
 typedef struct sprite {
     uint32_t pt;
     uint16_t pos, ctl;
-    uint64_t data, datb;          /* do 64 bita (FMODE) */
-    int      armed;               /* DATA upisan nakon CTL */
-    int      dmastate;            /* 1 = dohvaća retke podataka */
-    int      dmacycle;            /* WinUAE: 1/2 = sljedeći DMA slot dohvaća prvu/drugu riječ */
-    int      dmadata;             /* riječi dohvaćene na ovom retku su DATA/DATB, ne POS/CTL */
-    int      vstart, vstop, xpos; /* xpos u shres pikselima (4 po lores pikselu) */
+    uint64_t data, datb;          /* up to 64 bits (FMODE) */
+    int      armed;               /* DATA written since CTL */
+    int      dmastate;            /* 1 = fetching data lines */
+    int      dmacycle;            /* WinUAE: 1/2 = the next DMA slot fetches the first/second word */
+    int      dmadata;             /* the words fetched on this line are DATA/DATB, not POS/CTL */
+    int      vstart, vstop, xpos; /* xpos in shres pixels (4 per lores pixel) */
     int      attach;
 } sprite_t;
 
 /* A sprite's state from one moment of a line on, logged when the copper or
    the CPU rewrites the sprite while the beam is on the line (spr_build_line) */
 typedef struct sprev {
-    int      sx;                  /* pozicija u sprlineu (shres) od koje vrijedi */
+    int      sx;                  /* sprline (shres) position from which it holds */
     int      xpos;
     uint64_t data, datb;
     uint8_t  n, armed;
@@ -111,17 +111,17 @@ typedef struct sprev {
 #define AGA_SPR_EVENTS 128
 
 typedef struct audio_channel {
-    uint32_t lc, pt;              /* lokacija (zapamćena) i trenutačni pokazivač */
+    uint32_t lc, pt;              /* location (latched) and current pointer */
     uint16_t len, lencnt;
     uint16_t per, percnt;
     uint16_t vol;
-    uint16_t dat;                 /* AUDxDAT posljednje upisan */
+    uint16_t dat;                 /* AUDxDAT last written */
     int      dmaen;
-    int      state;               /* Paulin state machine 0..5 */
+    int      state;               /* Paula state machine 0..5 */
     int      dat_written;
-    int8_t   cur_sample;          /* sample koji se trenutačno izvodi */
-    int      intreq2;             /* stanje prekida na čekanju (prema HRM-u) */
-    /* akumulator resamplinga */
+    int8_t   cur_sample;          /* sample currently output */
+    int      intreq2;             /* pending interrupt state (per HRM) */
+    /* resampling accumulator */
     int32_t  acc;
 } audio_channel_t;
 
@@ -134,36 +134,36 @@ typedef struct audio_channel {
 #define LC_COLOR 0x400
 typedef struct linechange {
     uint16_t hpos;                /* colour clock */
-    uint16_t reg;                 /* pomak registra ili LC_COLOR + indeks boje */
-    uint32_t value;               /* za boju: proširena 24-bitna vrijednost; ostali sirovi */
+    uint16_t reg;                 /* register offset, or LC_COLOR + colour index */
+    uint32_t value;               /* for a colour: expanded 24-bit value; others raw */
 } linechange_t;
 
 /* virtual floppy drives (disk.c) */
 #define DSK_WORDS_PER_LINE 2          /* DD: 32 us per MFM word, ~2 words per scan line */
 typedef struct disk_drive {
-    uint8_t  *image;                  /* ADF slika (kopija) */
+    uint8_t  *image;                  /* ADF image (copy) */
     uint32_t  size;
     int       inserted, wprot, dirty;
-    int       sectors;                /* 11 (DD) ili 22 (HD) po stazi */
+    int       sectors;                /* 11 (DD) or 22 (HD) per track */
     int       cyl, side, motor, changed;
     uint32_t  id_shift;
-    uint16_t *mfm;                    /* trenutačna staza, MFM riječi */
+    uint16_t *mfm;                    /* current track, MFM words */
     int       mfm_words, mfm_track, mfm_valid;
-    int       pos;                    /* riječ pod glavom */
+    int       pos;                    /* word under the head */
 } disk_drive_t;
 
 typedef struct disk {
     disk_drive_t drv[AGA_MAX_DRIVES];
-    int      selected;                /* virtualni pogon odabran preko CIA-B PRB, -1 nijedan */
-    uint8_t  prb;                     /* posljednja CIA-B PRB vrijednost */
+    int      selected;                /* virtual drive selected via CIA-B PRB, -1 none */
+    uint8_t  prb;                     /* last CIA-B PRB value */
     uint16_t dsklen, dsksync, dskdat, dskbytr;
-    int      dsklen_armed;            /* prvi od dva viđena DMAEN upisa */
+    int      dsklen_armed;            /* first of the two DMAEN writes seen */
     uint32_t dskpt;
     int      dma_active, dma_write, dma_left, synced, wordequal;
 } disk_t;
 
 typedef struct playfield {
-    /* vrijednosti registara */
+    /* register values */
     uint32_t bplpt[AGA_MAX_PLANES];
     uint16_t bplcon0, bplcon1, bplcon2, bplcon3, bplcon4;
     int ecs_mode;                  /* ECS Denise semantics: no LOCT, no colour bank;
@@ -181,7 +181,7 @@ typedef struct playfield {
     uint8_t  col_hi_pending[256];
     uint16_t col_hi_val[256];
     uint32_t col_hi_when[256];
-    int      loct_clear_seen;      /* BPLCON3 upis s čistim LOCT-om, u loct_clear_when */
+    int      loct_clear_seen;      /* a BPLCON3 write with LOCT clear, at loct_clear_when */
     uint32_t loct_clear_when;
     int16_t  bpl1mod, bpl2mod;
     uint16_t diwstrt, diwstop, diwhigh;
@@ -189,13 +189,13 @@ typedef struct playfield {
     uint16_t ddfstrt, ddfstop;
     uint16_t fmode;
     uint16_t bpldat[AGA_MAX_PLANES];
-    /* izvedeno */
+    /* derived */
     int      res;                 /* 0 lores, 1 hires, 2 shres */
-    int      planes;              /* tražene ravnine iz BPLCON0 */
+    int      planes;              /* requested planes from BPLCON0 */
     int      fm;                  /* fetch mode 0,1,2 */
     int      fetchunit, fetchstart, fetchstart_shift, maxplanes;
-    int      plfstrt, plfstop;    /* efektivni DDF start/stop (cck) */
-    int      diw_hstart, diw_hstop;   /* superhires koordinate (DIW jedinice, 4 po lores) */
+    int      plfstrt, plfstop;    /* effective DDF start/stop (cck) */
+    int      diw_hstart, diw_hstop;   /* superhires coordinates (DIW units, 4 per lores) */
     int      diw_vstart, diw_vstop;
     /* per-line fetch state */
     int      vdiw;                /* the window, as the fetch sees it: the
@@ -223,16 +223,16 @@ typedef struct playfield {
                                      shows sprites on it (render_segment) */
     int      line_delay1, line_delay2;         /* native-pixel delays (odd/even planes) */
     int      line_bplcon0;
-    /* planar podaci retka: bit i ravnine p = native piksel (ishodište bloka) + i, MSB prvi */
+    /* planar line data: bit i of plane p = native pixel (block origin) + i, MSB first */
     uint64_t bits[AGA_MAX_PLANES][AGA_PLANE_WORDS];
-    /* sirovi dohvaćeni podaci po bloku i scroll odgode važeće kad je blok dovršen */
+    /* raw fetched data per block and the scroll delays valid when the block completed */
     uint64_t blockdata[AGA_MAX_BLOCKS][AGA_MAX_PLANES];
     int16_t  blockdelay1[AGA_MAX_BLOCKS], blockdelay2[AGA_MAX_BLOCKS];
-    /* chunky index međuspremnici za trenutačni redak (native rezolucija), neparne i parne
-       ravnine odvojeno jer ih pri prikazu pomiču različite BPLCON1 odgode */
+    /* chunky index buffers for the current line (native resolution), odd and even planes
+       separately because they are shifted by different BPLCON1 delays at display time */
     uint8_t  idx_odd[AGA_PLANE_WORDS * 64 + 64];
     uint8_t  idx_even[AGA_PLANE_WORDS * 64 + 64];
-    int      line_delayoffset;    /* UAE delay pomak za neporavnate početke dohvaćanja (lores px) */
+    int      line_delayoffset;    /* UAE delay offset for unaligned fetch starts (lores px) */
 } playfield_t;
 
 struct aga {
@@ -243,24 +243,22 @@ struct aga {
     void       (*log)(void *, const char *);
     void        *log_user;
 
-    /* zraka */
+    /* beam */
     int hpos, vpos, lof, maxhpos, maxvpos, ntsc;
     int lol;                    /* this line is a long one (NTSC, 228 cck): maxhpos includes it */
     int ntsc_strap;             /* the Alice's PAL/NTSC strap, VPOSR's ID: cfg.ntsc at the reset */
     int vblank_end;
-    int vertb_hold;             /* redak 0: VERTB još nije podignut, prvo copperov setup blok */
-    int sprite_vblank;          /* redak na kojem se sprite DMA ponovno pokreće (UAE sprite_vblank_endline) */
+    int vertb_hold;             /* line 0: VERTB not raised yet, the copper's setup block first */
+    int sprite_vblank;          /* line the sprite DMA restarts on (UAE sprite_vblank_endline) */
     int frame;
     int lof_toggle;
     uint32_t line_no;           /* lines since the reset, for "within two lines" */
-    uint32_t frame_cck;        /* completed-line clocks in current emulated frame */
-    uint32_t last_frame_cck;   /* exact length of last completed frame */
 
-    /* generički registri */
+    /* generic registers */
     uint16_t regs[256];
     uint16_t dmacon, intena, intreq, adkcon;
-    uint32_t ecs_upgrades;         /* ECS Denise odbačen za AGA (ecs_says_aga) */
-    uint32_t color_aga[256];       /* u ECS načinu: paleta kako bi je držala AGA Lisa */
+    uint32_t ecs_upgrades;         /* ECS Denise given up for AGA (ecs_says_aga) */
+    uint32_t color_aga[256];       /* in ECS mode: the palette as an AGA Lisa would hold it */
     uint16_t clxcon, clxcon2, clxdat;
     uint16_t beamcon0;
     uint16_t copcon;
@@ -270,21 +268,21 @@ struct aga {
     blitter_t  blt;
     sprite_t   spr[AGA_MAX_SPRITES];
     int        sprite_width;       /* 16/32/64 */
-    int        sprres;             /* sprite rezolucija 0..2 */
+    int        sprres;             /* sprite resolution 0..2 */
     audio_channel_t aud[4];
     playfield_t pf;
 
-    /* paleta: 256 x 24-bit */
+    /* palette: 256 x 24-bit */
     uint32_t color[256];
 
-    /* popis promjena po retku */
+    /* per-line change list */
     linechange_t changes[AGA_LINE_CHANGES];
     int          nchanges;
 
-    /* međuspremnik sprite retka, u shres pikselima relativno na lores piksel 0 (DIW koord.):
-       bitovi 0-3 boja (unutar 16), bit 4 spojen, bitovi 5-6 par, bit 7 prisutan */
+    /* sprite line buffer, in shres pixels relative to lores pixel 0 (DIW coords):
+       bits 0-3 colour (within 16), bit 4 attached, bits 5-6 pair, bit 7 present */
     uint8_t  sprline[AGA_OUT_W * 2 + 512];
-    int      sprline_lo, sprline_hi;  /* dio koji je upisan od posljednjeg čišćenja */
+    int      sprline_lo, sprline_hi;  /* the part of it written since it was last cleared */
     int      sprline_valid;
 
     /* Collision detection (CLXDAT). Worked out only while the program reads
@@ -295,7 +293,7 @@ struct aga {
     uint8_t  sprclx[AGA_OUT_W * 2 + 512];
     int      sprclx_valid;
 
-    /* spriteovi prepisani tijekom trenutačnog retka (vidi spr_build_line) */
+    /* sprites rewritten during the current line (see spr_build_line) */
     sprev_t  sprev[AGA_SPR_EVENTS];
     int      nsprev, sprev_full;
     unsigned spr_touched;          /* bit n: the copper or the CPU wrote sprite n this line */
@@ -313,21 +311,20 @@ struct aga {
        CHANGES of it, with the frame), and its own writes to BPLCON0 */
     uint32_t dbg_coprs_addr[8], dbg_coprs_frame[8], dbg_coprs_n, dbg_coprs_last;
     uint32_t dbg_cop_bc0_n, dbg_cop_bc0_pc, dbg_cop_bc0_val, dbg_cop_bc0_frame;
-    /* dnevnik događaja (aga_dbg_event): 16 prije triggera, zatim 32 poslije,
-       zaustavljeno - kao crna kutija, samo s više komentara */
+    /* event log (aga_dbg_event): 16 before the trigger, then 32 after, stopped */
     uint32_t ev_pre[16][2], ev_pre_n, ev_log[48][2], ev_log_n;
     int      ev_trig;
     /* the last BEAMCON0 writes, same packing as dma_log: a lone write with
        the PAL bit clear turns a 313-line frame into a 263-line one */
     uint32_t bc0_log[8];
     uint32_t bc0_log_head;
-    /* sprite rezolucija duž retka: vrijednost na početku, zatim
-        svaka promjena s položajem zrake na kojem se dogodila (SPR_NOW jedinice) */
+    /* sprite resolution along the line: the value at the start of it, then
+       every change with the beam position it happened at (SPR_NOW units) */
     int      sprres_line0;
     int      nsprres_ev;
     int      sprres_ev_sx[16];
     int8_t   sprres_ev_res[16];
-    uint8_t  spv[AGA_MAX_SPRITES][AGA_OUT_W * 2 + 512];   /* reprodukcija: 2-bitni pikseli svakog spritea */
+    uint8_t  spv[AGA_MAX_SPRITES][AGA_OUT_W * 2 + 512];   /* replay: each sprite's 2-bit pixels */
 
     /* output */
     /* Where finished lines go. By default the two frames below; the ARM
@@ -389,8 +386,6 @@ struct aga {
        channel produce silence, and one of these four values must say why. */
     uint32_t aud_trig[32][6];      /* chan, lc, len, per, vol, first sample word */
     uint32_t aud_trig_head;
-    int      vmix_on;
-    int32_t vgl[4], vgr[4];
     int      aud_mask;             /* bit n: mix channel n. 0 = not yet set = all */
     int      pf_data_nonzero;      /* a bitplane fetch in this frame returned non-zero data */
     int      last_frame_data;      /* same, for the last completed frame */
@@ -402,14 +397,14 @@ struct aga {
        the HDMI picture's Size Auto (aga_last_frame_window), RGB2RTG's idea */
     int      win_x0, win_x1, win_y0, win_y1;
     int      last_win_x0, last_win_x1, last_win_y0, last_win_y1;
-    uint16_t aga_ctrl;             /* AGA kontrolni registar 0xDFF1F2 (native/RTG preklop, prozor) */
-    uint16_t aga_win[4];           /* 0xDFF1F4..0xDFF1FA: prozor x, y, w, h na RTG zaslonu */
+    uint16_t aga_ctrl;             /* AGA control register 0xDFF1F2 (native/RTG switch, windowed) */
+    uint16_t aga_win[4];           /* 0xDFF1F4..0xDFF1FA: window x, y, w, h on the RTG screen */
 
-    /* audio izlaz */
+    /* audio output */
     int      audio_rate;
     int32_t  audio_frac;
 
-    /* virtualna disketa (alocira se odvojeno: preživljava aga_reset) */
+    /* virtual floppy (allocated separately: survives aga_reset) */
     disk_t  *dsk;
 
 #ifdef AGA_TRACE
@@ -466,20 +461,20 @@ void pf_reset(aga_t *a);
 void pf_write(aga_t *a, uint32_t reg, uint16_t v, int hpos);
 void pf_start_line(aga_t *a);
 void pf_sync(aga_t *a, int hpos);
-void pf_finish_line(aga_t *a);     /* dohvati ostatak, iscrtaj redak u framebuffer */
+void pf_finish_line(aga_t *a);     /* fetch remainder, render line into framebuffer */
 void pf_vsync(aga_t *a);
 void pf_color_write(aga_t *a, int num, uint16_t v, int hpos);
 uint16_t pf_con3(const playfield_t *p);
 uint16_t pf_con4(const playfield_t *p);
-int  pf_is_bpl_slot(aga_t *a, int hpos);   /* 1 ako bitplane dohvaćanje zauzima ovaj ciklus */
-int  pf_bpl_running(aga_t *a, int hpos);   /* 1 dok traje okno bitplane dohvaćanja retka (WinUAE bprun) */
+int  pf_is_bpl_slot(aga_t *a, int hpos);   /* 1 if a bitplane fetch occupies this cycle */
+int  pf_bpl_running(aga_t *a, int hpos);   /* 1 while the line's bitplane fetch window runs (WinUAE bprun) */
 
 /* sprites.c */
 void spr_reset(aga_t *a);
 void spr_write(aga_t *a, uint32_t reg, uint16_t v);
 void spr_dma_slot(aga_t *a, int hpos);
 void aga_dbg_event(aga_t *a, int type, uint16_t value, int trigger);
-void spr_build_line(aga_t *a, int clx);   /* napuni a->sprline (i a->sprclx ako je clx) za trenutačni redak */
+void spr_build_line(aga_t *a, int clx);   /* fill a->sprline (and a->sprclx if clx) for the current line */
 void spr_vsync(aga_t *a);
 void spr_start_line(aga_t *a);
 void spr_expand_res(aga_t *a);
@@ -488,20 +483,20 @@ void spr_expand_res(aga_t *a);
 void dsk_create(aga_t *a);
 void dsk_destroy(aga_t *a);
 void dsk_reset(aga_t *a);
-int  dsk_read(aga_t *a, uint32_t reg, uint16_t *v);     /* 1 = obrađeno (prisutna virtualna disketa) */
+int  dsk_read(aga_t *a, uint32_t reg, uint16_t *v);     /* 1 = handled (virtual disk present) */
 int  dsk_write(aga_t *a, uint32_t reg, uint16_t v);
 void dsk_line_tick(aga_t *a);
 
 /* audio.c */
 void aud_reset(aga_t *a);
-void aud_clock(aga_t *a);    /* ponovno sample sat, nakon PAL <-> NTSC */
+void aud_clock(aga_t *a);    /* the sample clock again, after PAL <-> NTSC */
 void aud_write(aga_t *a, uint32_t reg, uint16_t v);
 void aud_dma_slot(aga_t *a, int hpos);
 void aud_dmacon_changed(aga_t *a, uint16_t old, uint16_t new_);
 void aud_line_tick(aga_t *a);
 
-/* ---- inline pomoćnici ----------------------------------------------------- */
-/* boja 0x00RRGGBB kroz tablicu svjetline i game (bright_lut) */
+/* ---- inline helpers ------------------------------------------------------- */
+/* a 0x00RRGGBB colour through the brightness and gamma table (bright_lut) */
 static inline uint32_t bright_rgb(const aga_t *a, uint32_t c)
 {
     return ((uint32_t)a->bright_lut[(c >> 16) & 255] << 16) | ((uint32_t)a->bright_lut[(c >> 8) & 255] << 8)

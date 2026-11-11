@@ -1,8 +1,7 @@
-/* AGA-STORM - prilagođeni crop (agaboot RTG Image: Size Custom, Crop...):
- * četiri ruba koje korisnik odreže s kadra, PAL-ovi i NTSC-ovi, i
- * upravljačke riječi koje ih nose. Čisti C za sebe, pa ga host testovi
- * provjeravaju (host/tests/test_crop.c); aga_hvs.c je jedini kernel
- * korisnik, i neka tako ostane.
+/* AGA-PISTORM - the custom crop (agaboot RTG Image: Size Custom, Crop...):
+ * the four edges the user cuts off the frame, PAL's and NTSC's, and the
+ * control words that carry them. Plain C on its own, so the host tests check
+ * it (host/tests/test_crop.c); aga_hvs.c is the only kernel user.
  *
  * SPDX-License-Identifier: GPL-2.0-only
  */
@@ -11,22 +10,22 @@
 
 #include <stdint.h>
 
-#define CROP_FRAME_W    800     /* AGA_OUT_W: hires pikseli od lores stupca $50 */
+#define CROP_FRAME_W    800     /* AGA_OUT_W: hires pixels from lores column $50 */
 #define CROP_ROWS_PAL   286     /* AGA_OUT_H */
-#define CROP_ROWS_NTSC  237     /* NTSC-ov kadar završava na liniji 262, red 236 (aga_hvs.c) */
-#define CROP_MIN_W      320     /* što barem ostaje, hires piksela... */
-#define CROP_MIN_H      100     /* ...i linija */
+#define CROP_ROWS_NTSC  237     /* NTSC's frame ends at line 262, row 236 (aga_hvs.c) */
+#define CROP_MIN_W      320     /* what is left at least, hires pixels... */
+#define CROP_MIN_H      100     /* ...and lines */
 enum { CUT_L, CUT_T, CUT_R, CUT_B };
 
-/* Dok korisnik ne odreže svoje: rubovi 720 x 272, veličina koju TV pokazuje
-   (aga_hvs.c zoom_rect: x 74, y 10 u oba standarda). Poslije se sam snađe. */
+/* Until the user cuts their own: 720 x 272's edges, the size a TV shows
+   (aga_hvs.c zoom_rect: x 74, y 10 in both standards) */
 #define CROP_DEFAULT_PAL  { 74, 10, 6, 4 }
 #define CROP_DEFAULT_NTSC { 74, 10, 6, 0 }
 
-/* Pravokutnik koji rubovi ostavljaju: x, y, w, h u kadru. Lijevi i desni u
-   koracima od dva hires piksela (jedan lores piksel), što drži pokazivač
-   ravnine na osam bajtova; rubovi koji bi ostavili manje od minimuma
-   popuštaju - desni lijevome, donji gornjemu. Red mora biti. */
+/* The rectangle the edges leave: x, y, w, h in the frame. Left and right in
+   steps of two hires pixels (one lores pixel), which keeps the plane pointer
+   on eight bytes; edges that would leave less than the minimum give way -
+   the right one to the left, the bottom one to the top. */
 static inline void crop_cut_rect(const uint16_t *cut, int ntsc, int *x, int *y, int *w, int *h)
 {
     int rows = ntsc ? CROP_ROWS_NTSC : CROP_ROWS_PAL;
@@ -41,23 +40,23 @@ static inline void crop_cut_rect(const uint16_t *cut, int ntsc, int *x, int *y, 
     *h = rows - t - b;
 }
 
-/* Size Auto (1.114, RGB2RTG's Crop: Auto): igrin vlastiti prozor prikaza,
-   kako ga je jezgra izmjerila na linijama sa slikom (aga_last_frame_window:
-   hires pikseli [x0, x1), linije y0..y1, u kadru), praćen dok igra radi.
-   Veći se prozor uzima odmah, manji tek kad cijeli period od
-   CROP_AUTO_QUIET kadrova nije iskoristio ništa veće - 2 do 4 s nakon
-   zadnjeg većeg kadra, ne računajući period u kojem je taj kadar bio - da
-   izbornik ili fade ne pumpaju sliku. Lijevo i desno cijeli lores pikseli;
-   prozor manji od 160 x 64 ne uzima se za sliku. */
-#define CROP_AUTO_QUIET 100     /* 2 s pri 50 Hz */
+/* Size Auto (1.114, RGB2RTG's Crop: Auto): the game's own display window,
+   as the core measured it on the lines with a picture (aga_last_frame_window:
+   hires pixels [x0, x1), lines y0..y1, in the frame), followed while the
+   game runs. A bigger window is taken at once, a smaller one only once a
+   whole period of CROP_AUTO_QUIET frames has used nothing bigger - 2 to 4 s
+   after the last bigger frame, the period that frame was in not counting -
+   so that a menu or a fade does not pump the picture. Left and right whole lores pixels; a window smaller than
+   160 x 64 is not taken for the picture. */
+#define CROP_AUTO_QUIET 100     /* 2 s at 50 Hz */
 struct crop_auto {
-    int x0, x1, y0, y1;         /* prikazano; x0 < 0: još nijedan */
-    int cx0, cx1, cy0, cy1;     /* što su kadrovi od zadnje promjene iskoristili */
+    int x0, x1, y0, y1;         /* shown; x0 < 0: none yet */
+    int cx0, cx1, cy0, cy1;     /* what the frames since the last change used */
     int quiet;
 };
 static inline void crop_auto_reset(struct crop_auto *s) { s->x0 = -1; s->quiet = 0; }
 
-/* prozor jednog kadra (ok 0: nijedan ovaj kadar); 1 kad se prikazani promijenio */
+/* one frame's window (ok 0: none this frame); 1 when the one shown changed */
 static inline int crop_auto_track(struct crop_auto *s, int rows, int ok, int x0, int x1, int y0, int y1)
 {
     if (!ok) return 0;
@@ -71,7 +70,7 @@ static inline int crop_auto_track(struct crop_auto *s, int rows, int ok, int x0,
     if (s->x0 < 0 || x0 < s->x0 || x1 > s->x1 || y0 < s->y0 || y1 > s->y1) {
         if (s->x0 < 0) {
             s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1;
-        } else {                                /* oboje zajedno: ništa prikazano se ne gubi */
+        } else {                                /* the two together: nothing shown is lost */
             if (x0 < s->x0) s->x0 = x0;
             if (x1 > s->x1) s->x1 = x1;
             if (y0 < s->y0) s->y0 = y0;
@@ -93,20 +92,20 @@ static inline int crop_auto_track(struct crop_auto *s, int rows, int ok, int x0,
     return moved;
 }
 
-/* Što Auto prikazuje poprečno: prozor - ili, kad je igrino polje igre uže
-   od standardnog ekrana, 640 hires piksela oko njega: sam standardni ekran
-   kad prozor leži unutar njega, inače centrirano na prozor, unutar kadra.
-   Prozor je bitplanov (DIW na linijama s podacima), pa ne vidi spriteove u
-   rubu: Bansheejevo polje igre je 256 lores piksela sa 256 linija
-   (242..754 u kadru), a njegova ploča rezultata, života i štita su border
-   spriteovi (BRDSPRT) lijevo od njega, puneći standardni ekran do 114.
-   Uzet doslovno, prozor je izgubio ploču, a Fill je rastegnuo ostalo 1.7
-   puta gdje standardna igra dobiva 1.33; centriran, ploča je bila odrezana
-   i desno se vidio border. Samo širina: prozor niži od standardnog ekrana
-   je ono za što Auto postoji, letterbox koji zumira van. Koraci od dva
-   hires piksela. */
-#define CROP_AUTO_MIN_W 640     /* standardni ekran (aga_hvs.c zoom_rect[2]) */
-#define CROP_STD_X      114     /* ...i gdje počinje u kadru: DIWSTRT $2C81 */
+/* What Auto shows across: the window - or, when the game's playfield is
+   narrower than the standard screen, 640 hires pixels round it: the standard
+   screen itself when the window lies inside it, else centred on the window,
+   inside the frame. The window is the bitplanes' (DIW on lines with data), so
+   it does not see sprites in the border: Banshee's in-game playfield is 256
+   lores pixels by 256 lines (242..754 in the frame) and its score, lives and
+   shield panel is border sprites (BRDSPRT) to the left of it, filling the
+   standard screen to 114. Taken literally the window lost the panel and Fill
+   stretched the rest 1.7 times where a standard game gets 1.33; centred, the
+   panel was cut and the right showed border. Only the width: a window lower
+   than the standard screen is what Auto is for, the letterbox it zooms away.
+   Steps of two hires pixels. */
+#define CROP_AUTO_MIN_W 640     /* the standard screen (aga_hvs.c zoom_rect[2]) */
+#define CROP_STD_X      114     /* ...and where it starts in the frame: DIWSTRT $2C81 */
 static inline void crop_auto_span(int x0, int x1, int *x, int *w)
 {
     int cx = x0, cw = x1 - x0;
@@ -125,14 +124,14 @@ static inline void crop_auto_span(int x0, int x1, int *x, int *w)
     *w = cw;
 }
 
-/* Riječi na $DFF1F2. Bitovi 1 i 15 ostaju čisti u svakoj: kernel bez njih
-   sprema riječ kao jezgrin aga_ctrl, gdje ta dva znače "windowed" i "use the
-   register" (vectors.c) - ne pitaj zašto baš ta dva, tako je oduvijek.
-     $58C0 + E5(d)   još pet bitova vrijednosti: latch = latch << 5 | d
-     $5870 + E3(s)   vrijednost u slot s = rub + 4 x NTSC, latch obrisan
-     $5880 + E3(s)   crop ekran (samo desktop): standard s >> 2, rub s & 3
-                     označen; $5930 ga završava, kao što završava Position
-   Vrijednost su dvije data riječi, deset bitova: rub je najviše 480. */
+/* The words at $DFF1F2. Bits 1 and 15 stay clear in every one: a kernel
+   without them stores the word as the core's aga_ctrl, where those two mean
+   "windowed" and "use the register" (vectors.c).
+     $58C0 + E5(d)   five more bits of a value: latch = latch << 5 | d
+     $5870 + E3(s)   the value into slot s = edge + 4 x NTSC, latch cleared
+     $5880 + E3(s)   the crop screen (desktop only): standard s >> 2, the
+                     edge s & 3 marked; $5930 ends it, as it ends Position
+   A value is two data words, ten bits: an edge is 480 at most. */
 #define CROP_E3(s)  ((uint16_t)(((s) & 1) | (((s) & 6) << 1)))
 #define CROP_E5(d)  ((uint16_t)(((d) & 1) | (((d) & 0x1E) << 1)))
 #define CROP_D3(v)  ((int)(((v) & 1) | (((v) >> 1) & 6)))

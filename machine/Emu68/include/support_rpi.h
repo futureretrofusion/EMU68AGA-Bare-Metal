@@ -79,6 +79,7 @@
 uint32_t set_clock_rate(uint32_t clock_id, uint32_t speed);
 uint32_t get_min_clock_rate(uint32_t clock_id);
 uint32_t get_max_clock_rate(uint32_t clock_id);
+int frf_notify_xhci_reset(uint32_t pci_bdf);
 uint32_t get_clock_rate(uint32_t clock_id);
 uint32_t get_clock_rate_measured(uint32_t clock_id);
 int get_edid_block(uint32_t block, uint8_t *out);

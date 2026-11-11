@@ -12,6 +12,9 @@
 uintptr_t frf_z3ram_phys = 0;
 uint32_t  frf_z3ram_size = FRF_Z3RAM_BYTES;
 
+#ifndef FRF_PI4_R75_NO_Z3_RAM
+/* Original Pi3 RAM board is disabled for this Pi4 parity experiment
+ * because it collided at $40000000 with Emu68's ROM on R69/R70. */
 /* Standard nibble-wired Autoconfig representation.
    Logical configuration:
       A3 11 B0 00 6D 73 00 00 00 01 00 00 00 00 00 00
@@ -60,3 +63,4 @@ static struct ExpansionBoard frf_z3_board = {
 };
 
 static void * __attribute__((used, section(".boards.z3"))) frf_z3_board_ref = &frf_z3_board;
+#endif /* FRF_PI4_R75_NO_Z3_RAM */

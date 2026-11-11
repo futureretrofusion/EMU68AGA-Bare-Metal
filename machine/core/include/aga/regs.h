@@ -1,4 +1,4 @@
-/* AGA-STORM — karta Amiga custom registara (pomaci od 0xDFF000) i definicije bitova.
+/* AGA-PISTORM — Amiga custom register map (offsets from 0xDFF000) and bit definitions.
  * SPDX-License-Identifier: GPL-2.0-only
  */
 #ifndef AGA_REGS_H
@@ -6,7 +6,7 @@
 
 #define CUSTOM_BASE   0xDFF000u
 
-/* samo za čitanje - tako piše u HRM-u, ne bunite se */
+/* Read-only */
 #define BLTDDAT   0x000
 #define DMACONR   0x002
 #define VPOSR     0x004
@@ -23,7 +23,7 @@
 #define DSKBYTR   0x01A
 #define INTENAR   0x01C
 #define INTREQR   0x01E
-/* samo za pisanje - čitanje ovdje nije predviđeno */
+/* Write-only */
 #define DSKPTH    0x020
 #define DSKPTL    0x022
 #define DSKLEN    0x024
@@ -134,7 +134,7 @@
 #define FMODE     0x1FC
 #define NOOP      0x1FE
 
-/* DMACON bitovi */
+/* DMACON bits */
 #define DMAF_SETCLR  0x8000
 #define DMAF_BBUSY   0x4000
 #define DMAF_BZERO   0x2000
@@ -151,27 +151,27 @@
 #define DMAF_AUD0EN  0x0001
 #define DMAF_AUDEN   0x000F
 
-/* INTENA / INTREQ bitovi */
+/* INTENA / INTREQ bits */
 #define INTF_SETCLR  0x8000
 #define INTF_INTEN   0x4000
-#define INTF_EXTER   0x2000   /* razina 6 */
-#define INTF_DSKSYN  0x1000   /* razina 5 */
-#define INTF_RBF     0x0800   /* razina 5 */
-#define INTF_AUD3    0x0400   /* razina 4 */
+#define INTF_EXTER   0x2000   /* level 6 */
+#define INTF_DSKSYN  0x1000   /* level 5 */
+#define INTF_RBF     0x0800   /* level 5 */
+#define INTF_AUD3    0x0400   /* level 4 */
 #define INTF_AUD2    0x0200
 #define INTF_AUD1    0x0100
 #define INTF_AUD0    0x0080
-#define INTF_BLIT    0x0040   /* razina 3 */
-#define INTF_VERTB   0x0020   /* razina 3 */
-#define INTF_COPER   0x0010   /* razina 3 */
-#define INTF_PORTS   0x0008   /* razina 2 */
-#define INTF_SOFTINT 0x0004   /* razina 1 */
+#define INTF_BLIT    0x0040   /* level 3 */
+#define INTF_VERTB   0x0020   /* level 3 */
+#define INTF_COPER   0x0010   /* level 3 */
+#define INTF_PORTS   0x0008   /* level 2 */
+#define INTF_SOFTINT 0x0004   /* level 1 */
 #define INTF_DSKBLK  0x0002
 #define INTF_TBE     0x0001
 
 /* BPLCON0 */
 #define BPLCON0_HIRES   0x8000
-#define BPLCON0_BPU0    0x1000  /* BPU2..0 = bitovi 14..12 */
+#define BPLCON0_BPU0    0x1000  /* BPU2..0 = bits 14..12 */
 #define BPLCON0_HAM     0x0800
 #define BPLCON0_DPF     0x0400
 #define BPLCON0_COLOR   0x0200
@@ -197,8 +197,8 @@
 #define BPLCON2_PF1P    0x0007
 
 /* BPLCON3 */
-#define BPLCON3_BANK     0xE000  /* banka palete, bitovi 15..13 */
-#define BPLCON3_PF2OF    0x1C00  /* pomak boje playfielda 2, bitovi 12..10 */
+#define BPLCON3_BANK     0xE000  /* palette bank, bits 15..13 */
+#define BPLCON3_PF2OF    0x1C00  /* playfield 2 colour offset, bits 12..10 */
 #define BPLCON3_LOCT     0x0200
 #define BPLCON3_SPRES    0x00C0
 #define BPLCON3_BRDRBLNK 0x0020
@@ -220,8 +220,7 @@
 #define FMODE_BPAGEM  0x0002
 #define FMODE_BPL32   0x0001
 
-/* BEAMCON0: imena bitova iz HRM-a, raspoređena kao u WinUAE include/custom.h -
-   ne pitajte zašto redoslijed izgleda kao da ga je složio umoran praktikant */
+/* BEAMCON0: the HRM's bit names, laid out as in WinUAE's include/custom.h */
 #define BEAMCON0_HARDDIS  0x4000
 #define BEAMCON0_LPENDIS  0x2000
 #define BEAMCON0_VARVBEN  0x1000
@@ -238,10 +237,10 @@
 #define BEAMCON0_VSYTRUE  0x0002
 #define BEAMCON0_HSYTRUE  0x0001
 
-/* identifikacija chipseta (VPOSR bitovi 14..8) */
+/* Chipset identification (VPOSR bits 14..8) */
 #define VPOSR_ID_AGA_PAL   0x2300   /* Alice 8374 PAL rev 3/4: 0x23 */
-#define VPOSR_ID_AGA_NTSC  0x3300   /* ... NTSC: 0x33 - bit 12 je PAL/NTSC strap */
-#define VPOSR_LOL          0x0080   /* ovaj redak je dug (NTSC: 228 colour clocks) */
+#define VPOSR_ID_AGA_NTSC  0x3300   /* ... NTSC: 0x33 - bit 12 is the PAL/NTSC strap */
+#define VPOSR_LOL          0x0080   /* this line is a long one (NTSC: 228 colour clocks) */
 #define DENISEID_LISA      0x00F8
 
 /* BLTCON0 / BLTCON1 */
@@ -263,18 +262,18 @@
 #define BLTCON1_AUL   0x0004
 #define BLTCON1_SING  0x0002
 
-/* geometrija zraka */
-#define AGA_PAL_HPOS      227     /* colour clocks po retku (0..226) */
-#define AGA_NTSC_HPOS     227     /* kratki redak; NTSC izmjenjuje 227 i 228 (LOL), jer naravno da izmjenjuje */
-#define AGA_PAL_VPOS      312     /* redaka po frameu, +1 kad je LOF */
+/* Beam geometry */
+#define AGA_PAL_HPOS      227     /* colour clocks per line (0..226) */
+#define AGA_NTSC_HPOS     227     /* a short line; NTSC alternates 227 and 228 (LOL) */
+#define AGA_PAL_VPOS      312     /* lines per frame, +1 when LOF */
 #define AGA_NTSC_VPOS     262
-#define AGA_VBLANK_END_PAL  0x1A  /* prvi redak nakon vertikalnog blanka */
+#define AGA_VBLANK_END_PAL  0x1A  /* first line after vertical blank */
 #define AGA_VBLANK_END_NTSC 0x15
-/* Spriteovi se ponovno pokreću prije prikaza, na vlastitim apsolutnim
-   retcima: UAE src/include/custom.h ima VBLANK_SPRITE_PAL 25 i
-   VBLANK_SPRITE_NTSC 20, neovisno o svojim konstantama prikaza (koje su tamo
-   27 i 28). WinUAE-ovi DMA zapisi potvrđuju 25 za PAL: prvi par
-   SPRxPOS/SPRxCTL u frameu dohvaća se na tom retku. */
+/* Sprites restart before the display does, on their own absolute lines:
+   UAE src/include/custom.h has VBLANK_SPRITE_PAL 25 and VBLANK_SPRITE_NTSC 20,
+   independent of its display constants (which are 27 and 28 there). WinUAE's
+   DMA records confirm 25 for PAL: the first SPRxPOS/SPRxCTL pair of a frame is
+   fetched on that line. */
 #define AGA_SPRITE_VBLANK_PAL  25
 #define AGA_SPRITE_VBLANK_NTSC 20
 

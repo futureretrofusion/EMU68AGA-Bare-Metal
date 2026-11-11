@@ -26,7 +26,6 @@ __attribute__((aligned(4096)))
 #include "./mailbox.resource.h"
 #include "./powerpc.library.h"
 #include "./gic400.library.h"
-#include "./cma.resource.h"
 
 static struct { 
     void *rom_base;
@@ -41,7 +40,6 @@ static struct {
     { mailbox_resource, sizeof(mailbox_resource), 0},
     { powerpc_library, sizeof(powerpc_library), 0 },
     { gic400_library, sizeof(gic400_library), 0 },
-    { cma_resource, sizeof(cma_resource), 0 },
     { NULL, 0, 0 }
 };
 
@@ -120,6 +118,22 @@ static int add_string(const char *str)
 
 static void dump_node(of_node_t *node)
 {
+#if defined(FRF_PI4_NATIVE_USB_GUEST_PCIE_OFF)
+    /* The host ARM CPU1 owns BCM2711 VL805 for all native keyboard/mouse/
+     * gamepad events. Do NOT export the VL805's PCIe bus into the guest
+     * devicetree.resource, or a previously configured Poseidon xhci.device
+     * will also reset/program that same physical host controller.
+     *
+     * This changes only the guest FDT serialization. The ARM original DT
+     * stays intact and frf_xhci_probe_run() can still resolve the device.
+     * The known-good R75 release is compiled WITHOUT this option. */
+    if (node && node->on_parent &&
+        strcmp(node->on_name,"pcie@7d500000")==0 &&
+        strcmp(node->on_parent->on_name,"scb")==0) {
+        kprintf("[R79-NATIVE-USB] guest PCIe node omitted; ARM owns VL805\\n");
+        return;
+    }
+#endif
     of_property_t *prop;
     of_node_t *child;
 

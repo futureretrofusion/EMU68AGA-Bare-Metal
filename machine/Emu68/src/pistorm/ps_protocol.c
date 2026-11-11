@@ -15,10 +15,10 @@
 #include "tlsf.h"
 #include "ps_protocol.h"
 
-/* AGA-STORM: locked bus API (definicije na kraju ovog filea). Ova
-   imena sada su LOCKING wrapperi; kod unutar ovog filea koji se već
-   izvodi pod lockom mora zvati *_nolock ili *_int oblike - vidi napomenu
-   iznad ps_bus_lock. */
+/* AGA-PISTORM: locked bus API (definitions at the end of this file). These
+   names are the LOCKING wrappers now; code inside this file that already runs
+   under the lock must call the *_nolock or *_int forms instead - see the note
+   above ps_bus_lock. */
 unsigned int ps32_read_32_nolock(unsigned int address);
 unsigned int ps32_read_8(unsigned int address);
 unsigned int ps32_read_16(unsigned int address);
@@ -1943,8 +1943,8 @@ void ps_setup_protocol()
                 ps32_write_access_128 = ps32_do_write_access_128;
             }
             
-            /* AGA-STORM: sirovi oblici. check_blit_active() čita kroz
-               ps_read_*_int iz unutrašnjosti zaključanog upisa. */
+            /* AGA-PISTORM: the raw forms. check_blit_active() reads through
+               ps_read_*_int from inside a locked write. */
             ps_read_8_int = ps32_read_8_nolock;
             ps_read_16_int = ps32_read_16_nolock;
             ps_read_32_int = ps32_read_32_nolock;
@@ -2218,7 +2218,7 @@ void ps_housekeeper()
         asm volatile("wfe");
 
 #ifdef AGA_PISTORM
-        /* AGA-STORM: bus upisi audio ringa, jedna grupa po posjetu (vidi aga_audio.c) */
+        /* AGA-PISTORM: the audio ring's bus writes, one group per visit (see aga_audio.c) */
         { extern void aga_audio_bus_service(void); aga_audio_bus_service(); }
 #endif
         if (housekeeper_enabled)
@@ -2689,12 +2689,12 @@ void ps_buptest(unsigned int test_size, unsigned int maxiter)
    before any other core touches the bus. */
 volatile char ps_bus_lock __attribute__((aligned(64)));
 #if defined(AGA_PISTORM) && defined(AGA_PROBES)
-/* AGA-STORM testni kerneli: tko čeka sabirnicu i tko ju drži, po jezgri
-   (0 = 68k, 2 = housekeeper i njegovi audio-ring upisi, 3 =
-   chipset). Svaka jezgra dodaje samo u svoje slotove, unutar locka;
-   chipset jezgra ih čita jednom po slici (aga_glue.c, bus_* brojači). Zatraženo
-   zbog PiStorm16ovog zagušenja: chipset tamo drži vrijeme, pa je 68k
-   sumnjivac, a na toj ploči svaki njegov CIA pristup prelazi sabirnicu. */
+/* AGA-PISTORM test kernels: who waits for the bus and who holds it, per core
+   (0 = the 68k, 2 = the housekeeper and its audio-ring writes, 3 = the
+   chipset). Each core only adds to its own slots, inside the lock; the
+   chipset core reads them once a frame (aga_glue.c, bus_* counters). Asked
+   for by the PiStorm16's choke: the chipset keeps time there, so the 68k is
+   the suspect, and on that board every CIA access it makes crosses the bus. */
 volatile uint64_t ps_bus_wait_ticks[4], ps_bus_hold_ticks[4], ps_bus_wait_max[4];
 volatile uint32_t ps_bus_count[4];
 static uint64_t ps_bus_hold_t0[4];

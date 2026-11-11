@@ -44,11 +44,11 @@ uint32_t CLEAR_BITS = 0;
 #define CHIPSET_DELAY PISTORM_CHIPSET_DELAY
 #define CIA_DELAY     PISTORM_CIA_DELAY
 
-/* Forward deklaracije. Nekoliko primitiva definirano je niže, ali ih
-   pozivaju funkcije iznad njih. Moraju se razriješiti na sirove *_int ili
-   *_nolock oblike, nikad na locking wrappere na dnu filea:
-   ps_bus_lock nije rekurzivan, pa wrapper pozvan ispod locka
-   vrti se zauvijek. Vidi napomenu iznad ps_bus_lock. */
+/* Forward declarations. Several primitives are defined further down but are
+   called from functions above them. They must resolve to the raw *_int or
+   *_nolock forms, never to the locking wrappers at the bottom of the file:
+   ps_bus_lock is not recursive, so a wrapper called from under the lock
+   spins forever. See the note above ps_bus_lock. */
 unsigned int ps_read_8_int(unsigned int address);
 unsigned int ps_read_16_int(unsigned int address);
 unsigned int ps_read_32_int(unsigned int address);
@@ -886,8 +886,8 @@ void ps_housekeeper()
 
     for(;;) {
 #ifdef AGA_PISTORM
-        /* AGA-STORM: bus upisi audio ringa, jedna grupa po posjetu, pa
-           chipset jezgra nikad ne čeka na PiStorm sabirnicu (vidi aga_audio.c) */
+        /* AGA-PISTORM: the audio ring's bus writes, one group per visit, so
+           the chipset core never waits on the PiStorm bus (see aga_audio.c) */
         { extern void aga_audio_bus_service(void); aga_audio_bus_service(); }
 #endif
         if (housekeeper_enabled)
@@ -1593,12 +1593,12 @@ volatile char ps_bus_lock __attribute__((aligned(64)));
    back $FF/$00 from then on: the CIA couldn't be acknowledged, and the
    sandbox lost keyboard, timers and, at boot, the machine. */
 #if defined(AGA_PISTORM) && defined(AGA_PROBES)
-/* AGA-STORM testni kerneli: tko čeka sabirnicu i tko ju drži, po jezgri
-   (0 = 68k, 2 = housekeeper i njegovi audio-ring upisi, 3 =
-   chipset). Svaka jezgra dodaje samo u svoje slotove, unutar locka;
-   chipset jezgra ih čita jednom po slici (aga_glue.c, bus_* brojači). Zatraženo
-   zbog PiStorm16ovog zagušenja: chipset tamo drži vrijeme, pa je 68k
-   sumnjivac, a na toj ploči svaki njegov CIA pristup prelazi sabirnicu. */
+/* AGA-PISTORM test kernels: who waits for the bus and who holds it, per core
+   (0 = the 68k, 2 = the housekeeper and its audio-ring writes, 3 = the
+   chipset). Each core only adds to its own slots, inside the lock; the
+   chipset core reads them once a frame (aga_glue.c, bus_* counters). Asked
+   for by the PiStorm16's choke: the chipset keeps time there, so the 68k is
+   the suspect, and on that board every CIA access it makes crosses the bus. */
 volatile uint64_t ps_bus_wait_ticks[4], ps_bus_hold_ticks[4], ps_bus_wait_max[4];
 volatile uint32_t ps_bus_count[4];
 static uint64_t ps_bus_hold_t0[4];

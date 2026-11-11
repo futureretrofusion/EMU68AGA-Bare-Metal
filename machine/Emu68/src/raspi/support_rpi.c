@@ -135,6 +135,10 @@ volatile unsigned char print_lock = 0;
 
 void __printf_chk(int, const char *restrict format, ...)
 {
+#ifdef FRF_RELEASE_QUIET
+    (void)format;
+    return; /* production: no UART formatting, no print locks */
+#else
     va_list v;
     va_start(v, format);
 
@@ -146,10 +150,15 @@ void __printf_chk(int, const char *restrict format, ...)
     __atomic_clear(&print_lock, __ATOMIC_RELEASE);
 
     va_end(v);
+#endif
 }
 
 void kprintf(const char * restrict format, ...)
 {
+#ifdef FRF_RELEASE_QUIET
+    (void)format;
+    return;
+#else
     va_list v;
     va_start(v, format);
 
@@ -160,15 +169,21 @@ void kprintf(const char * restrict format, ...)
     __atomic_clear(&print_lock, __ATOMIC_RELEASE);
 
     va_end(v);
+#endif
 }
 
 void vkprintf(const char * restrict format, va_list args)
 {
+#ifdef FRF_RELEASE_QUIET
+    (void)format;(void)args;
+    return;
+#else
     while(__atomic_test_and_set(&print_lock, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
 
     vkprintf_pc(putByte, (void*)ARM_PERIIOBASE, format, args);
 
     __atomic_clear(&print_lock, __ATOMIC_RELEASE);
+#endif
 }
 
 /* status register flags */
@@ -257,6 +272,31 @@ uint32_t frf_get_board_revision(void)
     return LE32(FBReq[5]);
 }
 
+/* Raspberry Pi firmware property tag used by the working bcmpcie.library
+ * after BCM2711 PCIe reset: reload/notify the VL805 firmware at BDF 01:00.0.
+ * The tag has one 32-bit input value, so its request length is 4 bytes. */
+int frf_notify_xhci_reset(uint32_t pci_bdf)
+{
+    FBReq[0] = LE32(7u * 4u);
+    FBReq[1] = 0;
+    FBReq[2] = LE32(0x00030058u); /* NOTIFY_XHCI_RESET */
+    FBReq[3] = LE32(4u);
+    FBReq[4] = LE32(4u);          /* request payload length */
+    FBReq[5] = LE32(pci_bdf);
+    FBReq[6] = 0;
+
+    arm_flush_cache((intptr_t)FBReq, 28);
+    mbox_send(8, mmu_virt2phys((intptr_t)FBReq));
+    mbox_recv(8);
+    arm_dcache_invalidate((intptr_t)FBReq, 28);
+
+    if (LE32(FBReq[1]) != 0x80000000u)
+        return -1;
+    if ((LE32(FBReq[4]) & 0x80000000u) == 0)
+        return -2;
+    return 0;
+}
+
 uint32_t get_clock_rate(uint32_t clock_id)
 {
     FBReq[0] = LE32(4*8);       // Length
@@ -275,14 +315,14 @@ uint32_t get_clock_rate(uint32_t clock_id)
     return LE32(FBReq[6]);
 }
 
-/* AGA-STORM: brzina na kojoj sat stvarno radi, koju mjeri firmware.
-   GET_CLOCK_RATE odgovara brzinom koju je ARM zatražio, pa sat koji je
-   firmware sam postavio - HDMI state machine pod Emu68 - čita 0
-   tamo dok radi (aga_hdmi.c). */
+/* AGA-PISTORM: the rate the clock really runs at, measured by the firmware.
+   GET_CLOCK_RATE answers with the rate the ARM asked for, so a clock the
+   firmware set up for itself - the HDMI state machine under Emu68 - reads 0
+   there while it runs (aga_hdmi.c). */
 uint32_t get_clock_rate_measured(uint32_t clock_id)
 {
-    FBReq[0] = LE32(4*8);       // Duljina
-    FBReq[1] = 0;               // Zahtjev
+    FBReq[0] = LE32(4*8);       // Length
+    FBReq[1] = 0;               // Request
     FBReq[2] = LE32(0x00030047);// GetClockRateMeasured
     FBReq[3] = LE32(8);
     FBReq[4] = 0;
@@ -298,15 +338,15 @@ uint32_t get_clock_rate_measured(uint32_t clock_id)
     return LE32(FBReq[6]);
 }
 
-/* AGA-STORM: jedan blok EDID-a ekrana od 128 bajtova kako ga je firmware pročitao
-   (GET_EDID_BLOCK), za sample rateove koje ekran prihvaća (aga_hdmi.c).
-   0 kad je stigao, -1 kad ga nema. */
+/* AGA-PISTORM: one 128-byte block of the screen's EDID as the firmware read
+   it (GET_EDID_BLOCK), for the sample rates the screen takes (aga_hdmi.c).
+   0 when it came, -1 when there is none. */
 int get_edid_block(uint32_t block, uint8_t *out)
 {
-    FBReq[0] = LE32(4*40);      // Duljina
-    FBReq[1] = 0;               // Zahtjev
+    FBReq[0] = LE32(4*40);      // Length
+    FBReq[1] = 0;               // Request
     FBReq[2] = LE32(0x00030020);// GetEDIDBlock
-    FBReq[3] = LE32(136);       // broj bloka, njegov status, 128 bajtova
+    FBReq[3] = LE32(136);       // the block number, its status, 128 bytes
     FBReq[4] = 0;
     FBReq[5] = LE32(block);
     for (int i = 6; i < 40; i++) FBReq[i] = 0;
@@ -318,7 +358,7 @@ int get_edid_block(uint32_t block, uint8_t *out)
 
     if (LE32(FBReq[1]) != 0x80000000 || LE32(FBReq[5]) != block || FBReq[6] != 0)
         return -1;
-    const uint8_t *b = (const uint8_t *)&FBReq[7];   /* bajtovi kako ih je firmware zapisao */
+    const uint8_t *b = (const uint8_t *)&FBReq[7];   /* bytes as the firmware wrote them */
     for (int i = 0; i < 128; i++) out[i] = b[i];
     return 0;
 }

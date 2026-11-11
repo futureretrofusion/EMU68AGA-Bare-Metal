@@ -1,16 +1,16 @@
-/* AGA-STORM - mix prozora Sound: stereo širina, zamijenjeni lijevi i desni,
- * i glasnoća zvuka preko HDMI-ja.
+/* AGA-PISTORM - the Sound window's mix: stereo width, left and right swapped,
+ * and the volume of sound over HDMI.
  *
- * Paulini kanali su tvrdo lijevo (0, 3) i desno (1, 2). Širina i zamjena
- * rade na mixu koji uzimaju oba izlaza - Amigin vlastiti audio izlaz i
- * HDMI - u aga_audio_stream; pri punoj širini, nezamijenjeni, uzorci su
- * jezgrini do bita. Glasnoća je samo HDMI-jeva (stvarna Paula nema rezerve
- * da je da - i ne žali se): iznad 100 % mekano koljeno od -2.5 dBFS
- * zaobljuje vrhove umjesto da ih reže.
+ * Paula's channels are hard left (0, 3) and right (1, 2). Width and swap work
+ * on the mix both outputs take - the Amiga's own audio output and HDMI - in
+ * aga_audio_stream; at full width, not swapped, the samples are the core's
+ * bit for bit. The volume is HDMI's alone (the real Paula has no headroom to
+ * give): above 100 % a soft knee from -2.5 dBFS rounds the peaks off instead
+ * of clipping them.
  *
- * Širina i koljeno slijede mix() i soft() iz RGB2RTG-ova
- * kernel/rgb_hdmi.c (GPL-2.0-only, isti autor). Čisti C bez kernel
- * zaglavlja: host/tests/test_mix.c ga uključuje.
+ * The width and knee follow RGB2RTG's kernel/rgb_hdmi.c mix() and soft()
+ * (GPL-2.0-only, by the same author). Pure C with no kernel headers:
+ * host/tests/test_mix.c includes it.
  *
  * SPDX-License-Identifier: GPL-2.0-only
  */
@@ -19,15 +19,14 @@
 
 #include <stdint.h>
 
-/* koraci prozora Sound, indeks -> postotak (funkcije, ne tablice:
-   nekorištena static const tablica je greška pod kernelovim -Werror, a
-   kernel ne prašta besposlene tablice) */
-static inline int mix_vol_pc(int i)          /* HDMI glasnoća; 200 = GAIN 2 iz 1.113 */
+/* the Sound window's steps, index -> per cent (functions, not tables: an
+   unused static const table is an error under the kernel's -Werror) */
+static inline int mix_vol_pc(int i)          /* HDMI volume; 200 = 1.113's GAIN 2 */
 {
     static const int t[5] = { 100, 150, 200, 300, 400 };
     return (i >= 0 && i < 5) ? t[i] : 200;
 }
-static inline int mix_width_pc(int i)        /* stereo: Amigina, ..., mono */
+static inline int mix_width_pc(int i)        /* stereo: the Amiga's, ..., mono */
 {
     static const int t[5] = { 100, 75, 50, 25, 0 };
     return (i >= 0 && i < 5) ? t[i] : 100;
@@ -35,10 +34,9 @@ static inline int mix_width_pc(int i)        /* stereo: Amigina, ..., mono */
 
 #define MIX_KNEE 24576                       /* -2.5 dBFS */
 
-/* širina i zamjena jednog kadra, na mjestu. width u 16.16 (0x10000 =
-   Amigino vlastito razdvajanje, 0 = mono). Rezultat je ponderirani prosjek
-   dviju strana, pa nikad ne prelazi glasniju od njih - matematika se
-   pobrinula. */
+/* one frame's width and swap, in place. width in 16.16 (0x10000 = the
+   Amiga's own separation, 0 = mono). The result is a weighted average of
+   the two sides, so it never exceeds the louder of them. */
 static inline void mix_stereo(int16_t *l, int16_t *r, int32_t width16, int swap)
 {
     int32_t a = *l, b = *r;
@@ -52,7 +50,7 @@ static inline void mix_stereo(int16_t *l, int16_t *r, int32_t width16, int swap)
     *r = (int16_t)b;
 }
 
-/* mekano koljeno: ravno do MIX_KNEE, zatim prema punoj skali i nikad preko */
+/* the soft knee: straight up to MIX_KNEE, then towards full scale and never past */
 static inline int16_t mix_soft(int32_t v)
 {
     int32_t a = v < 0 ? -v : v;
@@ -62,8 +60,8 @@ static inline int16_t mix_soft(int32_t v)
     return (int16_t)(v < 0 ? -a : a);
 }
 
-/* jedan HDMI uzorak pri gain16 (16.16; 0x10000 = 100 %): do 100 % ravno
-   i odrezano kao prije, iznad toga kroz koljeno - tu počinje umjetnost */
+/* one HDMI sample at gain16 (16.16; 0x10000 = 100 %): up to 100 % straight
+   and clipped as before, above it through the knee */
 static inline int16_t mix_level(int32_t v, int32_t gain16)
 {
     if (gain16 <= 0x10000) {

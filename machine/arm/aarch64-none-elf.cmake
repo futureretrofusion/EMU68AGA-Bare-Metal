@@ -1,5 +1,5 @@
-# CMake toolchain file za build Emu68 s Arm GNU aarch64-none-elf
-# toolchainom instaliranim u C:/Tools/aarch64 (Windows host).
+# CMake toolchain file for building Emu68 with the Arm GNU aarch64-none-elf
+# toolchain installed at C:/Tools/aarch64 (Windows host).
 # SPDX-License-Identifier: GPL-2.0-only
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)

@@ -1,25 +1,25 @@
-/* AGA-STORM — virtualni disketni pogoni (ADF slike) na emuliranoj Pauli.
+/* AGA-PISTORM - virtual floppy drives (ADF images) on the emulated Paula.
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * Model: do AGA_MAX_DRIVES pogona koji drže ADF slike u memoriji. Trenutačna
- * staza drži se MFM-kodirana (standardni AmigaDOS raspored: 11/22 sektora od
- * 544 MFM riječi, zatim gap od 0xAAAA riječi; 6334 riječi po DD okretaju).
- * Pogon se okreće kad god mu je motor uključen: DSK_WORDS_PER_LINE riječi
- * prođe glavom po scanlineu (2 us po MFM bitu = 32 us po riječi, okretaj
- * svakih 200 ms). Paulin disk DMA (DSKPT/DSKLEN/DSKSYNC, WORDSYNC u ADKCON)
- * čita te riječi u chip RAM ili piše riječi chip RAM-a na stazu; zapisana
- * staza dekodira se natrag u sliku kad prijenos završi. Upravljačke linije
- * pogona posao su pravih CIA na stroju; glue ovdje preslikava CIA-B PRB
- * upise (aga_disk_cia_prb) i zamjenjuje statusne bitove CIA-A PRA
- * (aga_disk_cia_pra) dok je virtualni pogon odabran.
+ * Model: up to AGA_MAX_DRIVES drives holding ADF images in memory. The
+ * current track is kept MFM-encoded (standard AmigaDOS layout: 11/22 sectors
+ * of 544 MFM words, then a gap of 0xAAAA words; 6334 words per DD revolution).
+ * The drive rotates whenever its motor is on: DSK_WORDS_PER_LINE words pass
+ * the head per scan line (2 us per MFM bit = 32 us per word, a revolution
+ * every 200 ms). Paula's disk DMA (DSKPT/DSKLEN/DSKSYNC, WORDSYNC in ADKCON)
+ * reads those words into chip RAM or writes chip RAM words onto the track;
+ * a written track is decoded back into the image when the transfer ends.
+ * The drive control lines are the real CIAs' job on the machine; the glue
+ * mirrors the CIA-B PRB writes here (aga_disk_cia_prb) and substitutes the
+ * CIA-A PRA status bits (aga_disk_cia_pra) while a virtual drive is selected.
  *
  * The DD track length and gap (6334 words, 175 longs of gap) and the
  * 83-cylinder limit are WinUAE disk.cpp's values, and the DSKBYTR bits are
  * put together as there; the rest is mine, bugs and all.
  *   WinUAE disk.cpp: Copyright 1995 Hannu Rummukainen,
  *     Copyright 1995-2001 Bernd Schmidt, Copyright 2000-2021 Toni Wilen
- * Promijenjeno u odnosu na UAE/WinUAE kod za AGA-STORM 2026.
- * UAE i WinUAE su GPL, kao i ova datoteka.
+ * Changed from the UAE/WinUAE code for AGA-PISTORM in 2026.
+ * UAE and WinUAE are GPL, like this file.
  */
 #include <stdint.h>
 #include <stdlib.h>
@@ -46,13 +46,13 @@ static disk_drive_t *cur_drive(aga_t *a)
 static inline uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
 static inline void put_be32(uint8_t *p, uint32_t v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
 
-/* neparni/parni split: bitovi podataka padaju na parne bit-pozicije izlaznih longova */
+/* odd/even split: data bits land on the even bit positions of the output longs */
 static void split_block(uint32_t *out, const uint8_t *in, int nlongs)
 {
     for (int i = 0; i < nlongs; i++) {
         uint32_t v = be32(in + 4 * i);
-        out[i] = (v >> 1) & 0x55555555;          /* neparni bitovi */
-        out[nlongs + i] = v & 0x55555555;        /* parni bitovi */
+        out[i] = (v >> 1) & 0x55555555;          /* odd bits */
+        out[nlongs + i] = v & 0x55555555;        /* even bits */
     }
 }
 
@@ -61,7 +61,7 @@ static uint32_t join_block(const uint32_t *odd, const uint32_t *even)
     return ((*odd & 0x55555555) << 1) | (*even & 0x55555555);
 }
 
-/* umetni clock bitove u niz longova kojima bitovi podataka sjede na parnim pozicijama */
+/* insert clock bits into a run of longs whose data bits sit on even positions */
 static void fill_clocks(uint32_t *l, int n, int prev_bit0)
 {
     for (int i = 0; i < n; i++) {
@@ -77,28 +77,28 @@ static void encode_track(disk_drive_t *dr)
 {
     int nsec = dr->sectors;
     int track = dr->cyl * 2 + dr->side;
-    uint32_t *L = (uint32_t *)dr->mfm;              /* radi u longovima, zatim zamijeni u riječi */
+    uint32_t *L = (uint32_t *)dr->mfm;              /* work in longs, then swap to words */
     int nl = 0;
     uint8_t zero_label[16] = {0};
     for (int s = 0; s < nsec; s++) {
         uint32_t *sec = L + nl;
-        sec[0] = 0;                                  /* gap prije synca: podaci 0 -> 0xAAAAAAAA */
-        sec[1] = 0x44014401;                         /* sync, zakrpan nakon prolaza clockova */
+        sec[0] = 0;                                  /* pre-sync gap: data 0 -> 0xAAAAAAAA */
+        sec[1] = 0x44014401;                         /* sync, patched after the clock pass */
         uint8_t info[4] = { 0xFF, (uint8_t)track, (uint8_t)s, (uint8_t)(nsec - s) };
-        split_block(sec + 2, info, 1);               /* 2 longa */
-        split_block(sec + 4, zero_label, 4);         /* 8 longova */
+        split_block(sec + 2, info, 1);               /* 2 longs */
+        split_block(sec + 4, zero_label, 4);         /* 8 longs */
         uint32_t hchk = 0;
         for (int i = 2; i < 12; i++) hchk ^= sec[i];
         hchk &= 0x55555555;
         uint8_t hb[4]; put_be32(hb, hchk);
-        split_block(sec + 12, hb, 1);                /* 2 longa */
+        split_block(sec + 12, hb, 1);                /* 2 longs */
         const uint8_t *data = dr->image + ((uint32_t)track * nsec + s) * 512;
-        split_block(sec + 16, data, 128);            /* 256 longova */
+        split_block(sec + 16, data, 128);            /* 256 longs */
         uint32_t dchk = 0;
         for (int i = 16; i < 272; i++) dchk ^= sec[i];
         dchk &= 0x55555555;
         uint8_t db[4]; put_be32(db, dchk);
-        split_block(sec + 14, db, 1);                /* 2 longa */
+        split_block(sec + 14, db, 1);                /* 2 longs */
         nl += 272;
     }
     int gap = (nsec == 11) ? DSK_GAP_LONGS_DD : DSK_GAP_LONGS_HD;
@@ -106,7 +106,7 @@ static void encode_track(disk_drive_t *dr)
     nl += gap;
     fill_clocks(L, nl, 0);
     for (int s = 0; s < nsec; s++) L[s * 272 + 1] = 0x44894489;
-    /* longovi -> big-endian tok riječi */
+    /* longs -> big-endian word stream */
     for (int i = 0; i < nl; i++) {
         uint32_t v = L[i];
         dr->mfm[2 * i] = (uint16_t)(v >> 16);
@@ -117,14 +117,13 @@ static void encode_track(disk_drive_t *dr)
     dr->mfm_valid = 1;
 }
 
-/* dekodiraj (možda prepisani) međuspremnik staze natrag u sliku */
+/* decode the (possibly rewritten) track buffer back into the image */
 static void decode_track(disk_drive_t *dr)
 {
     int n = dr->mfm_words, nsec = dr->sectors, found = 0;
     for (int p = 0; p < n; p++) {
-        /* zaglavlje slijedi nakon posljednje sync riječi niza (sync niz obično
-           ima dvije riječi, ali staza zapisana nakon WORDSYNC čitanja može
-           imati jednu - naravno da može) */
+        /* the header follows the last sync word of a run (a sync run is normally
+           two words, but a track written after a WORDSYNC read may hold one) */
         if (dr->mfm[p] != 0x4489 || dr->mfm[(p + 1) % n] == 0x4489) continue;
         uint32_t w[272];
         for (int i = 0; i < 270; i++)
@@ -146,7 +145,7 @@ static void decode_track(disk_drive_t *dr)
     if (found) dr->dirty = 1;
 }
 
-/* ---- API pogona (glue) ----------------------------------------------------- */
+/* ---- drive API (glue) ------------------------------------------------------ */
 int aga_disk_insert(aga_t *a, int drive, const uint8_t *adf, uint32_t size, int wprot)
 {
     disk_t *d = a->dsk;
@@ -162,7 +161,7 @@ int aga_disk_insert(aga_t *a, int drive, const uint8_t *adf, uint32_t size, int 
     dr->sectors = (size == DSK_HD_SIZE) ? 22 : 11;
     dr->wprot = wprot ? 1 : 0;
     dr->inserted = 1;
-    dr->changed = 1;                 /* CHNG ostaje aktivan dok step impuls ne vidi disk */
+    dr->changed = 1;                 /* CHNG stays asserted until a step pulse sees the disk */
     dr->mfm_valid = 0;
     dr->dirty = 0;
     aga_logf(a, "disk: DF%d: %u KB image inserted%s", drive, size >> 10, wprot ? " (write protected)" : "");
@@ -213,11 +212,11 @@ uint8_t aga_disk_cia_prb_mask(const aga_t *a)
     uint8_t m = 0;
     if (!a->dsk) return 0;
     for (int i = 0; i < AGA_MAX_DRIVES; i++)
-        if (a->dsk->drv[i].inserted) m |= (uint8_t)(0x08 << i);   /* SELx bitovi koje treba forsirati visoko na pravoj CIA */
+        if (a->dsk->drv[i].inserted) m |= (uint8_t)(0x08 << i);   /* SELx bits to force high on the real CIA */
     return m;
 }
 
-/* CIA-B PRB: 7 MTR, 6 SEL3, 5 SEL2, 4 SEL1, 3 SEL0, 2 SIDE, 1 DIR, 0 STEP (svi aktivni nisko) */
+/* CIA-B PRB: 7 MTR, 6 SEL3, 5 SEL2, 4 SEL1, 3 SEL0, 2 SIDE, 1 DIR, 0 STEP (all active low) */
 void aga_disk_cia_prb(aga_t *a, uint8_t prb)
 {
     disk_t *d = a->dsk;
@@ -237,9 +236,9 @@ void aga_disk_cia_prb(aga_t *a, uint8_t prb)
 #endif
         if (sel && d->selected < 0) d->selected = i;
         if (sel && !was_sel)
-            dr->motor = !(prb & 0x80);                       /* MTR se pamti na silaznom rubu SEL-a */
+            dr->motor = !(prb & 0x80);                       /* MTR is latched on the SEL falling edge */
         dr->side = (prb & 0x04) ? 0 : 1;
-        if (sel && (old & 1) && !(prb & 1)) {                /* silazni rub STEP-a */
+        if (sel && (old & 1) && !(prb & 1)) {                /* STEP falling edge */
             if (prb & 0x02) { if (dr->cyl > 0) dr->cyl--; }
             else            { if (dr->cyl < DSK_MAX_CYL - 1) dr->cyl++; }
             if (dr->inserted) dr->changed = 0;
@@ -247,20 +246,18 @@ void aga_disk_cia_prb(aga_t *a, uint8_t prb)
     }
 }
 
-/* statusni bitovi CIA-A PRA za odabrani virtualni pogon: 5 RDY, 4 TK0, 3
-   WPROT, 2 CHNG (aktivni nisko). Vraća 0 ako nijedan virtualni pogon nije
-   odabran (vrijedi vrijednost prave CIA) - i tada se ne pretvaram da sam
-   disketa. */
+/* CIA-A PRA status bits for the selected virtual drive: 5 RDY, 4 TK0, 3 WPROT, 2 CHNG (active low).
+   Returns 0 if no virtual drive is selected (the real CIA value applies). */
 int aga_disk_cia_pra(aga_t *a, uint8_t *bits)
 {
     disk_drive_t *dr = cur_drive(a);
     if (!dr) return 0;
-    uint8_t v = 0x3C;                                        /* sve linije neaktivne (visoko) */
+    uint8_t v = 0x3C;                                        /* all lines inactive (high) */
     if (dr->motor) {
         if (dr->inserted) v &= ~0x20;                        /* RDY */
     } else {
-        /* motor isključen: RDY nosi id pogona, jedan bit po SEL impulsu; prisutan
-           3.5" DD pogon odgovara $FFFFFFFF, tj. RDY je aktivan na svakom bitu */
+        /* motor off: RDY carries the drive id, one bit per SEL pulse; a present
+           3.5" DD drive answers $FFFFFFFF, i.e. RDY active on every bit */
         v &= ~0x20;
     }
     if (dr->cyl == 0) v &= ~0x10;                            /* TK0 */
@@ -270,7 +267,7 @@ int aga_disk_cia_pra(aga_t *a, uint8_t *bits)
     return 1;
 }
 
-/* ---- Paula strana --------------------------------------------------------- */
+/* ---- Paula side ----------------------------------------------------------- */
 void dsk_reset(aga_t *a)
 {
     disk_t *d = a->dsk;
@@ -293,7 +290,7 @@ int dsk_read(aga_t *a, uint32_t reg, uint16_t *v)
     case DSKDATR: *v = d->dskdat; return 1;
     case DSKBYTR: {
         uint16_t r = d->dskbytr & 0x80FF;
-        d->dskbytr &= 0x7FFF;                                /* DSKBYT se čisti čitanjem */
+        d->dskbytr &= 0x7FFF;                                /* DSKBYT is cleared by the read */
         if ((d->dsklen & 0x8000) && aga_dma_enabled(a, DMAF_DSKEN)) r |= 0x4000;
         if (d->dsklen & 0x4000) r |= 0x2000;
         if (d->wordequal) r |= 0x1000;
@@ -318,13 +315,13 @@ int dsk_write(aga_t *a, uint32_t reg, uint16_t v)
             d->dma_active = 0;
             d->dsklen_armed = 0;
         } else if (d->dsklen_armed) {
-            /* drugi upis s postavljenim DMAEN: prijenos počinje */
+            /* second write with DMAEN set: the transfer starts */
             d->dma_active = 1;
             d->dma_write = (v & 0x4000) ? 1 : 0;
             d->dma_left = v & 0x3FFF;
-            d->synced = (a->adkcon & 0x0400) ? 0 : 1;        /* WORDSYNC: prvo čekaj DSKSYNC */
+            d->synced = (a->adkcon & 0x0400) ? 0 : 1;        /* WORDSYNC: wait for DSKSYNC first */
             d->dsklen_armed = 0;
-            if (d->dma_left == 0) {                           /* nema što raditi */
+            if (d->dma_left == 0) {                           /* nothing to do */
                 d->dma_active = 0;
                 aga_intreq_set(a, INTF_DSKBLK);
             }
@@ -345,7 +342,7 @@ static void dma_finished(aga_t *a, disk_drive_t *dr)
     if (d->dma_write && dr && dr->mfm_valid) decode_track(dr);
 }
 
-/* jedna riječ prolazi glavom - polako, kao i sve na disketi */
+/* one word passes the head */
 static void head_word(aga_t *a, disk_drive_t *dr)
 {
     disk_t *d = a->dsk;
@@ -364,7 +361,7 @@ static void head_word(aga_t *a, disk_drive_t *dr)
         if (w == d->dsksync) {
             d->wordequal = 1;
             aga_intreq_set(a, INTF_DSKSYN);
-            if (dma_ok && !d->synced) { d->synced = 1; goto next; }   /* sama sync riječ se ne pohranjuje */
+            if (dma_ok && !d->synced) { d->synced = 1; goto next; }   /* the sync word itself is not stored */
         }
         if (dma_ok && d->synced) {
             chip_wr16(a, d->dskpt, w);
@@ -380,13 +377,12 @@ void dsk_line_tick(aga_t *a)
 {
     disk_t *d = a->dsk;
     if (!d) return;
-    /* NE cur_drive(): ona vraća NULL čim se pogon odznači,
-       a d->selected se resetira na -1 pri svakom upisu CIA-B porta B. Pravi
-       pogon nastavlja se vrtjeti dok mu je motor uključen, bez obzira na /SEL
-       - Kickstart rutinski odznačuje pogon dok postavlja Paulin DMA.
-       Zaustavljanje rotacije ondje zamrznulo je disk usred sektora, zbog čega
-       je pokretanje ADF-a ostavljalo stroj da ispituje pogon koji nikad nije
-       postao spreman. Hvala, Kickstart. */
+    /* NOT cur_drive(): that returns NULL the moment the drive is deselected,
+       and d->selected is reset to -1 on every CIA-B port B write. A real drive
+       keeps spinning once its motor is on, whether or not /SEL is asserted -
+       Kickstart routinely deselects while it sets Paula's DMA up. Stopping
+       rotation there froze the disk mid-sector, which is why booting an ADF
+       left the machine polling a drive that never came ready. */
     disk_drive_t *dr = NULL;
     for (int i = 0; i < AGA_MAX_DRIVES; i++) {
         disk_drive_t *c = &a->dsk->drv[i];
@@ -395,7 +391,7 @@ void dsk_line_tick(aga_t *a)
     if (!dr) return;
     int track = dr->cyl * 2 + dr->side;
     if (!dr->mfm_valid || dr->mfm_track != track) {
-        if (dr->mfm_valid && dr->dirty) { /* slika je već ažurirana na kraju DMA */ }
+        if (dr->mfm_valid && dr->dirty) { /* image already updated at DMA end */ }
         encode_track(dr);
         if (dr->pos >= dr->mfm_words) dr->pos = 0;
     }
