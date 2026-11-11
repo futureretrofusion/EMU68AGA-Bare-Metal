@@ -425,7 +425,9 @@ next:
         dr->pos=0;
         /* Every revolution is an index edge on CIA-B FLAG.  The callback
          * only queues an atomic event; never take CIA lock inside AGA lock. */
-        if(a->hooks.disk_index)
+        /* CIA-B /FLAG is wired to the SELECTED drive's INDEX only.
+         * Unselected motors keep rotating but must never interrupt the OS. */
+        if(d->selected==(int)(dr-d->drv) && a->hooks.disk_index)
             a->hooks.disk_index(a->hooks.user,(int)(dr-d->drv));
     }
 }
@@ -468,7 +470,9 @@ void dsk_line_tick(aga_t *a)
         if(first<0)first=i;
         if(d->selected==i)reader=i;
     }
-    if(reader<0)reader=first;
+    /* Existing no-select boot DMA fallback may use first spinning drive.
+     * Never substitute DF0 if software explicitly selected a stopped DF1. */
+    if(reader<0 && d->selected<0) reader=first;
     for (int i=0;i<AGA_MAX_DRIVES;i++) {
         disk_drive_t *dr=&d->drv[i];
         if(!dr->inserted || !dr->motor)continue;
@@ -487,7 +491,8 @@ void dsk_line_tick(aga_t *a)
             dr->pos+=words;
             if(dr->pos>=dr->mfm_words) {
                 dr->pos-=dr->mfm_words;
-                if(a->hooks.disk_index)a->hooks.disk_index(a->hooks.user,i);
+                if(d->selected==i && a->hooks.disk_index)
+                    a->hooks.disk_index(a->hooks.user,i);
             }
         }
     }

@@ -17,6 +17,12 @@ soft reset, RTG handoff and independent FRF TinyUSB/DWC2 USB host.
 - Added an exact 32-clock motor/SEL drive-ID host regression:
   DF0 = 00000000, DF1 = 00000000, DF2/DF3 = FFFFFFFF;
   also checks DF1 media-ready/empty transitions.
+- INDEX pulses from the rotating virtual drives are now delivered to
+  CIA-B only for the selected drive. Previously, unselected spinning
+  DF0 could signal index while DF1 was being used.
+- Avoid fallback disk data from DF0 if a stopped DF1 is explicitly
+  selected. Preserve the original fallback only when no drive is
+  selected during the Kickstart disk DMA sequence.
 - New AmigaOS m68k executable FRFDFTEST checks actual Kickstart
   disk.resource cached IDs and trackdisk.device OpenDevice for
   units 0 to 3, drive types, tracks, media/change counters. Optional
