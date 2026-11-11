@@ -272,11 +272,11 @@ void aga_disk_cia_prb(aga_t *a, uint8_t prb)
         int sel_bit = 0x08 << i;
         int sel = !(prb & sel_bit), was_sel = !(old & sel_bit);
 #ifdef FRF_VIRTUAL_AGA
-        /* RC12: both drives are physically present in our virtual Amiga
-         * even when empty. Kickstart probes external DF1 while the motor
-         * is stopped, before a user loads any ADF; treating an empty DF1
-         * as nonexistent prevents trackdisk from registering the drive.
-         * Presence and inserted media are separate properties. */
+        /* RC13: two permanently connected virtual 3.5" DD drives only.
+         * DF1 must respond to Kickstart's motor-off 32-bit drive-ID
+         * probe even if no ADF has been inserted. DF2/DF3 must instead
+         * look physically absent; RC12 accidentally advertised 4 drives. */
+        if (sel && i >= 2) continue;
 #else
         if (sel && !dr->inserted) continue;
 #endif
@@ -304,9 +304,12 @@ int aga_disk_cia_pra(aga_t *a, uint8_t *bits)
     if (dr->motor) {
         if (dr->inserted) v &= ~0x20;                        /* RDY */
     } else {
-        /* motor isključen: RDY nosi id pogona, jedan bit po SEL impulsu; prisutan
-           3.5" DD pogon odgovara $FFFFFFFF, tj. RDY je aktivan na svakom bitu */
-        v &= ~0x20;
+        /* Motor-off /RDY is the 32-bit external drive-ID stream.
+         * DRT_AMIGA = 0x00000000 (3.5" DD present): asserted-low RDY
+         * on every selected pulse. DRT_EMPTY = 0xFFFFFFFF (no drive):
+         * no virtual selection / no override for DF2 and DF3.
+         * Do not invert this polarity: Kickstart would miss DF1. */
+        v &= (uint8_t)~0x20u;
     }
     if (dr->cyl == 0) v &= ~0x10;                            /* TK0 */
     if (dr->wprot || !dr->inserted) v &= ~0x08;              /* WPROT */
@@ -422,7 +425,9 @@ next:
         dr->pos=0;
         /* Every revolution is an index edge on CIA-B FLAG.  The callback
          * only queues an atomic event; never take CIA lock inside AGA lock. */
-        if(a->hooks.disk_index)
+        /* CIA-B /FLAG is wired to the SELECTED drive's INDEX only.
+         * Unselected motors keep rotating but must never interrupt the OS. */
+        if(d->selected==(int)(dr-d->drv) && a->hooks.disk_index)
             a->hooks.disk_index(a->hooks.user,(int)(dr-d->drv));
     }
 }
@@ -465,7 +470,9 @@ void dsk_line_tick(aga_t *a)
         if(first<0)first=i;
         if(d->selected==i)reader=i;
     }
-    if(reader<0)reader=first;
+    /* Existing no-select boot DMA fallback may use first spinning drive.
+     * Never substitute DF0 if software explicitly selected a stopped DF1. */
+    if(reader<0 && d->selected<0) reader=first;
     for (int i=0;i<AGA_MAX_DRIVES;i++) {
         disk_drive_t *dr=&d->drv[i];
         if(!dr->inserted || !dr->motor)continue;
@@ -484,7 +491,8 @@ void dsk_line_tick(aga_t *a)
             dr->pos+=words;
             if(dr->pos>=dr->mfm_words) {
                 dr->pos-=dr->mfm_words;
-                if(a->hooks.disk_index)a->hooks.disk_index(a->hooks.user,i);
+                if(d->selected==i && a->hooks.disk_index)
+                    a->hooks.disk_index(a->hooks.user,i);
             }
         }
     }

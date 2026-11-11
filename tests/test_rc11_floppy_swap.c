@@ -6,8 +6,13 @@
 #include <string.h>
 #include <assert.h>
 #include "../machine/core/src/internal.h"
-static unsigned indexes;
-static void index_hook(void *user,int drive) {(void)user;(void)drive;++indexes;}
+static unsigned indexes, index_by_drive[4];
+static void index_hook(void *user,int drive)
+{
+    (void)user;
+    ++indexes;
+    if(drive>=0 && drive<4)++index_by_drive[drive];
+}
 void aga_logf(aga_t *a,const char *fmt,...) {(void)a;(void)fmt;}
 void aga_intreq_set(aga_t *a,uint16_t bits) {(void)a;(void)bits;}
 int aga_dma_enabled(const aga_t *a,uint16_t mask) {(void)a;(void)mask;return 0;}
@@ -74,8 +79,11 @@ int main(void) {
     assert(a->dsk->selected==1);
     assert(a->dsk->drv[0].motor && a->dsk->drv[1].motor);
     before=indexes;
+    unsigned df0_idx=index_by_drive[0],df1_idx=index_by_drive[1];
     for(int i=0;i<3500;i++)dsk_line_tick(a);
     assert(indexes>before);
+    assert(index_by_drive[1]>df1_idx);
+    assert(index_by_drive[0]==df0_idx); /* spinning but unselected */
     /* Eject while another replacement is pending prevents ghost reinsertion. */
     assert(aga_disk_swap(a,0,disk1,901120,1)==0);
     aga_disk_eject(a,0);
