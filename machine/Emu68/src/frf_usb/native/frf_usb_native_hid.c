@@ -3,9 +3,11 @@
  * Genuine device/configuration descriptors and HID interrupt-IN reports.
  */
 #include "frf_usb_native_hid.h"
+#include "../frf_usb_wheel.h"
 #include <string.h>
 extern void frf_native_usb_keyboard_boot_report(const uint8_t report[8]);
 extern void aga_virtual_mouse_update(int dx,int dy,unsigned buttons);
+extern void frf_vcia_keyboard_raw(uint8_t raw);
 extern volatile uint8_t frf_usb_mouse_present;
 extern volatile uint8_t frf_usb_mouse_seen;
 extern volatile uint8_t frf_usb_mouse_buttons;
@@ -280,9 +282,13 @@ static void poll_ep(const struct frf_dwc2_ops *o,struct frf_native_hid *h,
  if(ep->protocol==1 && p.received>=8) {
      frf_native_usb_keyboard_boot_report(packet);
  } else if(ep->protocol==2 && p.received>=3) {
-     unsigned buttons=packet[0]&3u;
+     unsigned buttons=packet[0]&7u; /* include middle wheel-click button */
      aga_virtual_mouse_update((int)(int8_t)packet[1],
                               (int)(int8_t)packet[2],buttons);
+     if(p.received>=4u)
+         (void)frf_usb_wheel_emit(
+             frf_usb_wheel_boot_delta(packet,p.received),
+             frf_vcia_keyboard_raw);
      frf_usb_mouse_seen=1;
      frf_usb_mouse_buttons=(uint8_t)buttons;
  }

@@ -2108,11 +2108,21 @@ static void hud_sample(void)
     }
 }
 
+/* The TinyUSB wheel counter is optional (the alternative native DWC2
+ * backend has no report parser). Missing symbols must not break its link. */
+extern void frf_tinyusb_mouse_wheel_stats(uint32_t*,uint32_t*)
+    __attribute__((weak));
 static void hud_draw(const struct osd_fb *f)
 {
-    char t[24], *p = t;
+    char t[32], *p = t;
     if (hud_temp >= 0) { p = osd_num(p, hud_temp); *p++ = 'C'; *p++ = ' '; }
     if (hud_fps >= 0) { p = osd_num(p, hud_fps); *p++ = 'F'; *p++ = 'P'; *p++ = 'S'; }
+    if (frf_tinyusb_mouse_wheel_stats) {
+        uint32_t reports=0,notches=0;
+        frf_tinyusb_mouse_wheel_stats(&reports,&notches);
+        *p++=' '; *p++='W';
+        p=osd_num(p,(int)(notches%100000u));
+    }
     *p = 0;
     if (!t[0]) return;
     uint32_t col = (hud_thr & 0x7) ? 0xFFFF4040u : (hud_thr & 0x8) ? 0xFFFFD040u : 0xFF60FF60u;

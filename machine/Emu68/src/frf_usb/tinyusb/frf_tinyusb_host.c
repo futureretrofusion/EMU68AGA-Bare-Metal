@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include "tusb.h"
 #include "../frf_usb_mass.h"
+#include "../frf_usb_wheel.h"
 #include "../frf_r22_input_diag.h"
 #include "frf_r23_keyboard_guard.h"
 
@@ -32,6 +33,21 @@ extern void frf_vcia_keyboard_stats(uint32_t*,uint32_t*,uint32_t*,
 extern int frf_native_usb_reboot_requested(void);
 extern void aga_reboot(int tryboot);
 extern void aga_virtual_mouse_update(int dx,int dy,unsigned buttons);
+extern void frf_vcia_keyboard_raw(uint8_t raw);
+/* USB HID reporting remains ARM-side; the guest only sees NewMouse
+ * raw keys from the virtual CIA serial interface, never a USB device. */
+static volatile uint32_t frf_mouse_wheel_reports,frf_mouse_wheel_notches;
+/* OSD MONITOR can display W:<count> even when CaffeineOS has not yet
+ * handled any wheel event. This distinguishes USB decoding from guest
+ * NewMouse / FreeWheel configuration failures. */
+void frf_tinyusb_mouse_wheel_stats(uint32_t *reports,uint32_t *notches)
+{
+    if(reports) *reports=__atomic_load_n(&frf_mouse_wheel_reports,__ATOMIC_ACQUIRE);
+    if(notches) *notches=__atomic_load_n(&frf_mouse_wheel_notches,__ATOMIC_ACQUIRE);
+}
+static uint8_t frf_mouse_report_id[16][8];
+static uint8_t frf_mouse_report_parsed[16][8];
+
 extern void frf_boot_stage(unsigned stage);
 extern void frf_post_native_usb_stage(unsigned stage,int rc,
                                      uint32_t detail,uint32_t aux);
@@ -383,6 +399,24 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
 {
     (void)descriptor;(void)descriptor_len;
     const uint8_t protocol=tuh_hid_interface_protocol(addr,idx);
+    /* Some mice prepend a nonzero report ID. This is determined from
+     * the mounted HID descriptor, not guessed from packet[0] (buttons). */
+    if(addr<16u && idx<8u) {
+        frf_mouse_report_id[addr][idx]=0;
+        frf_mouse_report_parsed[addr][idx]=0;
+        if(protocol==HID_ITF_PROTOCOL_MOUSE && descriptor && descriptor_len) {
+            tuh_hid_report_info_t info[8];
+            uint8_t n=tuh_hid_parse_report_descriptor(info,8u,descriptor,descriptor_len);
+            for(uint8_t i=0;i<n;i++) {
+                if(info[i].usage_page==HID_USAGE_PAGE_DESKTOP &&
+                   info[i].usage==HID_USAGE_DESKTOP_MOUSE) {
+                    frf_mouse_report_id[addr][idx]=info[i].report_id;
+                    frf_mouse_report_parsed[addr][idx]=1u;
+                    break;
+                }
+            }
+        }
+    }
     const uint32_t pad_before=frf_tinyusb_gamepad_count();
     frf_tinyusb_pad_mount(addr,idx,descriptor,descriptor_len);
     uint16_t pad_vid=0,pad_pid=0;
@@ -426,7 +460,25 @@ void tuh_hid_mount_cb(uint8_t addr,uint8_t idx,
         frf_post_native_usb_stage(7,0,((uint32_t)frf_usb_hid_keyboard<<16)|
                                   frf_usb_hid_mouse,frf_usb_enumerations);
     frf_hid_watch_mount(addr,idx);
+    /* TinyUSB sets BOOT protocol by default for boot mice: exactly
+     * three bytes, so scroll wheel data is never reported. For a mouse
+     * descriptor containing GenericDesktop/Wheel, request REPORT mode.
+     * A SET_PROTOCOL failure falls back to the original 3-byte input.
+     * Do NOT change the keyboard's protocol: our keyboard mapping
+     * depends on the reliable 8-byte boot keyboard packet. */
+    if(protocol==HID_ITF_PROTOCOL_MOUSE &&
+       addr<16u && idx<8u && frf_mouse_report_parsed[addr][idx] &&
+       frf_usb_hid_has_wheel(descriptor,descriptor_len) &&
+       tuh_hid_set_protocol(addr,idx,HID_PROTOCOL_REPORT)) {
+        return; /* receive is primed in protocol completion callback */
+    }
     (void)tuh_hid_receive_report(addr,idx);
+}
+void tuh_hid_set_protocol_complete_cb(uint8_t addr,uint8_t idx,uint8_t protocol)
+{
+    (void)protocol;
+    if(tuh_hid_interface_protocol(addr,idx)==HID_ITF_PROTOCOL_MOUSE)
+        (void)tuh_hid_receive_report(addr,idx);
 }
 void tuh_hid_get_report_complete_cb(uint8_t a,uint8_t idx,uint8_t id,uint8_t type,uint16_t len)
 {
@@ -440,6 +492,10 @@ void tuh_hid_get_report_complete_cb(uint8_t a,uint8_t idx,uint8_t id,uint8_t typ
 void tuh_hid_umount_cb(uint8_t addr,uint8_t idx)
 {
     frf_hid_watch_unmount(addr,idx);
+    if(addr<16u && idx<8u) {
+        frf_mouse_report_id[addr][idx]=0;
+        frf_mouse_report_parsed[addr][idx]=0;
+    }
     if(frf_r23_keyboard_last_mount==(((uint32_t)addr<<16)|idx)) {
         frf_native_usb_keyboard_force_release();
         frf_r23_keyboard_last_mount=0u;
@@ -531,6 +587,14 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
             const uint8_t buttons=data[1];
             aga_virtual_mouse_update((int)(int8_t)data[2],
                                      (int)(int8_t)data[3],buttons&7u);
+            if(len>=5u) {
+                int wheel=frf_usb_wheel_report_id_delta(data,len,5u);
+                if(wheel) {
+                    __atomic_fetch_add(&frf_mouse_wheel_reports,1u,__ATOMIC_RELEASE);
+                    uint32_t count=frf_usb_wheel_emit(wheel,frf_vcia_keyboard_raw);
+                    __atomic_fetch_add(&frf_mouse_wheel_notches,count,__ATOMIC_RELEASE);
+                }
+            }
             frf_usb_mouse_seen=1;
             frf_usb_mouse_buttons=buttons;
             ++frf_usb_reports;
@@ -552,12 +616,25 @@ void tuh_hid_report_received_cb(uint8_t addr,uint8_t idx,
             ++frf_r23_malformed_kbd;
         }
     } else if(protocol==HID_ITF_PROTOCOL_MOUSE && len>=3u) {
-        uint8_t buttons=data[0];
-        aga_virtual_mouse_update((int)(int8_t)data[1],
-                                 (int)(int8_t)data[2],buttons & 7u);
-        frf_usb_mouse_seen=1;
-        frf_usb_mouse_buttons=buttons;
-        frf_usb_reports++;
+        uint8_t id=(addr<16u && idx<8u) ?
+                   frf_mouse_report_id[addr][idx] : 0u;
+        unsigned off=id ? 1u : 0u;
+        if(len>=off+3u && (!id || data[0]==id)) {
+            uint8_t buttons=data[off];
+            aga_virtual_mouse_update((int)(int8_t)data[off+1u],
+                                     (int)(int8_t)data[off+2u],buttons&7u);
+            frf_usb_mouse_seen=1;
+            frf_usb_mouse_buttons=buttons;
+            frf_usb_reports++;
+            int wheel=id ?
+                frf_usb_wheel_report_id_delta(data,len,id) :
+                frf_usb_wheel_boot_delta(data,len);
+            if(wheel) {
+                __atomic_fetch_add(&frf_mouse_wheel_reports,1u,__ATOMIC_RELEASE);
+                uint32_t count=frf_usb_wheel_emit(wheel,frf_vcia_keyboard_raw);
+                __atomic_fetch_add(&frf_mouse_wheel_notches,count,__ATOMIC_RELEASE);
+            }
+        }
     }
     /* Generic Desktop Gamepad/Joystick report interfaces, independent
        of keyboard/mouse boot protocol. */
